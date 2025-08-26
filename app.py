@@ -1,336 +1,206 @@
-import os, sys, subprocess, time, re
+# app.py
+import io
+import sys
+import time
+import contextlib
+from datetime import datetime, timezone, timedelta
+
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="S&P 500 Options Screener", layout="wide")
-APP_TS = time.strftime("%Y-%m-%d %H:%M:%S ET", time.localtime())
+# ---- Utilities --------------------------------------------------------------
 
-st.title("📈 S&P 500 Options Screener")
-st.caption(f"UI started: {APP_TS}")
+ET = timezone(timedelta(hours=-5), name="ET")  # crude ET; Streamlit Cloud uses UTC
+def now_et() -> datetime:
+    # Streamlit cloud runs in UTC; adjust to ET (no DST handling here on purpose)
+    return datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(ET)
 
-SCRIPT = "swing_options_screener.py"
-CSV_NAME = "pass_tickers.csv"
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(REPO_ROOT, CSV_NAME)
-
-# -------------------- helpers --------------------
-def run_subprocess(args):
+def read_csv_if_exists(path: str) -> pd.DataFrame | None:
     try:
-        proc = subprocess.run(
-            [sys.executable, os.path.join(REPO_ROOT, SCRIPT)] + args,
-            capture_output=True,
-            text=True,
-            timeout=900,
-            cwd=REPO_ROOT,
-        )
-        return proc.returncode, proc.stdout, proc.stderr
-    except Exception as e:
-        return 1, "", f"Exception launching subprocess: {e}"
+        df = pd.read_csv(path)
+        if df.empty:
+            return None
+        return df
+    except Exception:
+        return None
 
-PIPE_HEADER_RE = re.compile(r"^Ticker\|", re.IGNORECASE)
-
-def parse_pipe_stdout_to_df(stdout: str) -> pd.DataFrame:
-    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
-    start = None
-    for i, ln in enumerate(lines):
-        if PIPE_HEADER_RE.match(ln):
-            start = i
-            break
-    if start is None:
-        return pd.DataFrame()
-    header = [h.strip() for h in lines[start].split("|")]
-    rows = []
-    for ln in lines[start + 1:]:
-        if ln.startswith("Processed at"):
-            break
-        if "|" not in ln:
-            continue
-        parts = [p.strip() for p in ln.split("|")]
-        if len(parts) == len(header):
-            rows.append(parts)
-    df = pd.DataFrame(rows, columns=header)
-    # best-effort numeric conversion
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
-    return df
-
-DEBUG_TICK = re.compile(r"===\s+DEBUG\s+([A-Z\.\-]+)\s+===")
-
-def collect_failures_from_run(stdout: str):
-    fails, current = {}, None
-    for line in stdout.splitlines():
-        m = DEBUG_TICK.search(line)
-        if m:
-            current = m.group(1)
-            continue
-        if current and "FAIL" in line and "❌" in line:
-            tail = line.split("❌", 1)[-1].strip()
-            reasons = [t.strip().replace("—","-").replace("–","-")
-                       for t in re.split(r"[,\s]+", tail) if t.strip()]
-            fails[current] = {"reasons": reasons}
-            current = None
-    return fails
-
-_REASON_MAP = {
-    "not_up_on_day": "Red day vs. prior close.",
-    "relvol_below_threshold": "Relative volume below threshold.",
-    "no_upside_to_resistance": "At/above resistance; no upside room.",
-    "insufficient_atr_capacity_daily": "ATR capacity (daily) < req move.",
-    "insufficient_atr_capacity_weekly": "ATR capacity (weekly) < req move.",
-    "insufficient_atr_capacity_monthly": "ATR capacity (monthly) < req move.",
-    "hist21d_insufficient": "No historical 21d move ≥ req% in last 12m.",
-    "insufficient_data": "Insufficient price history.",
-    "missing_series": "Price series missing or unusable.",
-}
-
-def humanize_reasons(codes):
-    return "; ".join(_REASON_MAP.get(c, f"`{c}`") for c in codes) if codes else ""
-
-_keyval = re.compile(r"(\w+)=([^\s]+)")
-
-def parse_debug(stdout: str):
-    header, verdict, reasons = {}, None, []
-    for line in stdout.splitlines():
-        for k, v in _keyval.findall(line):
-            header[k] = v
-        if "PASS" in line and "✅" in line:
-            verdict = "PASS"
-        if "FAIL" in line and "❌" in line:
-            verdict = "FAIL"
-            tail = line.split("❌", 1)[-1].strip()
-            for token in re.split(r"[,\s]+", tail):
-                t = token.strip().replace("—", "-").replace("–", "-")
-                if t:
-                    reasons.append(t)
-    return header, verdict, reasons
-
-def explain_ticker(tkr: str):
-    rc, out, err = run_subprocess(["--explain", tkr.upper()])
-    return parse_debug(out or ""), out, err
-
-def near_misses(stdout: str, max_items=3) -> pd.DataFrame:
-    fails = collect_failures_from_run(stdout)
-    singles = [(t, v["reasons"][0]) for t, v in fails.items() if v.get("reasons") and len(v["reasons"]) == 1]
-    close_to_green, others = [], []
-    for tkr, reason in singles:
-        if reason == "not_up_on_day":
-            (hdr, verdict, reasons), _, _ = explain_ticker(tkr)
-            try:
-                entry = float(hdr.get("entry_used"))
-                prev = float(hdr.get("prev_close_used"))
-                pct = (entry - prev) / prev * 100.0
-                gap = 0.0 if pct >= 0 else abs(pct)
-                close_to_green.append({
-                    "Ticker": tkr, "Reason": humanize_reasons([reason]),
-                    "GapToGreen%": round(gap, 3),
-                    "Entry": round(entry, 4), "PrevClose": round(prev, 4),
-                    "EntryTimeET": hdr.get("EntryTimeET",""), "DataAgeMin": hdr.get("DataAgeMin",""),
-                })
-            except Exception:
-                others.append({"Ticker": tkr, "Reason": humanize_reasons([reason])})
-        else:
-            others.append({"Ticker": tkr, "Reason": humanize_reasons([reason])})
-    close_to_green.sort(key=lambda x: x.get("GapToGreen%", 9e9))
-    ranked = close_to_green + others
-    return pd.DataFrame(ranked[:max_items])
-
-def build_pipe_text(df: pd.DataFrame) -> str:
+def df_to_pipe(df: pd.DataFrame) -> str:
+    # Produce Google-Sheets friendly pipe-delimited text with all columns
     cols = list(df.columns)
-    lines = ["|".join(map(str, cols))]
-    for _, row in df.iterrows():
-        parts = []
+    lines = ["|".join(cols)]
+    for _, r in df.iterrows():
+        vals = []
         for c in cols:
-            val = row[c]
-            if isinstance(val, float):
-                parts.append(f"{val:.6g}")
+            v = r.get(c)
+            if pd.isna(v):
+                vals.append("")
             else:
-                parts.append(str(val))
-        lines.append("|".join(parts))
+                s = str(v)
+                # keep pipes safe-ish by replacing with similar char
+                vals.append(s.replace("|", "¦"))
+        lines.append("|".join(vals))
     return "\n".join(lines)
 
-def _num(col_name, fmt=",.2f", help_txt=None, step=None):
-    return st.column_config.NumberColumn(col_name, format=fmt, help=help_txt or "", step=step)
+def auto_compact_columns(df: pd.DataFrame) -> list[str]:
+    """
+    Base compact columns + append options columns if present.
+    Hist21d/etc. will still be visible in the 'Show all columns' expander and copy block.
+    """
+    base = [
+        "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
+        "Resistance","TP","RR_to_Res","RR_to_TP","SupportType"
+    ]
+    cols = [c for c in base if c in df.columns]
 
-def show_tables(df: pd.DataFrame, title: str, key: str, compact_cols=None):
-    """Compact table for mobile + full table in an expander. Keeps copy blocks."""
-    if df.empty:
-        st.warning(f"No rows for **{title}**.")
-        return
+    # Prefer to include options/synthetic columns in the compact table too
+    prefer_prefixes = (
+        "OptExpiry", "BuyK", "SellK", "Width", "DebitMid", "DebitCons",
+        "MaxProfitMid", "MaxProfitCons", "RR_Spread_Mid", "RR_Spread_Cons",
+        "BreakevenMid", "PricingNote"
+    )
+    for c in df.columns:
+        if c.startswith(prefer_prefixes) and c not in cols:
+            cols.append(c)
+    return cols or list(df.columns)
 
-    if compact_cols:
-        present = [c for c in compact_cols if c in df.columns]
-        st.markdown(f"### {title}")
-        st.dataframe(
-            df[present],
-            use_container_width=True,
-            hide_index=True,
-            height=min(520, 80 + 32 * (len(df) + 1)),
-        )
-        pipe_text = build_pipe_text(df[present])
-        st.caption("Copy compact table (pipe-delimited for Google Sheets)")
-        st.code(pipe_text, language="text")
-        st.download_button(
-            "Copy / Download compact .txt",
-            pipe_text.encode("utf-8"),
-            file_name=f"{title.lower().replace(' ','_')}_compact.txt",
-            mime="text/plain",
-            key=f"copy_compact_{key}",
-            use_container_width=True,
-        )
-    else:
-        st.markdown(f"### {title}")
 
-    with st.expander("Show all columns"):
-        # numeric formatting
-        col_cfg = {}
-        percent_like = [c for c in df.columns if c.endswith("%") or "Pct" in c or "Percent" in c]
-        money_like   = [c for c in df.columns if any(k in c for k in ["Price","TP","Risk$","ReqMove$","MaxProfit","Debit"])]
-        int_like     = [c for c in df.columns if any(k in c for k in ["PassCount","Volume","Hist21d_PassCount"])]
+@contextlib.contextmanager
+def capture_stdout():
+    buf = io.StringIO()
+    old = sys.stdout
+    try:
+        sys.stdout = buf
+        yield buf
+    finally:
+        sys.stdout = old
 
-        for c in percent_like: col_cfg[c] = _num(c, fmt="%.2f%%")
-        for c in money_like:   col_cfg[c] = _num(c, fmt="$%,.2f")
-        for c in int_like:     col_cfg[c] = _num(c, fmt="%,d", step=1)
-        for c in df.select_dtypes("number").columns:
-            col_cfg.setdefault(c, _num(c, fmt="%,.4f"))
 
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config=col_cfg,
-            height=min(560, 100 + 32 * (len(df) + 1)),
-        )
+def invoke_run():
+    """
+    Calls swing_options_screener.run_scan(), captures console output,
+    then loads pass/near CSVs if produced by your script.
+    Works even if run_scan() prints instead of returning DataFrames.
+    """
+    try:
+        from swing_options_screener import run_scan
+    except Exception as e:
+        return None, None, f"Import error: {e}"
 
-        pipe_text_full = build_pipe_text(df)
-        st.caption("Copy full table (pipe-delimited for Google Sheets)")
-        st.code(pipe_text_full, language="text")
-        st.download_button(
-            "Copy / Download full .txt",
-            pipe_text_full.encode("utf-8"),
-            file_name=f"{title.lower().replace(' ','_')}.txt",
-            mime="text/plain",
-            key=f"copy_full_{key}",
-            use_container_width=True,
-        )
+    with capture_stdout() as out:
+        try:
+            result = run_scan()  # your existing function
+        except Exception as e:
+            print(f"[run_scan error] {e}", file=sys.stderr)
+            result = None
 
-# -------------------- UI --------------------
-left, right = st.columns([2, 1])
+    console_text = out.getvalue()
 
-with left:
-    min_up_pct = st.number_input(
-        "Min green % to qualify (applied at UI)",
-        min_value=0.0, max_value=5.0, value=0.0, step=0.1, help="Require at least this % change vs prior close."
+    # prefer DataFrame from return, else read CSV written by your script
+    df_pass = None
+    near_df = None
+    if isinstance(result, dict):
+        df_pass = result.get("pass_df")
+        near_df = result.get("near_df")
+    elif isinstance(result, pd.DataFrame):
+        df_pass = result
+
+    # fallback to files if present
+    if df_pass is None:
+        df_pass = read_csv_if_exists("pass_tickers.csv")
+    if near_df is None:
+        near_df = read_csv_if_exists("near_misses.csv")
+
+    return df_pass, near_df, console_text
+
+
+def explain_one(ticker: str) -> str:
+    """
+    Calls swing_options_screener.explain_ticker(t) and returns the printed explanation.
+    """
+    try:
+        from swing_options_screener import explain_ticker
+    except Exception as e:
+        return f"Import error: {e}"
+
+    with capture_stdout() as out:
+        try:
+            explain_ticker(ticker.strip().upper())
+        except Exception as e:
+            print(f"[explain_ticker error] {e}")
+    return out.getvalue()
+
+
+def render_table_block(df: pd.DataFrame, title: str, key_prefix: str):
+    st.subheader(title)
+
+    # Compact view first
+    compact_cols = auto_compact_columns(df)
+    st.dataframe(
+        df[compact_cols],
+        use_container_width=True,
+        hide_index=True
     )
 
+    # Full view (all columns)
+    with st.expander("Show all columns", expanded=False):
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Copy/download
+    pipe_text = df_to_pipe(df)
+    st.markdown("**Copy table (pipe-delimited for Google Sheets)**")
+    st.code(pipe_text, language="text")
+    st.download_button(
+        "Download CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{key_prefix}_tickers.csv",
+        mime="text/csv",
+        key=f"dl_{key_prefix}"
+    )
+
+
+# ---- UI ---------------------------------------------------------------------
+
+st.set_page_config(page_title="S&P 500 Options Screener", layout="wide")
+st.title("📈 S&P 500 Options Screener")
+
+st.caption(f"UI started: {now_et().strftime('%Y-%m-%d %H:%M:%S ET')}")
+
+col_left, col_right = st.columns([2, 1])
+
+with col_left:
     if st.button("Run Screener", use_container_width=True):
-        st.info("Running screener… this may take a bit on first run.")
-        rc, stdout, stderr = run_subprocess([])
+        with st.status("Running screener… this may take a bit on first run.", expanded=True) as status:
+            t0 = time.time()
+            df_pass, near_df, console_text = invoke_run()
+            status.update(state="complete")
 
-        with st.expander("Console output"):
-            st.code(stdout or "(no stdout)", language="bash")
-            if stderr:
-                st.error("stderr:")
-                st.code(stderr, language="bash")
+        with st.expander("Console output", expanded=False):
+            st.code(console_text or "(no console output)")
 
-        # pass table (CSV preferred; fallback to stdout)
-        df_pass = pd.DataFrame()
-        if os.path.exists(CSV_PATH):
-            try:
-                df_pass = pd.read_csv(CSV_PATH)
-            except Exception as e:
-                st.error(f"Could not read {CSV_NAME}: {e}")
-        if df_pass.empty:
-            df_pass = parse_pipe_stdout_to_df(stdout)
+        if df_pass is None or df_pass.empty:
+            st.warning("No PASS tickers found (or CSV not produced).")
 
-        # apply UI-level min-up-pct requirement if column present
-        if "Change%" in df_pass.columns and min_up_pct > 0:
-            try:
-                # Change% may be numeric or string like '0.04%' depending on backend
-                if df_pass["Change%"].dtype == object:
-                    df_pass["_chg_val"] = df_pass["Change%"].astype(str).str.replace("%","", regex=False)
-                    df_pass["_chg_val"] = pd.to_numeric(df_pass["_chg_val"], errors="coerce")
-                    mask = df_pass["_chg_val"] >= float(min_up_pct)
-                else:
-                    mask = df_pass["Change%"] >= float(min_up_pct)
-                df_pass = df_pass[mask].drop(columns=[c for c in ["_chg_val"] if c in df_pass.columns])
-            except Exception:
-                pass
-
-        if df_pass.empty:
-            st.warning("No PASS tickers found (after UI filter) or CSV not produced.")
+            if isinstance(near_df, pd.DataFrame) and not near_df.empty:
+                # Keep only the 3 nearest misses based on how your script scores them.
+                # If your script already included a 'FailReason' or 'Score', we retain them.
+                top3 = near_df.head(3)
+                render_table_block(top3, "Closest 3 (failed) — reasons included", "near_misses")
         else:
-# show compact subset for quick view, but keep all columns in the expander
-compact_cols = [
-    "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
-    "Resistance","TP","RR_to_Res","RR_to_TP","SupportType"
-]
+            # Show PASS tickers with full column set (including Hist21d_* and options fields)
+            render_table_block(df_pass, "PASS tickers", "pass")
 
-# If the options chain fields exist, tack them onto the compact view too:
-for col in df_pass.columns:
-    if col.startswith("OptExpiry") or col.startswith("RR_Spread") or col.startswith("MaxProfit"):
-        compact_cols.append(col)
+with col_right:
+    st.header("Explain a ticker")
+    t = st.text_input("Ticker", placeholder="e.g., WMT, INTC, MOS")
+    if st.button("Explain", use_container_width=True, type="primary", disabled=not t.strip()):
+        with st.status(f"Explaining {t.strip().upper()}…"):
+            txt = explain_one(t)
+        st.subheader(f"🔍 Debug: {t.strip().upper()}")
+        st.code(txt or "(no output)")
 
-show_tables(df_pass, "PASS tickers", "pass", compact_cols=compact_cols)
-
-        # Near-miss
-        nm = near_misses(stdout, max_items=3)
-        if not nm.empty:
-            show_tables(nm, "🟡 Near-miss (Top 3)", "near_miss",
-                        compact_cols=["Ticker","Reason","GapToGreen%","Entry","PrevClose","EntryTimeET"])
-        else:
-            st.caption("No single-reason near-misses detected this run.")
-
-with right:
-    st.markdown("### Explain a ticker")
-    x_ticker = st.text_input("Ticker", placeholder="e.g., WMT, INTC, MOS")
-    if st.button("Explain", use_container_width=True):
-        if not x_ticker:
-            st.warning("Type a ticker first.")
-        else:
-            st.info(f"Explaining {x_ticker.upper()}…")
-            (hdr, verdict, reasons), out, err = explain_ticker(x_ticker)
-
-            colA, colB, colC = st.columns(3)
-            with colA:
-                st.subheader(f"🔍 Debug: {x_ticker.upper()}")
-                badge = "🟢 PASS" if verdict == "PASS" else ("🔴 FAIL" if verdict == "FAIL" else "⚪ Unknown")
-                st.markdown(f"**Verdict:** {badge}")
-
-            with colB:
-                fields = []
-                for k in ["session", "entry_src", "EntryTimeET", "DataAgeMin"]:
-                    if k in hdr:
-                        fields.append(f"**{k}**: `{hdr[k]}`")
-                if fields:
-                    st.markdown("**Context**  \n" + "  \n".join(fields))
-
-            with colC:
-                if "entry_used" in hdr and "prev_close_used" in hdr:
-                    try:
-                        entry = float(hdr["entry_used"])
-                        prev = float(hdr["prev_close_used"])
-                        pct = (entry - prev) / prev * 100.0
-                        st.metric("Today vs Prior Close", f"{pct:+.2f}%")
-                    except Exception:
-                        pass
-
-            if verdict == "FAIL":
-                st.markdown("#### Why it failed")
-                st.markdown(humanize_reasons(reasons) or "_See raw output below._")
-            elif verdict == "PASS":
-                st.success("All gates passed for this ticker.")
-
-            with st.expander("Raw output"):
-                st.code(out or "(no stdout)", language="bash")
-                if err:
-                    st.error("stderr:")
-                    st.code(err, language="bash")
-
-st.divider()
 st.caption(
-    "Use the **Min green %** input to require a real up-move (e.g., 0.5% or 1%). "
-    "Compact tables show key columns; open *Show all columns* for the full dataset. "
-    "Copy blocks under each table remain Google-Sheets ready (pipe-delimited). "
-    "Prices are ~15-min delayed (Yahoo)."
+    "Notes: Yahoo prices are ~15-min delayed. "
+    "'Explain' runs the same logic as your CLI and prints the exact gate that failed. "
+    "All columns (Hist21d_*, ResLookbackDays, options pricing fields) are shown in the full view and copy block."
 )
 
