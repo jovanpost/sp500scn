@@ -1,4 +1,5 @@
-# screener.py — Finviz-like (UNADJUSTED) swing scanner + optional options block
+# swing_options_screener.py
+# Finviz-like (UNADJUSTED) swing scanner + optional options block
 # Robust live handling + precise timestamps:
 # - OPEN: entry from 1m bar (<=5m old) else fast_info; today vol from 1m SUM or daily partial
 # - CLOSED: entry = official daily close; prev_close = prior close
@@ -18,6 +19,9 @@ try:
 except Exception:
     from backports.zoneinfo import ZoneInfo
 
+# ------------------------- #
+# Config / Defaults
+# ------------------------- #
 DELIM = "|"
 SUPPORT_LOOKBACK_DAYS = 21
 PIVOT_K = 2
@@ -40,9 +44,9 @@ DEFAULT_TICKERS = [
     'VTRS','KMI','WBA','BMY','VZ','T','CSX'
 ]
 
-# -------------------------
+# ------------------------- #
 # Helpers
-# -------------------------
+# ------------------------- #
 def _to_float(x):
     if isinstance(x, pd.Series):
         x = x.iloc[0] if not x.empty else np.nan
@@ -99,9 +103,9 @@ def _recent_pivot_low(df, k=2, lookback_days=40):
             return _to_float(lows[idx])
     return np.nan
 
-# -------------------------
+# ------------------------- #
 # Market session utils
-# -------------------------
+# ------------------------- #
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
 
@@ -243,9 +247,9 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
     source['vol_src']   = 'daily_last'
     return entry, prev_close, today_vol, source, entry_ts
 
-# -------------------------
+# ------------------------- #
 # RelVol (Finviz-style)
-# -------------------------
+# ------------------------- #
 def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
     """
     RelVol = today_vol / (avg_63 * session_progress)
@@ -271,9 +275,9 @@ def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
     expected_by_now = avg_63 * progress
     return today_vol / expected_by_now if expected_by_now > 0 else np.nan
 
-# -------------------------
+# ------------------------- #
 # Options helpers
-# -------------------------
+# ------------------------- #
 def _parse_expirations(t: yf.Ticker):
     exps = getattr(t, "options", [])
     out = []
@@ -380,9 +384,9 @@ def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAU
     except Exception as e:
         return None, f"opt_error:{e}"
 
-# -------------------------
+# ------------------------- #
 # Core evaluation
-# -------------------------
+# ------------------------- #
 def evaluate_ticker(
     ticker,
     res_days=RES_LOOKBACK_DEFAULT,
@@ -484,9 +488,9 @@ def evaluate_ticker(
     }
     return row, None
 
-# -------------------------
-# Debug
-# -------------------------
+# ------------------------- #
+# Debug & CLI hooks
+# ------------------------- #
 def check_ticker(ticker, **kwargs):
     df = _get_history(ticker)
     entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker) if df is not None else (np.nan, np.nan, np.nan, {}, None)
@@ -502,9 +506,6 @@ def check_ticker(ticker, **kwargs):
     else:
         print("FAIL ❌", reason)
 
-# -------------------------
-# CLI
-# -------------------------
 def parse_ticker_text(text: str):
     if not text: return []
     raw = [t.strip().upper() for chunk in text.replace("\n", ",").replace(" ", ",").split(",") if t.strip()]
@@ -514,6 +515,96 @@ def parse_ticker_text(text: str):
             seen.add(t); out.append(t)
     return out
 
+# ------------------------- #
+# Library API for Streamlit
+# ------------------------- #
+def run_scan(
+    tickers=None,
+    res_days=RES_LOOKBACK_DEFAULT,
+    rel_vol_min=REL_VOL_MIN_DEFAULT,
+    relvol_median=False,
+    rr_min=RR_MIN_DEFAULT,
+    stop_mode="safest",
+    with_options=False,
+    opt_days=TARGET_OPT_DAYS_DEFAULT,
+):
+    """
+    Programmatic entry-point used by the Streamlit UI.
+    Returns dict: {'pass_df': DataFrame}
+    Also writes 'pass_tickers.csv' (pipe delimited) and 'pass_tickers_unadjusted.psv'.
+    """
+    tickers = list(tickers) if tickers else list(DEFAULT_TICKERS)
+    kwargs = dict(
+        res_days=res_days,
+        rel_vol_min=rel_vol_min,
+        use_relvol_median=relvol_median,
+        rr_min=rr_min,
+        prefer_stop=stop_mode
+    )
+
+    results = []
+    for t in tickers:
+        row, reason = evaluate_ticker(t, **kwargs)
+        if reason is None:
+            if with_options:
+                opt, err = suggest_bull_call_spread(t, row['TP'], target_days=opt_days)
+                if err is None and opt:
+                    row.update(opt)
+                else:
+                    row.update({
+                        "OptExpiry":"", "BuyK":"", "SellK":"", "Width":"",
+                        "DebitMid":"", "DebitCons":"", "MaxProfitMid":"", "MaxProfitCons":"",
+                        "RR_Spread_Mid":"", "RR_Spread_Cons":"", "BreakevenMid":"", "PricingNote": (err or "")
+                    })
+            results.append(row)
+
+    base_cols = [
+        'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
+        'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
+        'TPReward$','TPReward%','DailyATR','DailyCap',
+        'Session','EntrySrc','VolSrc'
+    ]
+    opt_cols = [
+        'OptExpiry','BuyK','SellK','Width','DebitMid','DebitCons',
+        'MaxProfitMid','MaxProfitCons','RR_Spread_Mid','RR_Spread_Cons','BreakevenMid','PricingNote'
+    ]
+    cols = base_cols + (opt_cols if with_options else [])
+
+    if results:
+        df = pd.DataFrame(results).sort_values(['Price','Ticker'])
+        # Write both formats for compatibility with your UI/parsers
+        df.to_csv('pass_tickers.csv', index=False)  # standard CSV
+        df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)  # pipe
+        # Also print a pipe table to stdout (so the UI can parse fallback)
+        print(DELIM.join(cols))
+        for _, r in df[cols].iterrows():
+            print(DELIM.join(_sanitize(r[c]) for c in cols))
+        print(f"\nProcessed at {_now_et().strftime('%Y-%m-%d %H:%M:%S ET')}")
+        return {'pass_df': df}
+    else:
+        print("No PASS tickers found.")
+        print(f"\nProcessed at {_now_et().strftime('%Y-%m-%d %H:%M:%S ET')}")
+        return {'pass_df': pd.DataFrame(columns=cols)}
+
+def explain_ticker(ticker,
+                   res_days=RES_LOOKBACK_DEFAULT,
+                   rel_vol_min=REL_VOL_MIN_DEFAULT,
+                   relvol_median=False,
+                   rr_min=RR_MIN_DEFAULT,
+                   stop_mode="safest"):
+    """Programmatic hook used by the Streamlit UI — prints the same debug as CLI."""
+    kwargs = dict(
+        res_days=res_days,
+        rel_vol_min=rel_vol_min,
+        use_relvol_median=relvol_median,
+        rr_min=rr_min,
+        prefer_stop=stop_mode
+    )
+    check_ticker(ticker, **kwargs)
+
+# ------------------------- #
+# CLI
+# ------------------------- #
 def main():
     p = argparse.ArgumentParser(description="Finviz-like Swing Screener (UNADJUSTED) — robust intraday")
     p.add_argument("--tickers", type=str, default="", help="Comma/space/newline-separated list")
@@ -529,56 +620,27 @@ def main():
 
     tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
 
-    kwargs = dict(
-        res_days=args.res_days,
-        rel_vol_min=args.relvol_min,
-        use_relvol_median=args.relvol_median,
-        rr_min=args.rr_min,
-        prefer_stop=args.stop_mode
-    )
-
     if args.explain:
-        check_ticker(args.explain.upper(), **kwargs)
+        explain_ticker(args.explain.upper(),
+                       res_days=args.res_days,
+                       rel_vol_min=args.rel_vol_min,
+                       relvol_median=args.relvol_median,
+                       rr_min=args.rr_min,
+                       stop_mode=args.stop_mode)
         return
 
-    results = []
-    for t in tickers:
-        row, reason = evaluate_ticker(t, **kwargs)
-        if reason is None:
-            if args.with_options:
-                opt, err = suggest_bull_call_spread(t, row['TP'], target_days=args.opt_days)
-                if err is None and opt:
-                    row.update(opt)
-                else:
-                    row.update({
-                        "OptExpiry":"", "BuyK":"", "SellK":"", "Width":"",
-                        "DebitMid":"", "DebitCons":"", "MaxProfitMid":"", "MaxProfitCons":"",
-                        "RR_Spread_Mid":"", "RR_Spread_Cons":"", "BreakevenMid":"", "PricingNote": err or ""
-                    })
-            results.append(row)
-
-    base_cols = [
-        'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
-        'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
-        'TPReward$','TPReward%','DailyATR','DailyCap',
-        'Session','EntrySrc','VolSrc'
-    ]
-    opt_cols = [
-        'OptExpiry','BuyK','SellK','Width','DebitMid','DebitCons',
-        'MaxProfitMid','MaxProfitCons','RR_Spread_Mid','RR_Spread_Cons','BreakevenMid','PricingNote'
-    ]
-    cols = base_cols + (opt_cols if args.with_options else [])
-
-    if results:
-        df = pd.DataFrame(results).sort_values(['Price','Ticker'])
-        df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)
-        print(DELIM.join(cols))
-        for _, r in df[cols].iterrows():
-            print(DELIM.join(_sanitize(r[c]) for c in cols))
-    else:
-        print("No PASS tickers found.")
-
-    print(f"\nProcessed at {datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S ET')}")
+    # Reuse run_scan so behavior is identical for CLI and UI
+    run_scan(
+        tickers=tickers,
+        res_days=args.res_days,
+        rel_vol_min=args.rel_vol_min,
+        relvol_median=args.relvol_median,
+        rr_min=args.rr_min,
+        stop_mode=args.stop_mode,
+        with_options=args.with_options,
+        opt_days=args.opt_days,
+    )
 
 if __name__ == "__main__":
     main()
+
