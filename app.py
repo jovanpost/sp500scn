@@ -1,4 +1,4 @@
-import os, sys, subprocess, time, io
+import os, sys, subprocess, time, re
 import pandas as pd
 import streamlit as st
 
@@ -11,17 +11,17 @@ st.caption(f"UI started: {APP_TS}")
 CSV_PATH = "pass_tickers.csv"
 SCRIPT = "swing_options_screener.py"
 
+# --------------------------
+# Utilities
+# --------------------------
 def run_subprocess(args):
-    """
-    Run your screener script with args and return (rc, stdout, stderr).
-    Uses the same Python interpreter Streamlit runs with.
-    """
+    """Run the screener script and return (rc, stdout, stderr)."""
     try:
         proc = subprocess.run(
             [sys.executable, SCRIPT] + args,
             capture_output=True,
             text=True,
-            timeout=600,   # 10 min hard cap
+            timeout=600,
         )
         return proc.returncode, proc.stdout, proc.stderr
     except Exception as e:
@@ -46,21 +46,117 @@ def run_screener():
     else:
         return pd.DataFrame()
 
+_REASON_MAP = {
+    "not_up_on_day": "Red day vs. prior close.",
+    "relvol_below_threshold": "Relative volume below threshold.",
+    "no_upside_to_resistance": "Price already at/above resistance; no upside room.",
+    "insufficient_atr_capacity_daily": "ATR capacity (daily) < required move.",
+    "insufficient_atr_capacity_weekly": "ATR capacity (weekly) < required move.",
+    "insufficient_atr_capacity_monthly": "ATR capacity (monthly) < required move.",
+    "hist21d_insufficient": "No historical 21-day move ≥ required % in last 12 months.",
+    "insufficient_data": "Insufficient price history.",
+    "missing_series": "Price series missing or unusable.",
+}
+
+_keyval = re.compile(r"(\w+)=([^\s]+)")
+
+def parse_debug(stdout: str):
+    """
+    Parse stdout from --explain into:
+      - header dict (session/entry_src/entry_used/prev_close_used/EntryTimeET/DataAgeMin/…)
+      - verdict ("PASS" or "FAIL")
+      - reasons (list of codes)
+    """
+    header = {}
+    verdict = None
+    reasons = []
+    for line in stdout.splitlines():
+        # grab key=val pairs
+        for k, v in _keyval.findall(line):
+            header[k] = v
+        # verdict lines
+        if "PASS" in line and "✅" in line:
+            verdict = "PASS"
+        if "FAIL" in line and "❌" in line:
+            verdict = "FAIL"
+            # try to pull reason codes (words after FAIL icon)
+            tail = line.split("❌", 1)[-1].strip()
+            # split by spaces/commas
+            for token in re.split(r"[,\s]+", tail):
+                t = token.strip()
+                if not t:
+                    continue
+                # normalize common tokens
+                t = t.replace("—", "-").replace("–", "-")
+                reasons.append(t)
+    return header, verdict, reasons
+
+def humanize_reasons(codes):
+    out = []
+    for c in codes:
+        msg = _REASON_MAP.get(c, None)
+        if msg:
+            out.append(f"• **{msg}**  (`{c}`)")
+    # if nothing matched, dump raw
+    if not out and codes:
+        out = [f"• `{c}`" for c in codes]
+    return out
+
 def explain_ticker(ticker: str):
-    """Call your script with --explain <TICKER> and show raw output."""
+    """Run --explain TICKER and show a human-readable summary + raw log."""
     if not ticker:
         st.warning("Type a ticker first.")
         return
-    st.info(f"Explaining {ticker}…")
+    st.info(f"Explaining {ticker.upper()}…")
     rc, out, err = run_subprocess(["--explain", ticker.upper()])
-    st.subheader(f"🔍 Debug: {ticker.upper()}")
-    if out:
-        st.code(out, language="bash")
-    if err:
-        st.error("stderr:")
-        st.code(err, language="bash")
 
-# --- Layout ---
+    header, verdict, reasons = parse_debug(out or "")
+    colA, colB, colC = st.columns(3)
+    with colA:
+        st.subheader(f"🔍 Debug: {ticker.upper()}")
+        badge = "🟢 PASS" if verdict == "PASS" else ("🔴 FAIL" if verdict == "FAIL" else "⚪ Unknown")
+        st.markdown(f"**Verdict:** {badge}")
+
+    with colB:
+        if header:
+            # Show a few useful fields if present
+            fields = []
+            for k in ["session", "entry_src", "EntryTimeET", "DataAgeMin"]:
+                if k in header:
+                    fields.append(f"**{k}**: `{header[k]}`")
+            if fields:
+                st.markdown("**Context**  \n" + "  \n".join(fields))
+
+    with colC:
+        if "entry_used" in header and "prev_close_used" in header:
+            try:
+                entry = float(header["entry_used"])
+                prev = float(header["prev_close_used"])
+                pct = (entry - prev) / prev * 100.0
+                st.metric("Today vs Prior Close", f"{pct:+.2f}%")
+            except Exception:
+                pass
+
+    if verdict == "FAIL":
+        bullets = humanize_reasons(reasons)
+        if bullets:
+            st.markdown("#### Why it failed")
+            st.markdown("\n".join(bullets))
+        else:
+            st.markdown("#### Why it failed")
+            st.markdown("_Couldn’t parse reasons; see raw output below._")
+    elif verdict == "PASS":
+        st.success("All gates passed for this ticker.")
+
+    with st.expander("Raw output"):
+        st.code(out or "(no stdout)", language="bash")
+        if err:
+            st.error("stderr:")
+            st.code(err, language="bash")
+
+# --------------------------
+# Layout
+# --------------------------
 left, right = st.columns([2, 1])
 
 with left:
@@ -87,6 +183,6 @@ with right:
 
 st.divider()
 st.caption(
-    "Notes: Yahoo prices are ~15-min delayed. ‘Explain’ runs the same "
-    "logic as your CLI (`--explain TICKER`) and prints the exact gate that failed."
+    "Notes: Prices are ~15-min delayed from Yahoo. ‘Explain’ runs your CLI "
+    "(`--explain TICKER`), parses the log, and shows human-readable reasons."
 )
