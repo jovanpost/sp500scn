@@ -1,0 +1,6 @@
+streamlit>=1.32
+yfinance>=0.2.40
+pandas>=2.2
+numpy>=1.26
+backports.zoneinfo; python_version < '3.9'
+tzdata
