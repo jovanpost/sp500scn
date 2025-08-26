@@ -186,3 +186,4 @@ st.caption(
     "Notes: Prices are ~15-min delayed from Yahoo. ‘Explain’ runs your CLI "
     "(`--explain TICKER`), parses the log, and shows human-readable reasons."
 )
+
