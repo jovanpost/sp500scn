@@ -28,14 +28,24 @@ TARGET_OPT_DAYS_DEFAULT = 30
 OPT_WIDTH_PREFERENCE = [5.0, 2.5, 1.0, 10.0]
 
 DEFAULT_TICKERS = [
-    'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
+       'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
     'HST','HAL','SW','KEY','USB','FITB','HPQ','IVZ','HBAN','TFC',
     'WY','LKQ','WBD','AES','RF','DVN','FCX','SMCI','F','BEN',
     'PCG','MRNA','FTV','KIM','BKR','BAX','HPE','OXY','IPG','DOC',
     'CPRT','BF-B','NWSA','BAC','INVH','CNC','KHC','NWS','CAG','IP',
     'CPB','CMG','UDR','CMCSA','CTRA','NI','MTCH','VICI','GEN','HRL',
-    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY',
-    'VTRS','KMI','WBA','BMY','VZ','T','CSX'
+    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY', 'VTRS','KMI','WBA','BMY','VZ','T','CSX',"XYZ","DAL","ON","SWK","LYB","TECH","APTV","EMN","GPN","RVTY","CFG","MCHP","ARE","MAS","BG","BXP","LW","CARR","BBY","IR",
+    "EL","KMX","SWKS","DD","IRM","PYPL","EIX","GM","FRT","CSGP",
+    "FIS","UPS","WDC","HAS","ALB","COO","ADM","FTNT","NKE","C",
+    "LVS","TRMB","MET","OMC","GEHC","IFF","SYF","UBER","PFG","AOS",
+    "TXT","FAST","TGT","SRE","SOLV","COP","TAP","HSIC","DXCM","BALL",
+    "CTSH","MDT","AKAM","TTD","ES","MKC","WFC","HOLX","REG","EQR",
+    "XEL","MRK","GLW","LNT","TPR","OTIS","TSN","OKE","D","TSCO",
+    "NEM","AIG","NDAQ","FOX","EW","MDLZ","GIS","SYY","FOXA","CTVA",
+    "PEG","CMS","CSCO","EBAY","NEE","DAY","BRO","PNW","K","CF",
+    "ETR","CHD","SCHW","MO","ROL","L","ACGL","SO","EQT","CVS",
+    "SBUX","EVRG","CL","WRB","KO","EXE","O","WMT","WMB","INCY",
+    "VTR","MNST","KR"
 ]
 
 # ------------------------- #
@@ -670,4 +680,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
