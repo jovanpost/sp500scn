@@ -1,10 +1,4 @@
 # swing_options_screener.py
-# Finviz-like (UNADJUSTED) swing scanner + optional options block
-# Robust live handling + precise timestamps:
-# - OPEN: entry from 1m bar (<=5m old) else fast_info; today vol from 1m SUM or daily partial
-# - CLOSED: entry = official daily close; prev_close = prior close
-# - Adds EntryTimeET in the table; --explain prints DataAgeMin
-
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -400,7 +394,6 @@ def evaluate_ticker(
 ):
     df = _get_history(ticker)
     if df is None or df.empty: return None, "no_data"
-
     if len(df) < max(22, res_days + 1): return None, "insufficient_rows"
 
     entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker)
@@ -411,27 +404,45 @@ def evaluate_ticker(
     rel_vol = compute_relvol_time_adjusted(df, today_vol, use_median=use_relvol_median)
     if not (np.isfinite(rel_vol) and rel_vol >= rel_vol_min): return None, "relvol_low_timeadj"
 
+    # Resistance: prior N-day high excluding today
     rolling_high = df['High'].rolling(window=res_days, min_periods=res_days).max()
-    resistance = _to_float(rolling_high.shift(1).iloc[-1])  # prior N-day high (exclude today)
+    resistance = _to_float(rolling_high.shift(1).iloc[-1])
     if not (np.isfinite(resistance) and resistance > entry): return None, "no_upside_to_resistance"
 
+    # Targets & reward
     tp = entry + 0.5 * (resistance - entry)
     tp_reward  = tp - entry
     res_reward = resistance - entry
 
+    # ATR capacity (vs TP distance only)
     daily_atr = _atr_from_ohlc(df, 14)
     daily_cap = daily_atr * 21.0 if np.isfinite(daily_atr) else 0.0
     if not (daily_cap > tp_reward): return None, "atr_capacity_short_vs_tp"
 
+    # History realism (21 trading days forward)
     eval_date = df.index[-1]
     past = df[df.index >= (eval_date - timedelta(days=365))].copy()
     if len(past) < 42: return None, "insufficient_past_for_21d"
     fwd_close    = past['Close'].shift(-21)
     fwd_move_pct = (fwd_close - past['Close']) / past['Close'] * 100.0
     tp_req_pct   = (tp_reward / entry) * 100.0
-    pass_count   = int((fwd_move_pct >= tp_req_pct).fillna(False).sum())
+    pass_mask    = (fwd_move_pct >= tp_req_pct)
+    pass_count   = int(pass_mask.fillna(False).sum())
     if pass_count == 0: return None, "history_21d_zero_pass"
 
+    hist_max_pct = round(float(np.nanmax(fwd_move_pct.values)), 2) if np.isfinite(np.nanmax(fwd_move_pct.values)) else ""
+    # Examples: top 3 moves (date refers to start date of the 21d window)
+    order = np.argsort(np.nan_to_num(fwd_move_pct.values, nan=-1e9))[::-1]
+    examples = []
+    for idx in order[:3]:
+        if idx >= len(past): break
+        pct = fwd_move_pct.iloc[idx]
+        if not np.isfinite(pct): continue
+        d = past.index[idx].date().isoformat()
+        examples.append(f"{d}:+{round(float(pct),2)}%")
+    examples_str = "; ".join(examples)
+
+    # Support candidates
     swing_low_21 = _to_float(df['Low'].iloc[-support_lookback_days:].min())
     pivot_low    = _recent_pivot_low(df, k=pivot_k, lookback_days=pivot_lookback_days)
     atr_stop     = entry - ATR_STOP_MULT * (daily_atr if np.isfinite(daily_atr) else 0.0)
@@ -445,9 +456,9 @@ def evaluate_ticker(
     if not valids: return None, "no_valid_support"
 
     if prefer_stop == "structure":
-        order = ["PivotLow", "SwingLow21", f"ATR{ATR_STOP_MULT}x"]
+        order_pref = ["PivotLow", "SwingLow21", f"ATR{ATR_STOP_MULT}x"]
         chosen = None
-        for k in order:
+        for k in order_pref:
             if np.isfinite(supports.get(k, np.nan)):
                 chosen = (k, supports[k]); break
         if chosen is None: chosen = max(valids, key=lambda kv: kv[1])
@@ -462,29 +473,45 @@ def evaluate_ticker(
     if rr_to_res < rr_min: return None, "rr_to_res_below_min"
     rr_to_tp = tp_reward / risk
 
+    # Compact price string (last 10 closes) for quick audit
+    last_n = df['Close'].tail(10).round(2).astype(str).tolist()
+    prices_str = ",".join(last_n)
+
     row = {
         'Ticker': ticker,
         'EvalDate': df.index[-1].date().isoformat(),
         'Price': round(entry, 2),
         'EntryTimeET': _fmt_ts(entry_ts) if entry_ts else "",
+        'Change%': round(change * 100.0, 2),
+        'RelVol(TimeAdj63d)': round(rel_vol, 2),
+
         'Resistance': round(resistance, 2),
         'TP': round(tp, 2),
-        'RelVol(TimeAdj63d)': round(rel_vol, 2),
-        'Change%': round(change * 100.0, 2),
-        'DailyATR': round(daily_atr, 4) if np.isfinite(daily_atr) else "",
-        'DailyCap': round(daily_cap, 4),
+        'RR_to_Res': round(rr_to_res, 2),
+        'RR_to_TP': round(rr_to_tp, 2),
+
+        'SupportType': support_type,
+        'SupportPrice': round(stop, 2),
+        'Risk$': round(risk, 4),
+
         'TPReward$': round(tp_reward, 4),
         'TPReward%': round((tp_reward / entry) * 100.0, 2),
         'ResReward$': round(res_reward, 4),
         'ResReward%': round((res_reward / entry) * 100.0, 2),
-        'SupportType': support_type,
-        'SupportPrice': round(stop, 2),
-        'Risk$': round(risk, 4),
-        'RR_to_TP': round(rr_to_tp, 2),
-        'RR_to_Res': round(rr_to_res, 2),
+
+        'DailyATR': round(daily_atr, 4) if np.isfinite(daily_atr) else "",
+        'DailyCap': round(daily_cap, 4),
+
+        # New: history diagnostics
+        'Hist21d_PassCount': pass_count,
+        'Hist21d_Max%': hist_max_pct,
+        'Hist21d_Examples': examples_str,
+        'ResLookbackDays': res_days,
+        'Prices': prices_str,
+
         'Session': src.get('session',''),
         'EntrySrc': src.get('entry_src',''),
-        'VolSrc': src.get('vol_src','')
+        'VolSrc': src.get('vol_src',''),
     }
     return row, None
 
@@ -525,13 +552,12 @@ def run_scan(
     relvol_median=False,
     rr_min=RR_MIN_DEFAULT,
     stop_mode="safest",
-    with_options=False,
+    with_options=True,              # <- default ON so UI shows the options columns
     opt_days=TARGET_OPT_DAYS_DEFAULT,
 ):
     """
-    Programmatic entry-point used by the Streamlit UI.
-    Returns dict: {'pass_df': DataFrame}
-    Also writes 'pass_tickers.csv' (pipe delimited) and 'pass_tickers_unadjusted.psv'.
+    Entry-point for Streamlit UI.
+    Returns {'pass_df': DataFrame}. Also writes 'pass_tickers.csv' and 'pass_tickers_unadjusted.psv'.
     """
     tickers = list(tickers) if tickers else list(DEFAULT_TICKERS)
     kwargs = dict(
@@ -560,8 +586,10 @@ def run_scan(
 
     base_cols = [
         'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
-        'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
-        'TPReward$','TPReward%','DailyATR','DailyCap',
+        'Resistance','TP','RR_to_Res','RR_to_TP',
+        'SupportType','SupportPrice','Risk$',
+        'TPReward$','TPReward%','ResReward$','ResReward%','DailyATR','DailyCap',
+        'Hist21d_PassCount','Hist21d_Max%','Hist21d_Examples','ResLookbackDays','Prices',
         'Session','EntrySrc','VolSrc'
     ]
     opt_cols = [
@@ -572,13 +600,12 @@ def run_scan(
 
     if results:
         df = pd.DataFrame(results).sort_values(['Price','Ticker'])
-        # Write both formats for compatibility with your UI/parsers
-        df.to_csv('pass_tickers.csv', index=False)  # standard CSV
+        df.to_csv('pass_tickers.csv', index=False)                    # standard CSV
         df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)  # pipe
-        # Also print a pipe table to stdout (so the UI can parse fallback)
+        # Also print a pipe table to stdout (fallback for UI parser)
         print(DELIM.join(cols))
         for _, r in df[cols].iterrows():
-            print(DELIM.join(_sanitize(r[c]) for c in cols))
+            print(DELIM.join(_sanitize(r.get(c, "")) for c in cols))
         print(f"\nProcessed at {_now_et().strftime('%Y-%m-%d %H:%M:%S ET')}")
         return {'pass_df': df}
     else:
@@ -623,7 +650,7 @@ def main():
     if args.explain:
         explain_ticker(args.explain.upper(),
                        res_days=args.res_days,
-                       rel_vol_min=args.rel_vol_min,
+                       rel_vol_min=args.relvol_min,
                        relvol_median=args.relvol_median,
                        rr_min=args.rr_min,
                        stop_mode=args.stop_mode)
@@ -633,11 +660,11 @@ def main():
     run_scan(
         tickers=tickers,
         res_days=args.res_days,
-        rel_vol_min=args.rel_vol_min,
+        rel_vol_min=args.relvol_min,
         relvol_median=args.relvol_median,
         rr_min=args.rr_min,
         stop_mode=args.stop_mode,
-        with_options=args.with_options,
+        with_options=args.with_options or True,  # ensure options included even without flag
         opt_days=args.opt_days,
     )
 
