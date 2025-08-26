@@ -8,13 +8,12 @@ APP_TS = time.strftime("%Y-%m-%d %H:%M:%S ET", time.localtime())
 st.title("📈 S&P 500 Options Screener")
 st.caption(f"UI started: {APP_TS}")
 
-# ---- constants
 SCRIPT = "swing_options_screener.py"
 CSV_NAME = "pass_tickers.csv"
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 CSV_PATH = os.path.join(REPO_ROOT, CSV_NAME)
 
-# -------------------- utilities --------------------
+# -------------------- helpers --------------------
 def run_subprocess(args):
     try:
         proc = subprocess.run(
@@ -22,7 +21,7 @@ def run_subprocess(args):
             capture_output=True,
             text=True,
             timeout=900,
-            cwd=REPO_ROOT,   # ensure CSV lands here
+            cwd=REPO_ROOT,
         )
         return proc.returncode, proc.stdout, proc.stderr
     except Exception as e:
@@ -135,9 +134,7 @@ def near_misses(stdout: str, max_items=3) -> pd.DataFrame:
     ranked = close_to_green + others
     return pd.DataFrame(ranked[:max_items])
 
-# ---------- pretty table rendering + copy helpers ----------
 def build_pipe_text(df: pd.DataFrame) -> str:
-    """Create the same Google Sheets–friendly pipe table."""
     cols = list(df.columns)
     lines = ["|".join(map(str, cols))]
     for _, row in df.iterrows():
@@ -145,7 +142,6 @@ def build_pipe_text(df: pd.DataFrame) -> str:
         for c in cols:
             val = row[c]
             if isinstance(val, float):
-                # keep your CSV-like numeric look (no thousands sep)
                 parts.append(f"{val:.6g}")
             else:
                 parts.append(str(val))
@@ -153,61 +149,79 @@ def build_pipe_text(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 def _num(col_name, fmt=",.2f", help_txt=None, step=None):
-    return st.column_config.NumberColumn(
-        col_name, format=fmt, help=help_txt or "", step=step
-    )
+    return st.column_config.NumberColumn(col_name, format=fmt, help=help_txt or "", step=step)
 
-def show_pretty_table(df: pd.DataFrame, title: str, key: str):
-    """Nice, readable grid with formatting + copy button for pipe text."""
+def show_tables(df: pd.DataFrame, title: str, key: str, compact_cols=None):
+    """Compact table for mobile + full table in an expander. Keeps copy blocks."""
     if df.empty:
         st.warning(f"No rows for **{title}**.")
         return
 
-    # Column configs (best effort; applies if column names exist)
-    col_cfg = {}
-    percent_like = [c for c in df.columns if c.endswith("%") or "Pct" in c or "Percent" in c]
-    money_like   = [c for c in df.columns if any(k in c for k in ["Price","TP","Risk$","ReqMove$","MaxProfit","Debit"])]
-    int_like     = [c for c in df.columns if any(k in c for k in ["PassCount","Volume","Hist21d_PassCount"])]
+    if compact_cols:
+        present = [c for c in compact_cols if c in df.columns]
+        st.markdown(f"### {title}")
+        st.dataframe(
+            df[present],
+            use_container_width=True,
+            hide_index=True,
+            height=min(520, 80 + 32 * (len(df) + 1)),
+        )
+        pipe_text = build_pipe_text(df[present])
+        st.caption("Copy compact table (pipe-delimited for Google Sheets)")
+        st.code(pipe_text, language="text")
+        st.download_button(
+            "Copy / Download compact .txt",
+            pipe_text.encode("utf-8"),
+            file_name=f"{title.lower().replace(' ','_')}_compact.txt",
+            mime="text/plain",
+            key=f"copy_compact_{key}",
+            use_container_width=True,
+        )
+    else:
+        st.markdown(f"### {title}")
 
-    for c in percent_like:
-        col_cfg[c] = _num(c, fmt="%.2f%%", help_txt="Percent")
+    with st.expander("Show all columns"):
+        # numeric formatting
+        col_cfg = {}
+        percent_like = [c for c in df.columns if c.endswith("%") or "Pct" in c or "Percent" in c]
+        money_like   = [c for c in df.columns if any(k in c for k in ["Price","TP","Risk$","ReqMove$","MaxProfit","Debit"])]
+        int_like     = [c for c in df.columns if any(k in c for k in ["PassCount","Volume","Hist21d_PassCount"])]
 
-    for c in money_like:
-        col_cfg[c] = _num(c, fmt="$%,.2f", help_txt="Dollars")
+        for c in percent_like: col_cfg[c] = _num(c, fmt="%.2f%%")
+        for c in money_like:   col_cfg[c] = _num(c, fmt="$%,.2f")
+        for c in int_like:     col_cfg[c] = _num(c, fmt="%,d", step=1)
+        for c in df.select_dtypes("number").columns:
+            col_cfg.setdefault(c, _num(c, fmt="%,.4f"))
 
-    for c in int_like:
-        col_cfg[c] = _num(c, fmt="%,d", help_txt="Count/Volume", step=1)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=col_cfg,
+            height=min(560, 100 + 32 * (len(df) + 1)),
+        )
 
-    # default numeric formatting for other float cols
-    for c in df.select_dtypes("number").columns:
-        col_cfg.setdefault(c, _num(c, fmt="%,.4f"))
+        pipe_text_full = build_pipe_text(df)
+        st.caption("Copy full table (pipe-delimited for Google Sheets)")
+        st.code(pipe_text_full, language="text")
+        st.download_button(
+            "Copy / Download full .txt",
+            pipe_text_full.encode("utf-8"),
+            file_name=f"{title.lower().replace(' ','_')}.txt",
+            mime="text/plain",
+            key=f"copy_full_{key}",
+            use_container_width=True,
+        )
 
-    st.markdown(f"### {title}")
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=col_cfg,
-        height=min(520, 80 + 32 * (len(df) + 1)),  # responsive height
-    )
-
-    # Copy to clipboard (pipe-delimited for Google Sheets)
-    pipe_text = build_pipe_text(df)
-    st.caption("Copy table (pipe-delimited for Google Sheets)")
-    st.code(pipe_text, language="text")
-    st.download_button(
-        "Copy / Download as .txt",
-        pipe_text.encode("utf-8"),
-        file_name=f"{title.lower().replace(' ','_')}.txt",
-        mime="text/plain",
-        key=f"copy_{key}",
-        use_container_width=True,
-    )
-
-# -------------------- UI layout --------------------
+# -------------------- UI --------------------
 left, right = st.columns([2, 1])
 
 with left:
+    min_up_pct = st.number_input(
+        "Min green % to qualify (applied at UI)",
+        min_value=0.0, max_value=5.0, value=0.0, step=0.1, help="Require at least this % change vs prior close."
+    )
+
     if st.button("Run Screener", use_container_width=True):
         st.info("Running screener… this may take a bit on first run.")
         rc, stdout, stderr = run_subprocess([])
@@ -218,26 +232,44 @@ with left:
                 st.error("stderr:")
                 st.code(stderr, language="bash")
 
-        # Try CSV first, then stdout pipe fallback
+        # pass table (CSV preferred; fallback to stdout)
         df_pass = pd.DataFrame()
         if os.path.exists(CSV_PATH):
             try:
                 df_pass = pd.read_csv(CSV_PATH)
             except Exception as e:
                 st.error(f"Could not read {CSV_NAME}: {e}")
-
         if df_pass.empty:
             df_pass = parse_pipe_stdout_to_df(stdout)
 
-        if df_pass.empty:
-            st.warning("No PASS tickers found (or CSV not produced).")
-        else:
-            show_pretty_table(df_pass, "PASS tickers", "pass")
+        # apply UI-level min-up-pct requirement if column present
+        if "Change%" in df_pass.columns and min_up_pct > 0:
+            try:
+                # Change% may be numeric or string like '0.04%' depending on backend
+                if df_pass["Change%"].dtype == object:
+                    df_pass["_chg_val"] = df_pass["Change%"].astype(str).str.replace("%","", regex=False)
+                    df_pass["_chg_val"] = pd.to_numeric(df_pass["_chg_val"], errors="coerce")
+                    mask = df_pass["_chg_val"] >= float(min_up_pct)
+                else:
+                    mask = df_pass["Change%"] >= float(min_up_pct)
+                df_pass = df_pass[mask].drop(columns=[c for c in ["_chg_val"] if c in df_pass.columns])
+            except Exception:
+                pass
 
-        # Near-miss display
+        if df_pass.empty:
+            st.warning("No PASS tickers found (after UI filter) or CSV not produced.")
+        else:
+            compact_cols = [
+                "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
+                "Resistance","TP","RR_to_Res","RR_to_TP","SupportType"
+            ]
+            show_tables(df_pass, "PASS tickers", "pass", compact_cols=compact_cols)
+
+        # Near-miss
         nm = near_misses(stdout, max_items=3)
         if not nm.empty:
-            show_pretty_table(nm, "🟡 Near-miss (Top 3)", "near_miss")
+            show_tables(nm, "🟡 Near-miss (Top 3)", "near_miss",
+                        compact_cols=["Ticker","Reason","GapToGreen%","Entry","PrevClose","EntryTimeET"])
         else:
             st.caption("No single-reason near-misses detected this run.")
 
@@ -289,8 +321,8 @@ with right:
 
 st.divider()
 st.caption(
-    "Tables: formatted for readability with sticky headers & numeric formatting. "
-    "Use the text block below each table to copy a Google-Sheets-ready pipe table. "
+    "Use the **Min green %** input to require a real up-move (e.g., 0.5% or 1%). "
+    "Compact tables show key columns; open *Show all columns* for the full dataset. "
+    "Copy blocks under each table remain Google-Sheets ready (pipe-delimited). "
     "Prices are ~15-min delayed (Yahoo)."
 )
-
