@@ -259,11 +259,18 @@ with left:
         if df_pass.empty:
             st.warning("No PASS tickers found (after UI filter) or CSV not produced.")
         else:
-            compact_cols = [
-                "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
-                "Resistance","TP","RR_to_Res","RR_to_TP","SupportType"
-            ]
-            show_tables(df_pass, "PASS tickers", "pass", compact_cols=compact_cols)
+# show compact subset for quick view, but keep all columns in the expander
+compact_cols = [
+    "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
+    "Resistance","TP","RR_to_Res","RR_to_TP","SupportType"
+]
+
+# If the options chain fields exist, tack them onto the compact view too:
+for col in df_pass.columns:
+    if col.startswith("OptExpiry") or col.startswith("RR_Spread") or col.startswith("MaxProfit"):
+        compact_cols.append(col)
+
+show_tables(df_pass, "PASS tickers", "pass", compact_cols=compact_cols)
 
         # Near-miss
         nm = near_misses(stdout, max_items=3)
@@ -326,3 +333,4 @@ st.caption(
     "Copy blocks under each table remain Google-Sheets ready (pipe-delimited). "
     "Prices are ~15-min delayed (Yahoo)."
 )
+
