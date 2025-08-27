@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from swing_options_screener import run_scan, explain_ticker, parse_ticker_text
-from sp_universe import get_sp500_tickers
+from sp_universe import get_sp500_tickers, LAST_ERROR
 
 st.set_page_config(page_title="Swing Options Screener", layout="wide")
 
@@ -50,14 +50,7 @@ with st.expander("Explain a ticker (debug)"):
 
 # Run scan
 if run_btn:
-    if uni == "Live S&P 500 (Wikipedia)":
-        tickers = get_sp500_tickers()
-        if not tickers:
-            st.warning("Could not fetch S&P 500 from Wikipedia; falling back to text box (if provided).")
-            tickers = parse_ticker_text(tickers_text)
-    else:
-        tickers = parse_ticker_text(tickers_text)
-
+if uni
     res = run_scan(
         tickers=tickers,
         res_days=res_days,
@@ -92,4 +85,5 @@ if run_btn:
             for i in df.index
         )
         st.code(psv, language="text")
+
 
