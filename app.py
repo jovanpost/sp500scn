@@ -1,169 +1,213 @@
-# app.py — Streamlit UI for swing_options_screener (mobile-friendly, no sidebar)
-import streamlit as st
+# app.py — UI for Swing Options Screener
+# - Mobile-first, no sidebar
+# - One big RUN button
+# - Compact results table (Date/Time/Entry/TP/Options)
+# - Per-row "WHY BUY" narrative
+# - Full table expander (all columns)
+# - Copy-to-Google-Sheets expander (pipe-separated + download)
+
+import os
+import io
 import pandas as pd
+import numpy as np
+import streamlit as st
 
-from swing_options_screener import (
-    run_scan, explain_ticker, parse_ticker_text, DEFAULT_TICKERS
-)
-from sp_universe import get_sp500_tickers, LAST_ERROR
+from swing_options_screener import run_scan  # uses UNADJUSTED logic & options sugg.
 
+# -------------- Page setup
 st.set_page_config(page_title="Swing Options Screener", layout="wide")
 
-st.title("📊 Swing Options Screener (Finviz-style, Unadjusted)")
+TITLE = "Swing Options Screener (Unadjusted) — Live-ish"
+st.markdown(f"### {TITLE}")
 
-# ----------------------------
-# Top: Quick-start controls
-# ----------------------------
-col1, col2 = st.columns([1, 2])
+# -------------- Controls (compact, inline)
+with st.expander("Filters & Settings", expanded=False):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        relvol_min = st.number_input("Min RelVol (time-adjusted 63d)", value=1.10, min_value=0.5, step=0.05)
+        rr_min     = st.number_input("Min R:R to Resistance", value=2.0, min_value=0.5, step=0.25)
+    with c2:
+        res_days   = st.number_input("Resistance lookback (days)", value=21, min_value=10, max_value=252, step=1)
+        opt_days   = st.number_input("Target option DTE (≈ days)", value=30, min_value=7, max_value=90, step=1)
+    with c3:
+        hist_basis = st.selectbox("History 21d basis (for pass examples)", options=["tp", "res"], index=0,
+                                  help="tp = entry→TP (halfway); res = entry→Resistance")
+        stop_mode  = st.selectbox("Stop preference", options=["safest","structure"], index=0,
+                                  help="safest = highest support; structure = pivot > swing > ATR")
 
-with col1:
-    universe = st.radio(
-        "Universe",
-        options=["Live S&P 500 (Wikipedia)", "Custom list"],
-        index=0,
-        help="Live list is scraped and cached for 6h."
+    with st.popover("Advanced toggles"):
+        relvol_median = st.checkbox("Use median (not mean) for RelVol base", value=False)
+        with_options  = st.checkbox("Include options suggestion", value=True)
+
+# -------------- RUN
+run = st.button("▶️ Run scan", use_container_width=True, type="primary")
+
+if run:
+    st.session_state["scan_params"] = dict(
+        res_days=int(res_days),
+        rel_vol_min=float(relvol_min),
+        relvol_median=bool(relvol_median),
+        rr_min=float(rr_min),
+        stop_mode=str(stop_mode),
+        with_options=bool(with_options),
+        opt_days=int(opt_days),
+        history_basis=str(hist_basis),
     )
 
-with col2:
-    if universe == "Custom list":
-        tickers_text = st.text_input(
-            "Tickers (comma/space/newline)",
-            value="WMT INTC MOS",
-            placeholder="e.g., AAPL MSFT NVDA"
-        )
-    else:
-        tickers_text = ""  # ignored
+if "scan_params" in st.session_state:
+    p = st.session_state["scan_params"]
 
-# Big Run button
-run_btn = st.button("▶️ Run Scan", type="primary", use_container_width=True)
-
-# ----------------------------
-# Collapsible: Filters (default collapsed)
-# ----------------------------
-with st.expander("Filters (optional)", expanded=False):
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        res_days = st.number_input(
-            "Resistance lookback (days)", min_value=10, max_value=252, value=21, step=1
-        )
-    with c2:
-        rr_min = st.number_input(
-            "Min RR to Resistance", min_value=1.0, max_value=10.0, value=2.0, step=0.1
-        )
-    with c3:
-        relvol_min = st.number_input(
-            "Min RelVol (time-adjusted 63d)", min_value=0.5, max_value=5.0, value=1.10, step=0.05
-        )
-    with c4:
-        relvol_median = st.checkbox("Use median vol (63d)", value=False,
-                                    help="Median instead of mean for 63-day volume baseline")
-
-    # Optional UI-only price cap (OFF by default)
-    c5, c6 = st.columns(2)
-    with c5:
-        cap_under_100 = st.checkbox("Cap display to Price ≤ $100 (UI only)", value=False)
-    with c6:
-        price_cap_value = st.number_input("Price cap ($)", min_value=1, max_value=5000, value=100, step=1)
-
-# ----------------------------
-# Collapsible: Options settings (default collapsed)
-# ----------------------------
-with st.expander("Options (bull call spread suggestion)", expanded=False):
-    c7, c8 = st.columns(2)
-    with c7:
-        with_options = st.checkbox("Suggest bull call spread near TP", value=True)
-    with c8:
-        opt_days = st.number_input("Target days to expiry", min_value=7, max_value=90, value=30, step=1)
-
-# ----------------------------
-# Collapsible: Explain a ticker (debug)
-# ----------------------------
-with st.expander("Explain a ticker (debug)", expanded=False):
-    ex_ticker = st.text_input("Ticker to explain (e.g., WMT, NOW)", key="explain_tkr")
-    ex_go = st.button("Explain", key="explain_go")
-    if ex_go and ex_ticker.strip():
-        st.code(f"=== DEBUG {ex_ticker.upper()} ===", language="text")
-        # Prints detailed debug to logs; also executes the same checks
-        explain_ticker(
-            ex_ticker.upper(),
-            res_days=locals().get("res_days", 21),
-            rel_vol_min=locals().get("relvol_min", 1.10),
-            relvol_median=locals().get("relvol_median", False),
-            rr_min=locals().get("rr_min", 2.0),
-            stop_mode="safest",
-        )
-        st.info("Explanation printed to app logs (Streamlit Cloud → Logs).")
-
-# ----------------------------
-# RUN
-# ----------------------------
-if run_btn:
-    # Use defaults if user didn't open the expanders
-    res_days = locals().get("res_days", 21)
-    rr_min = locals().get("rr_min", 2.0)
-    relvol_min = locals().get("relvol_min", 1.10)
-    relvol_median = locals().get("relvol_median", False)
-    cap_under_100 = locals().get("cap_under_100", False)
-    price_cap_value = float(locals().get("price_cap_value", 100))
-    with_options = locals().get("with_options", True)
-    opt_days = locals().get("opt_days", 30)
-
-    # Build universe
-    if universe == "Live S&P 500 (Wikipedia)":
-        tickers = get_sp500_tickers()
-        if not tickers:
-            warn = "Could not fetch S&P 500 from Wikipedia; using Custom list if provided, else defaults."
-            if LAST_ERROR:
-                warn += f"\n\nDetails: {LAST_ERROR}"
-            st.warning(warn)
-            tickers = parse_ticker_text(tickers_text) if tickers_text else list(DEFAULT_TICKERS)
-    else:
-        tickers = parse_ticker_text(tickers_text) if tickers_text else list(DEFAULT_TICKERS)
-
-    # Execute scan
     with st.spinner("Scanning…"):
-        res = run_scan(
-            tickers=tickers,
-            res_days=res_days,
-            rel_vol_min=relvol_min,
-            relvol_median=relvol_median,
-            rr_min=rr_min,
-            stop_mode="safest",
-            with_options=with_options,
-            opt_days=opt_days,
+        out = run_scan(
+            tickers=None,  # default universe in the screener
+            res_days=p["res_days"],
+            rel_vol_min=p["rel_vol_min"],
+            relvol_median=p["relvol_median"],
+            rr_min=p["rr_min"],
+            stop_mode=p["stop_mode"],
+            with_options=p["with_options"],
+            opt_days=p["opt_days"],
+            history_basis=p["history_basis"],
         )
-        df = res.get("pass_df", pd.DataFrame())
 
-    # Optional UI-only cap
-    if cap_under_100 and not df.empty and "Price" in df.columns:
-        df = df[df["Price"] <= price_cap_value]
-
-    # Sort by Price ascending
-    if not df.empty and "Price" in df.columns:
-        df = df.sort_values("Price", ascending=True)
-
-    st.subheader(f"Passes ({len(df)})")
+    df = out.get("pass_df", pd.DataFrame())
     if df.empty:
-        st.info("No PASS tickers.")
-    else:
-        # Clean table, scrollable, shows all columns
+        st.info("No PASS tickers right now.")
+        st.stop()
+
+    # Ensure types and missing columns handled
+    def col(df, name, default=""):
+        if name not in df.columns: df[name] = default
+        return df[name]
+
+    # ---------- Compact summary table (per your spec)
+    compact_cols = [
+        "Ticker", "EvalDate", "EntryTimeET", "Price", "TP",
+        "OptExpiry", "BuyK", "SellK"
+    ]
+    for cc in compact_cols:
+        col(df, cc)
+
+    compact = df[compact_cols].copy()
+    # Format numeric columns
+    for nc in ["Price","TP","BuyK","SellK"]:
+        compact[nc] = pd.to_numeric(compact[nc], errors="coerce").round(2)
+
+    st.markdown("#### Passed — Summary")
+    st.dataframe(compact.sort_values(["Price","Ticker"]), use_container_width=True, hide_index=True)
+
+    # ---------- WHY BUY narratives
+    st.markdown("#### Why Buy (per pass)")
+    def fmt_pct(x):
+        try:
+            return f"{float(x):.2f}%"
+        except Exception:
+            return ""
+
+    def _safe(v, nd=2):
+        try:
+            f = float(v)
+            return round(f, nd)
+        except Exception:
+            return v
+
+    def build_why_buy(row: pd.Series) -> str:
+        # Core fields
+        tkr   = row.get("Ticker","")
+        price = _safe(row.get("Price",""))
+        tp    = _safe(row.get("TP",""))
+        res   = _safe(row.get("Resistance",""))
+        rr_r  = _safe(row.get("RR_to_Res",""))
+        rr_t  = _safe(row.get("RR_to_TP",""))
+        sup_t = row.get("SupportType","")
+        sup_p = _safe(row.get("SupportPrice",""))
+
+        # Distances
+        tp_reward$ = _safe(row.get("TPReward$",""))
+        tp_reward% = fmt_pct(row.get("TPReward%",""))
+        res_reward$ = _safe(row.get("ResReward$",""))
+        res_reward% = fmt_pct(row.get("ResReward%",""))
+
+        # ATR capacities
+        d_atr = _safe(row.get("DailyATR",""), 4)
+        d_cap = _safe(row.get("DailyCap",""), 2)
+
+        # History
+        h_basis = row.get("Hist21d_CheckBasis","TP")
+        h_req   = fmt_pct(row.get("Hist21d_Req%",""))
+        h_cnt   = int(row.get("Hist21d_PassCount", 0) or 0)
+        h_max   = fmt_pct(row.get("Hist21d_Max%",""))
+        h_ex    = row.get("Hist21d_Examples","")
+
+        # Options
+        oxp = row.get("OptExpiry","")
+        bk  = row.get("BuyK","")
+        sk  = row.get("SellK","")
+        deb_mid = row.get("DebitMid","")
+        rr_sp_mid = row.get("RR_Spread_Mid","")
+
+        # Session/debug
+        sess = row.get("Session","")
+        esrc = row.get("EntrySrc","")
+        vsrc = row.get("VolSrc","")
+
+        # Narrative
+        txt = []
+        txt.append(f"**{tkr}** — entry ~ **{price}**, TP **{tp}**, resistance **{res}**.")
+        if oxp and pd.notna(bk) and pd.notna(sk):
+            txt.append(f"Suggested **bull call** ≈{oxp}: **{bk}/{sk}** (debit≈{deb_mid}, spread RR≈{rr_sp_mid}).")
+
+        txt.append(
+            f"Rationale: price sits above support (**{sup_t} @ {sup_p}**) with **R:R to resistance ≈ {rr_r}:1** "
+            f"(to TP ≈ {rr_t}:1). Upside to TP is **${tp_reward$} ({tp_reward%})**; "
+            f"to resistance **${res_reward$} ({res_reward%})**."
+        )
+
+        if d_atr and d_cap:
+            txt.append(
+                f"Volatility capacity: Daily ATR ≈ **{d_atr}**, implying ≈ **{d_cap}** possible over ~21 trading days."
+            )
+
+        txt.append(
+            f"History check (21d, basis **{h_basis.upper()}**, needs ≥ {h_req}): "
+            f"**{h_cnt}** instances passed; best ≈ **{h_max}**."
+        )
+        if h_ex:
+            txt.append(f"Examples: {h_ex}")
+
+        txt.append(f"_Session:_ **{sess}** · _EntrySrc:_ **{esrc}** · _VolSrc:_ **{vsrc}**")
+        return "\n\n".join(txt)
+
+    for _, r in df.sort_values(["Price","Ticker"]).iterrows():
+        with st.expander(f"WHY BUY — {r.get('Ticker','')}  @ {r.get('Price','')}  (TP {r.get('TP','')})", expanded=False):
+            st.markdown(build_why_buy(r))
+
+    # ---------- Full table (all columns)
+    with st.expander("Show complete table (all columns)", expanded=False):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Copy/paste (Google Sheets) – pipe-delimited
-        st.markdown("**Copy for Google Sheets (pipe-delimited)**")
+    # ---------- Copy to Google Sheets (pipe-separated) + download
+    with st.expander("Copy for Google Sheets", expanded=False):
+        # Build PSV with every column currently in df
         cols = list(df.columns)
-        psv = "|".join(cols) + "\n" + "\n".join(
-            "|".join("" if pd.isna(v) else str(v).replace("|","/") for v in df.loc[i, cols].values)
-            for i in df.index
-        )
-        st.code(psv, language="text")
+        header = "|".join(cols)
+        lines = [header]
+        for _, row in df.iterrows():
+            vals = []
+            for c in cols:
+                v = row.get(c, "")
+                if pd.isna(v): v = ""
+                s = str(v)
+                # Replace pipe in data to avoid breaking the delimiter
+                s = s.replace("|", "/")
+                vals.append(s)
+            lines.append("|".join(vals))
+        psv = "\n".join(lines)
 
-        # Optional: raw CSV download
-        st.download_button(
-            label="Download CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="pass_tickers.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+        st.caption("Select-all and copy. This format pastes cleanly into Google Sheets (use 'Split text to columns' with '|' if needed).")
+        st.text_area("Pipe-separated output", value=psv, height=200)
+        st.download_button("Download .psv", data=psv.encode("utf-8"), file_name="pass_tickers.psv", mime="text/plain")
+
+else:
+    st.info("Set filters (optional) and click **Run scan**.")
 
