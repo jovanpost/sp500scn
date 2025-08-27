@@ -1,24 +1,30 @@
 # swing_options_screener.py
+# Finviz-like (UNADJUSTED) swing scanner + optional options block
+# Robust live handling + precise timestamps:
+# - OPEN: entry from 1m bar (<=5m old) else fast_info; today vol from 1m SUM or daily partial
+# - CLOSED: entry = official daily close; prev_close = prior close
+# - Adds EntryTimeET in the table; --explain prints DataAgeMin
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 import argparse
 from datetime import datetime, timedelta, time
-from sp_universe import get_sp500_tickers
 import numpy as np
 import pandas as pd
 import yfinance as yf
-
 
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
 except Exception:
     from backports.zoneinfo import ZoneInfo
 
-# ------------------------- #
+from sp_universe import get_sp500_tickers
+
+# -------------------------
 # Config / Defaults
-# ------------------------- #
-DELIM = "|"
+# -------------------------
+DELIM = "|"  # <— DO NOT COMMENT THIS OUT
 SUPPORT_LOOKBACK_DAYS = 21
 PIVOT_K = 2
 PIVOT_LOOKBACK_DAYS = 40
@@ -30,13 +36,15 @@ TARGET_OPT_DAYS_DEFAULT = 30
 OPT_WIDTH_PREFERENCE = [5.0, 2.5, 1.0, 10.0]
 
 DEFAULT_TICKERS = [
-       'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
+    'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
     'HST','HAL','SW','KEY','USB','FITB','HPQ','IVZ','HBAN','TFC',
     'WY','LKQ','WBD','AES','RF','DVN','FCX','SMCI','F','BEN',
     'PCG','MRNA','FTV','KIM','BKR','BAX','HPE','OXY','IPG','DOC',
     'CPRT','BF-B','NWSA','BAC','INVH','CNC','KHC','NWS','CAG','IP',
     'CPB','CMG','UDR','CMCSA','CTRA','NI','MTCH','VICI','GEN','HRL',
-    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY', 'VTRS','KMI','WBA','BMY','VZ','T','CSX',"XYZ","DAL","ON","SWK","LYB","TECH","APTV","EMN","GPN","RVTY","CFG","MCHP","ARE","MAS","BG","BXP","LW","CARR","BBY","IR",
+    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY',
+    'VTRS','KMI','WBA','BMY','VZ','T','CSX',"XYZ","DAL","ON","SWK","LYB","TECH","APTV",
+    "EMN","GPN","RVTY","CFG","MCHP","ARE","MAS","BG","BXP","LW","CARR","BBY","IR",
     "EL","KMX","SWKS","DD","IRM","PYPL","EIX","GM","FRT","CSGP",
     "FIS","UPS","WDC","HAS","ALB","COO","ADM","FTNT","NKE","C",
     "LVS","TRMB","MET","OMC","GEHC","IFF","SYF","UBER","PFG","AOS",
@@ -50,32 +58,38 @@ DEFAULT_TICKERS = [
     "VTR","MNST","KR"
 ]
 
-# ------------------------- #
+# -------------------------
 # Helpers
-# ------------------------- #
+# -------------------------
 def _to_float(x):
     if isinstance(x, pd.Series):
         x = x.iloc[0] if not x.empty else np.nan
     elif isinstance(x, (np.ndarray, list, tuple)):
         x = x[0] if len(x) else np.nan
-    if pd.isna(x): return np.nan
-    try: return float(x)
-    except Exception: return np.nan
+    if pd.isna(x):
+        return np.nan
+    try:
+        return float(x)
+    except Exception:
+        return np.nan
 
-def _sanitize(val: str) -> str:
-    if val is None: return ""
+def _sanitize(val):
+    if val is None:
+        return ""
     s = str(val)
     return s.replace(DELIM, "/") if DELIM in s else s
 
 def _fmt_ts(ts):
-    if not isinstance(ts, datetime): return ""
+    if not isinstance(ts, datetime):
+        return ""
     return ts.strftime("%Y-%m-%d %H:%M:%S ET")
 
 def _get_history(ticker):
     # UNADJUSTED daily to match Finviz
     try:
         df = yf.Ticker(ticker).history(period="16mo", auto_adjust=False, actions=False)
-        if df is None or df.empty: return None
+        if df is None or df.empty:
+            return None
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         if df.index.tz is not None:
@@ -93,11 +107,13 @@ def _atr_from_ohlc(df, win):
     hpc = (df['High'] - df['Close'].shift(1)).abs()
     lpc = (df['Low']  - df['Close'].shift(1)).abs()
     tr = pd.concat([hl, hpc, lpc], axis=1).max(axis=1).dropna()
-    if len(tr) < win: return np.nan
+    if len(tr) < win:
+        return np.nan
     return _to_float(tr.rolling(window=win, min_periods=win).mean().iloc[-1])
 
 def _recent_pivot_low(df, k=2, lookback_days=40):
-    if len(df) < 2*k + 1: return np.nan
+    if len(df) < 2*k + 1:
+        return np.nan
     need = lookback_days + 2*k + 1
     sub = df.iloc[-need:] if len(df) >= need else df.copy()
     lows = sub['Low'].values
@@ -109,9 +125,9 @@ def _recent_pivot_low(df, k=2, lookback_days=40):
             return _to_float(lows[idx])
     return np.nan
 
-# ------------------------- #
+# -------------------------
 # Market session utils
-# ------------------------- #
+# -------------------------
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
 
@@ -124,7 +140,8 @@ def _market_session_state():
 def _get_1m_data(ticker):
     try:
         df = yf.download(ticker, period="1d", interval="1m", auto_adjust=False, progress=False, prepost=False)
-        if df is None or df.empty: return None
+        if df is None or df.empty:
+            return None
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         try:
@@ -169,12 +186,14 @@ def _previous_close_robust(df_daily, ticker):
     try:
         fi = yf.Ticker(ticker).fast_info
         pc = _to_float(fi.get('previous_close', np.nan)) if isinstance(fi, dict) else np.nan
-        if np.isfinite(pc): return pc
+        if np.isfinite(pc):
+            return pc
     except Exception:
         pass
     et_today = _now_et().date()
     idx_dates = df_daily.index.date
-    if len(df_daily) == 0: return np.nan
+    if len(df_daily) == 0:
+        return np.nan
     if idx_dates[-1] == et_today and len(df_daily) >= 2:
         return _to_float(df_daily['Close'].iloc[-2])
     return _to_float(df_daily['Close'].iloc[-1])
@@ -253,9 +272,9 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
     source['vol_src']   = 'daily_last'
     return entry, prev_close, today_vol, source, entry_ts
 
-# ------------------------- #
+# -------------------------
 # RelVol (Finviz-style)
-# ------------------------- #
+# -------------------------
 def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
     """
     RelVol = today_vol / (avg_63 * session_progress)
@@ -264,16 +283,20 @@ def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
         return np.nan
 
     base_series = df_daily['Volume'].iloc[-64:-1]  # last 63 completed sessions
-    if base_series.empty: return np.nan
+    if base_series.empty:
+        return np.nan
     avg_63 = _to_float(base_series.median() if use_median else base_series.mean())
-    if not np.isfinite(avg_63) or avg_63 <= 0: return np.nan
+    if not np.isfinite(avg_63) or avg_63 <= 0:
+        return np.nan
 
     now = _now_et()
     open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
     close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
 
-    if now <= open_t: progress = 0.0
-    elif now >= close_t: progress = 1.0
+    if now <= open_t:
+        progress = 0.0
+    elif now >= close_t:
+        progress = 1.0
     else:
         progress = (now - open_t).total_seconds() / (close_t - open_t).total_seconds()
         progress = max(progress, 1/390)
@@ -281,9 +304,9 @@ def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
     expected_by_now = avg_63 * progress
     return today_vol / expected_by_now if expected_by_now > 0 else np.nan
 
-# ------------------------- #
+# -------------------------
 # Options helpers
-# ------------------------- #
+# -------------------------
 def _parse_expirations(t: yf.Ticker):
     exps = getattr(t, "options", [])
     out = []
@@ -313,8 +336,10 @@ def _mid_or_last(row):
         return 0.5*(bid+ask)
     if np.isfinite(last):
         return last
-    if np.isfinite(bid): return bid
-    if np.isfinite(ask): return ask
+    if np.isfinite(bid):
+        return bid
+    if np.isfinite(ask):
+        return ask
     return np.nan
 
 def _conservative_price(long_row, short_row):
@@ -390,9 +415,9 @@ def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAU
     except Exception as e:
         return None, f"opt_error:{e}"
 
-# ------------------------- #
+# -------------------------
 # Core evaluation
-# ------------------------- #
+# -------------------------
 def evaluate_ticker(
     ticker,
     res_days=RES_LOOKBACK_DEFAULT,
@@ -514,7 +539,7 @@ def evaluate_ticker(
         'DailyATR': round(daily_atr, 4) if np.isfinite(daily_atr) else "",
         'DailyCap': round(daily_cap, 4),
 
-        # New: history diagnostics
+        # History diagnostics
         'Hist21d_PassCount': pass_count,
         'Hist21d_Max%': hist_max_pct,
         'Hist21d_Examples': examples_str,
@@ -527,9 +552,9 @@ def evaluate_ticker(
     }
     return row, None
 
-# ------------------------- #
+# -------------------------
 # Debug & CLI hooks
-# ------------------------- #
+# -------------------------
 def check_ticker(ticker, **kwargs):
     df = _get_history(ticker)
     entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker) if df is not None else (np.nan, np.nan, np.nan, {}, None)
@@ -546,17 +571,18 @@ def check_ticker(ticker, **kwargs):
         print("FAIL ❌", reason)
 
 def parse_ticker_text(text: str):
-    if not text: return []
-    raw = [t.strip().upper() for chunk in text.replace("\n", ",").replace(" ", ",").split(",") if t.strip()]
+    if not text:
+        return []
+    tokens = [tok.strip().upper() for tok in text.replace("\n", ",").replace(" ", ",").split(",") if tok.strip()]
     out, seen = [], set()
-    for t in raw:
+    for t in tokens:
         if t not in seen:
             seen.add(t); out.append(t)
     return out
 
-# ------------------------- #
+# -------------------------
 # Library API for Streamlit
-# ------------------------- #
+# -------------------------
 def run_scan(
     tickers=None,
     res_days=RES_LOOKBACK_DEFAULT,
@@ -564,7 +590,7 @@ def run_scan(
     relvol_median=False,
     rr_min=RR_MIN_DEFAULT,
     stop_mode="safest",
-    with_options=True,              # <- default ON so UI shows the options columns
+    with_options=True,              # default ON so UI shows the options columns
     opt_days=TARGET_OPT_DAYS_DEFAULT,
 ):
     """
@@ -614,6 +640,7 @@ def run_scan(
         df = pd.DataFrame(results).sort_values(['Price','Ticker'])
         df.to_csv('pass_tickers.csv', index=False)                    # standard CSV
         df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)  # pipe
+
         # Also print a pipe table to stdout (fallback for UI parser)
         print(DELIM.join(cols))
         for _, r in df[cols].iterrows():
@@ -641,13 +668,13 @@ def explain_ticker(ticker,
     )
     check_ticker(ticker, **kwargs)
 
-# ------------------------- #
+# -------------------------
 # CLI
-# ------------------------- #
+# -------------------------
 def main():
     p = argparse.ArgumentParser(description="Finviz-like Swing Screener (UNADJUSTED) — robust intraday")
     p.add_argument("--universe", choices=["custom", "sp500"], default="custom",
-               help="Ticker universe: 'sp500' pulls the live list from Wikipedia; 'custom' uses --tickers or defaults")
+                   help="Ticker universe: 'sp500' pulls the live list from Wikipedia; 'custom' uses --tickers or defaults")
     p.add_argument("--tickers", type=str, default="", help="Comma/space/newline-separated list")
     p.add_argument("--explain", type=str, default="", help="Explain a single ticker (prints diagnostics)")
     p.add_argument("--res-days", type=int, default=RES_LOOKBACK_DEFAULT)
@@ -659,16 +686,16 @@ def main():
     p.add_argument("--opt-days", type=int, default=TARGET_OPT_DAYS_DEFAULT)
     args = p.parse_args()
 
-if args.universe == "sp500":
-    live = get_sp500_tickers()
-    if not live:
-        print("WARN: could not fetch S&P 500 list from Wikipedia; falling back to defaults.")
-        tickers = list(DEFAULT_TICKERS)
+    # Build universe
+    if args.universe == "sp500":
+        live = get_sp500_tickers()
+        if not live:
+            print("WARN: could not fetch S&P 500 list from Wikipedia; falling back to defaults.")
+            tickers = list(DEFAULT_TICKERS)
+        else:
+            tickers = live
     else:
-        # Optional: drop any tickers that are known to fail with Yahoo (rare)
-        tickers = live
-else:
-    tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
+        tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
 
     if args.explain:
         explain_ticker(args.explain.upper(),
@@ -687,12 +714,10 @@ else:
         relvol_median=args.relvol_median,
         rr_min=args.rr_min,
         stop_mode=args.stop_mode,
-        with_options=args.with_options or True,  # ensure options included even without flag
+        with_options=(args.with_options or True),  # keep options columns visible by default
         opt_days=args.opt_days,
     )
 
 if __name__ == "__main__":
     main()
-
-
 
