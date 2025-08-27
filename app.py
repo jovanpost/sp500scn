@@ -160,7 +160,7 @@ def why_buy_card(row: dict) -> str:
     # Headline
     if opt_exp and buy_k and sell_k:
         headline = (
-            f"<div class='wb-headline'><b>{tkr}</b> via vertical call spread "
+            f"<div class='wb-headline'><b>{tkr}</b> buy this vertical call spread "
             f"<b>{_dollar(buy_k)}</b> / <b>{_dollar(sell_k)}</b> expiring <b>{opt_exp}</b></div>"
         )
     else:
@@ -320,4 +320,5 @@ if run_clicked:
             for _, row in df.iterrows():
                 card_html = why_buy_card(row.to_dict())
                 st.markdown(card_html, unsafe_allow_html=True)
+
 
