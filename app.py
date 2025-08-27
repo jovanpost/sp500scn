@@ -1,4 +1,4 @@
-# app.py — Streamlit UI for the swing/options screener
+# app.py — Streamlit UI for the swing/options screener (polished WHY BUY cards)
 
 import io
 import textwrap
@@ -6,13 +6,13 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import yfinance as yf
-
 from datetime import datetime
-from swing_options_screener import run_scan   # library API you already have
+
+from swing_options_screener import run_scan  # your library API
 
 
 # -----------------------
-# Small formatting helpers
+# Formatting helpers
 # -----------------------
 def _safe(x, nd=2):
     if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
@@ -34,6 +34,12 @@ def _dollar(x, nd=2):
     except Exception:
         return ""
 
+def _int0(x):
+    try:
+        return int(float(x))
+    except Exception:
+        return 0
+
 def _history_examples_list(row: dict, max_items: int = 3):
     raw = (row or {}).get("Hist21d_Examples", "")
     if not raw:
@@ -47,35 +53,28 @@ def _history_examples_list(row: dict, max_items: int = 3):
 # -----------------------
 def _get_intraday_volume_stats(ticker: str):
     """
-    Returns a dict with today_vol, avg_63, expected_by_now, relvol_now.
-    Handles both market-open and closed sessions.
+    Returns dict: today_vol, avg_63, expected_by_now, relvol_now.
+    Uses 1m data if available (market open), otherwise today's daily bar.
     """
     try:
         t = yf.Ticker(ticker)
-        # Daily (unadjusted) last ~16mo for avg calculation:
         df = t.history(period="16mo", auto_adjust=False, actions=False)
         if df is None or df.empty or "Volume" not in df.columns:
             return None
 
-        # Last 63 completed days (exclude today if present)
         vol_hist = df["Volume"].iloc[-64:-1]
         if vol_hist.empty:
             return None
         avg_63 = float(np.nanmean(vol_hist.values))
 
-        # Try to get today’s intraday cumulative volume
         m1 = yf.download(
             ticker, period="1d", interval="1m",
             auto_adjust=False, progress=False, prepost=False
         )
         today_vol = None
         if m1 is not None and not m1.empty and "Volume" in m1.columns:
-            try:
-                today_vol = float(np.nansum(m1["Volume"].values))
-            except Exception:
-                today_vol = None
+            today_vol = float(np.nansum(m1["Volume"].values))
 
-        # Progress in session (9:30→16:00 ET ≈ 390 minutes)
         now = pd.Timestamp.now(tz="America/New_York")
         open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
         close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
@@ -86,24 +85,17 @@ def _get_intraday_volume_stats(ticker: str):
             progress = 1.0
         else:
             progress = (now - open_t) / (close_t - open_t)
+            # never 0% (avoids div-by-zero early)
             progress = max(progress, pd.Timedelta(minutes=1) / (close_t - open_t))
 
         expected_by_now = avg_63 * float(progress)
 
-        # If market closed (or 1m unavailable), fall back to today's daily volume
         if today_vol is None:
-            try:
-                today_vol = float(df["Volume"].iloc[-1])
-                # If that bar is actually "yesterday" (pre-open), progress=1
-                if progress == 0.0:
-                    expected_by_now = avg_63 * 1.0
-            except Exception:
-                return None
+            today_vol = float(df["Volume"].iloc[-1])
+            if progress == 0.0:
+                expected_by_now = avg_63 * 1.0
 
-        if expected_by_now <= 0:
-            relvol_now = np.nan
-        else:
-            relvol_now = float(today_vol / expected_by_now)
+        relvol_now = float(today_vol / expected_by_now) if expected_by_now > 0 else np.nan
 
         return {
             "today_vol": today_vol,
@@ -116,15 +108,11 @@ def _get_intraday_volume_stats(ticker: str):
 
 
 # -----------------------
-# Narrative “WHY BUY”
+# WHY BUY (HTML card)
 # -----------------------
-def why_buy_paragraph(row: dict) -> str:
+def why_buy_card(row: dict) -> str:
     """
-    Narrative explainer in your style:
-    - bold all numbers
-    - always show $ and %
-    - include today's change and volume vs expected
-    - include ATR capacity and history examples
+    Produces a styled HTML card with clear bullets and bolded numbers.
     """
     tkr = row.get("Ticker", "")
     price = row.get("Price")
@@ -142,91 +130,108 @@ def why_buy_paragraph(row: dict) -> str:
     hist_count = row.get("Hist21d_PassCount", "")
     hist_best = row.get("Hist21d_Max%", "")
 
-    # TP move ($ and %)
-    tp_move_d = (tp - price) if (tp is not None and price is not None) else None
-    tp_move_p = (tp_move_d / price * 100.0) if (tp_move_d not in (None, 0) and price) else None
-
-    # Options chain (if present)
     opt_exp = row.get("OptExpiry", "")
     buy_k = row.get("BuyK", "")
     sell_k = row.get("SellK", "")
 
-    # Volume snapshot
+    # TP move ($ and %)
+    tp_move_d = (tp - price) if (tp is not None and price is not None) else None
+    tp_move_p = (tp_move_d / price * 100.0) if (tp_move_d not in (None, 0) and price) else None
+
+    # Volume snapshot (live)
     vol_stats = _get_intraday_volume_stats(tkr)
-    vol_txt = ""
-    if vol_stats:
-        today_vol = vol_stats.get("today_vol")
-        expected_by_now = vol_stats.get("expected_by_now")
-        r_now = vol_stats.get("relvol_now")
-        if r_now and np.isfinite(r_now):
-            bump = (r_now - 1.0) * 100.0
-            vol_txt = (f" and volume is **{_pct(bump)}** vs its typical pace "
-                       f"(**{int(today_vol):,}** vs **{int(expected_by_now):,}** expected by now)")
-    elif relvol_timeadj:
-        bump = (relvol_timeadj - 1.0) * 100.0
-        vol_txt = f" and time-adjusted volume is **{_pct(bump)}** vs usual"
+    vol_line = ""
+    if vol_stats and np.isfinite(vol_stats.get("relvol_now", np.nan)):
+        bump = (vol_stats["relvol_now"] - 1.0) * 100.0
+        vol_line = (
+            f"Up **{_pct(change_pct)}** today, and **volume** is **{_pct(bump)}** vs its usual pace "
+            f"(**{int(vol_stats['today_vol']):,}** vs **{int(vol_stats['expected_by_now']):,}** expected by now)."
+        )
+    else:
+        # fallback to time-adjusted relvol from the screener
+        if relvol_timeadj not in (None, ""):
+            bump = (relvol_timeadj - 1.0) * 100.0
+            vol_line = f"Up **{_pct(change_pct)}** today, and **volume** is **{_pct(bump)}** vs usual."
 
     # History examples
     examples = _history_examples_list(row)
-    examples_md = ""
-    if examples:
-        bullets = "\n".join([f"- {e}" for e in examples])
-        examples_md = f"\n\n**Some recent 21-day examples:**\n{bullets}"
+    examples_items = "".join([f"<li>{e}</li>" for e in examples])
 
-    # Headline sentence
+    # Headline
     if opt_exp and buy_k and sell_k:
         headline = (
-            f"**{tkr}** is a buy via the vertical call spread "
-            f"**{_dollar(buy_k)} / {_dollar(sell_k)}** expiring **{opt_exp}**."
+            f"<div class='wb-headline'><b>{tkr}</b> via vertical call spread "
+            f"<b>{_dollar(buy_k)}</b> / <b>{_dollar(sell_k)}</b> expiring <b>{opt_exp}</b></div>"
         )
     else:
-        headline = f"**{tkr}** looks like a buy setup."
+        headline = f"<div class='wb-headline'><b>{tkr}</b> setup</div>"
 
-    # “Why TP is reachable”
-    why_tp = (
-        f" It recently topped around **{_dollar(res)}** and now trades near **{_dollar(price)}**. "
-        f"Target price is **{_dollar(tp)}** — a level that looks reasonable given the setup."
-    )
+    # Content bullets
+    bullets = f"""
+    <ul class='wb-list'>
+      <li><b>Price</b> now <b>{_dollar(price)}</b>, <b>TP</b> <b>{_dollar(tp)}</b>, <b>Resistance</b> <b>{_dollar(res)}</b>.</li>
+      <li><b>R:R</b> ≈ <b>{_safe(rr_res,2)}:1</b> to resistance (≈ <b>{_safe(rr_tp,2)}:1</b> to TP) with stop at
+          <b>{support_type}</b> <b>{_dollar(support_price)}</b>.</li>
+      <li><b>TP distance</b>: <b>{_dollar(tp_move_d)}</b> (≈ <b>{_pct(tp_move_p)}</b>).</li>
+      <li><b>Volatility (ATR)</b>: Daily ATR ≈ <b>{_dollar(daily_atr)}</b>, implying ≈ <b>{_dollar(daily_cap)}</b>
+          of potential movement over ~21 trading days.</li>
+      <li>{vol_line}</li>
+      <li><b>History</b>: {_int0(hist_count)} prior 21-day windows met/exceeded the required move; best was about <b>{_pct(hist_best)}</b>.
+        {"<ul>"+examples_items+"</ul>" if examples_items else ""}
+      </li>
+    </ul>
+    """
 
-    # Reward vs risk
-    rr_txt = (
-        f" The reward-to-risk is about **{_safe(rr_res,2)}:1** to resistance "
-        f"(~**{_safe(rr_tp,2)}:1** to TP) using {support_type} at **{_dollar(support_price)}** as the stop."
-    )
+    footer = f"<div class='wb-footer'>Data as of <b>{entry_ts}</b>.</div>" if entry_ts else ""
 
-    # TP distance
-    tp_txt = ""
-    if tp_move_d is not None and tp_move_p is not None:
-        tp_txt = f" The move to TP is **{_dollar(tp_move_d)}** (**{_pct(tp_move_p)}**)."
-
-    # Today’s change & volume
-    day_kicker = f" It’s up **{_pct(change_pct)}** today{vol_txt}." if change_pct not in (None, "") else ""
-
-    # ATR capacity
-    atr_txt = (
-        f" Daily ATR is **{_dollar(daily_atr)}**, which implies roughly **{_dollar(daily_cap)}** "
-        f"of potential movement over ~21 trading days."
-    )
-
-    # History validation
-    hist_txt = ""
-    if hist_count not in (None, "") or hist_best not in (None, ""):
-        hist_txt = (
-            f" Over the past year, **{int(hist_count) if hist_count not in ('', None) else 0}** 21-day windows "
-            f"met or exceeded that required move; the best window was about **{_pct(hist_best)}**."
-        )
-
-    stamped = f"\n\n*Data as of **{entry_ts}**.*" if entry_ts else ""
-
-    md = f"{headline}{why_tp}{rr_txt}{tp_txt}{day_kicker}{atr_txt}{hist_txt}{examples_md}{stamped}"
-    # Clean tiny double spaces that may creep in
-    return " ".join(md.split())
+    html = f"""
+    <div class='wb-card'>
+      {headline}
+      {bullets}
+      {footer}
+    </div>
+    """
+    return html
 
 
 # -----------------------
-# UI
+# Page
 # -----------------------
 st.set_page_config(page_title="S&P 500 Options Screener", layout="wide")
+
+# Inject lightweight CSS once
+if "wb_css" not in st.session_state:
+    st.markdown(
+        """
+        <style>
+        .wb-card{
+          border:1px solid rgba(0,0,0,.08);
+          border-radius:12px;
+          padding:16px 18px;
+          background:#fff;
+          box-shadow:0 1px 2px rgba(0,0,0,.05);
+          margin-bottom: 10px;
+        }
+        .wb-headline{
+          font-size:1.05rem;
+          margin-bottom:6px;
+        }
+        .wb-list{
+          margin: 0.25rem 0 0.25rem 1.1rem;
+          line-height:1.6;
+          font-size:0.98rem;
+        }
+        .wb-list li{ margin-bottom:2px; }
+        .wb-footer{
+          font-size:.85rem;
+          color:#666;
+          margin-top:6px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.session_state["wb_css"] = True
 
 st.title("📈 S&P 500 Options Screener")
 st.caption(f"UI started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
@@ -255,7 +260,6 @@ pass_area = st.container()
 
 if run_clicked:
     with st.status("Running screener… this may take a bit on first run.", expanded=True) as s:
-        # Call the screener library
         out = run_scan(
             tickers=None,
             res_days=int(res_days),
@@ -270,7 +274,7 @@ if run_clicked:
 
     df = out.get("pass_df", pd.DataFrame())
 
-    # Always sort by current Price, ascending (lowest → highest)
+    # Sort by Price ascending (lowest -> highest)
     if not df.empty and "Price" in df.columns:
         df = df.sort_values(["Price", "Ticker"], ascending=[True, True]).reset_index(drop=True)
 
@@ -278,9 +282,7 @@ if run_clicked:
         if df.empty:
             st.write("No PASS tickers found (or CSV not produced).")
         else:
-            # Show a one-line preview header so you can see the actual columns
             st.code("|".join(df.columns), language="text")
-            # And a couple sample lines
             sample = io.StringIO()
             df.to_csv(sample, sep="|", index=False)
             st.code(sample.getvalue().splitlines()[0: min(6, len(df)+1)], language="text")
@@ -291,33 +293,31 @@ if run_clicked:
         else:
             st.subheader("PASS tickers")
 
-            # Nice data table for the web (hide raw options columns at first if there are many)
+            # Web-friendly table
             show_cols = [
-                "Ticker", "EvalDate", "Price", "EntryTimeET",
-                "Change%", "RelVol(TimeAdj63d)",
-                "Resistance", "TP",
-                "RR_to_Res", "RR_to_TP",
-                "SupportType", "SupportPrice", "Risk$",
-                "TPReward$", "TPReward%", "ResReward$", "ResReward%",
-                "DailyATR", "DailyCap",
+                "Ticker","EvalDate","Price","EntryTimeET",
+                "Change%","RelVol(TimeAdj63d)",
+                "Resistance","TP",
+                "RR_to_Res","RR_to_TP",
+                "SupportType","SupportPrice","Risk$",
+                "TPReward$","TPReward%","ResReward$","ResReward%",
+                "DailyATR","DailyCap",
+                "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
+                "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons","BreakevenMid",
             ]
             show_cols = [c for c in show_cols if c in df.columns]
             st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
 
-            # Copy-to-Sheets block (pipe-delimited, includes ALL columns)
+            # Copy-to-Sheets (ALL columns)
             st.caption("Copy table (pipe-delimited for Google Sheets)")
             buf = io.StringIO()
             df.to_csv(buf, index=False, sep="|")
             st.code(buf.getvalue(), language="text")
 
-            # WHY BUY expanders per ticker
+            # WHY BUY section as styled cards
             st.markdown("---")
             st.subheader("Explain each PASS (WHY BUY)")
             for _, row in df.iterrows():
-                tkr = row["Ticker"]
-                with st.expander(f"WHY BUY — {tkr}", expanded=False):
-                    md = why_buy_paragraph(row.to_dict())
-                    # Use simple markdown; Streamlit will bold **numbers** and keep the prose
-                    st.markdown(md)
-
+                card_html = why_buy_card(row.to_dict())
+                st.markdown(card_html, unsafe_allow_html=True)
 
