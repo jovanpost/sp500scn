@@ -1,324 +1,231 @@
-# app.py — Streamlit UI for the swing/options screener (polished WHY BUY cards)
+# app.py — Streamlit UI for the swing/options screener
 
-import io
-import textwrap
+import os
+from datetime import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
-import yfinance as yf
-from datetime import datetime
 
-from swing_options_screener import run_scan  # your library API
+# Your core scanner (already in the repo)
+from swing_options_screener import run_scan
 
-
-# -----------------------
-# Formatting helpers
-# -----------------------
-def _safe(x, nd=2):
+# ---------- Small helpers ----------
+def _fmt_usd(x, nd=2):
     if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
-        return ""
-    try:
-        return round(float(x), nd)
-    except Exception:
-        return x
+        return "—"
+    return f"${x:,.{nd}f}"
 
-def _pct(x, nd=2):
-    try:
-        return f"{round(float(x), nd)}%"
-    except Exception:
-        return ""
+def _fmt_pct(x, nd=2, signed=False):
+    if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+        return "—"
+    sign = "+" if (signed and x >= 0) else ""
+    return f"{sign}{x:.{nd}f}%"
 
-def _dollar(x, nd=2):
-    try:
-        return f"${round(float(x), nd)}"
-    except Exception:
-        return ""
+def _safe(v, nd=None):
+    if v is None:
+        return "—"
+    if isinstance(v, (float, np.floating)):
+        if np.isnan(v) or np.isinf(v):
+            return "—"
+        return f"{v:.{nd}f}" if nd is not None else f"{v}"
+    return str(v)
 
-def _int0(x):
-    try:
-        return int(float(x))
-    except Exception:
-        return 0
+def _mk_copy_psv(df: pd.DataFrame) -> str:
+    # Build pipe-delimited table with all known columns in order if present
+    cols = [
+        "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
+        "Resistance","TP","RR_to_Res","RR_to_TP","SupportType","SupportPrice","Risk$",
+        "TPReward$","TPReward%","ResReward$","ResReward%","DailyATR","DailyCap",
+        "Hist21d_PassCount","Hist21d_Max%","Hist21d_Examples","ResLookbackDays","Prices",
+        "Session","EntrySrc","VolSrc",
+        "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons","MaxProfitMid",
+        "MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons","BreakevenMid","PricingNote",
+    ]
+    present = [c for c in cols if c in df.columns]
+    out_lines = []
+    out_lines.append("|".join(present))
+    for _, r in df.iterrows():
+        row = []
+        for c in present:
+            val = r[c]
+            # keep raw for Sheets (don’t prettify)
+            row.append("" if pd.isna(val) else str(val))
+        out_lines.append("|".join(row))
+    return "\n".join(out_lines)
 
-def _history_examples_list(row: dict, max_items: int = 3):
-    raw = (row or {}).get("Hist21d_Examples", "")
-    if not raw:
-        return []
-    parts = [p.strip() for p in raw.split(";") if p.strip()]
-    return parts[:max_items]
-
-
-# -----------------------
-# Intraday volume snapshot
-# -----------------------
-def _get_intraday_volume_stats(ticker: str):
+def _why_buy_card(row: pd.Series) -> str:
     """
-    Returns dict: today_vol, avg_63, expected_by_now, relvol_now.
-    Uses 1m data if available (market open), otherwise today's daily bar.
+    Plain-English rationale. Uses parentheses to introduce technical terms,
+    but keeps the narrative understandable for non-traders.
     """
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(period="16mo", auto_adjust=False, actions=False)
-        if df is None or df.empty or "Volume" not in df.columns:
-            return None
+    t = row["Ticker"]
+    price = float(row["Price"])
+    tp = float(row["TP"])
+    res = float(row["Resistance"])
+    rr_res = float(row["RR_to_Res"])
+    rr_tp = float(row["RR_to_TP"])
+    sup_type = str(row["SupportType"])
+    sup_px = float(row["SupportPrice"])
+    tp_dollar = float(row["TPReward$"])
+    tp_pct = float(row["TPReward%"])
+    daily_atr = float(row["DailyATR"]) if row.get("DailyATR", np.nan) == row.get("DailyATR", np.nan) else np.nan
+    # simple ATR “week/month” approximations
+    weekly_atr = daily_atr * 5 if np.isfinite(daily_atr) else np.nan
+    monthly_atr = daily_atr * 21 if np.isfinite(daily_atr) else np.nan
 
-        vol_hist = df["Volume"].iloc[-64:-1]
-        if vol_hist.empty:
-            return None
-        avg_63 = float(np.nanmean(vol_hist.values))
+    # volume/relvol
+    relvol = float(row.get("RelVol(TimeAdj63d)")) if "RelVol(TimeAdj63d)" in row else np.nan
+    vol_note = "—"
+    if np.isfinite(relvol):
+        # relvol of 1.20 ~ 20% above typical pace
+        vol_note = f"about **{_fmt_pct((relvol - 1.0)*100, 0, signed=True)}** vs typical pace (time-adjusted)."
 
-        m1 = yf.download(
-            ticker, period="1d", interval="1m",
-            auto_adjust=False, progress=False, prepost=False
-        )
-        today_vol = None
-        if m1 is not None and not m1.empty and "Volume" in m1.columns:
-            today_vol = float(np.nansum(m1["Volume"].values))
+    # intraday color
+    chg = float(row.get("Change%")) if "Change%" in row else np.nan
 
-        now = pd.Timestamp.now(tz="America/New_York")
-        open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-        close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    # options (if present)
+    exp = row.get("OptExpiry", "")
+    buyk = row.get("BuyK", "")
+    sellk = row.get("SellK", "")
+    width = row.get("Width", "")
 
-        if now <= open_t:
-            progress = 0.0
-        elif now >= close_t:
-            progress = 1.0
+    opt_line = ""
+    if all(k in row for k in ["OptExpiry","BuyK","SellK"]):
+        if pd.notna(exp) and pd.notna(buyk) and pd.notna(sellk) and str(exp) != "":
+            opt_line = f" via the **{_fmt_usd(float(buyk),0)}/{_fmt_usd(float(sellk),0)}** vertical call spread expiring **{exp}**"
         else:
-            progress = (now - open_t) / (close_t - open_t)
-            # never 0% (avoids div-by-zero early)
-            progress = max(progress, pd.Timedelta(minutes=1) / (close_t - open_t))
+            opt_line = " (vertical call spread suggestion pending quotes)"
 
-        expected_by_now = avg_63 * float(progress)
+    # history examples (already string)
+    examples = str(row.get("Hist21d_Examples","")).strip()
+    pass_count = row.get("Hist21d_PassCount","—")
+    need_pct = tp_pct  # required move basis
 
-        if today_vol is None:
-            today_vol = float(df["Volume"].iloc[-1])
-            if progress == 0.0:
-                expected_by_now = avg_63 * 1.0
-
-        relvol_now = float(today_vol / expected_by_now) if expected_by_now > 0 else np.nan
-
-        return {
-            "today_vol": today_vol,
-            "avg_63": avg_63,
-            "expected_by_now": expected_by_now,
-            "relvol_now": relvol_now,
-        }
-    except Exception:
-        return None
-
-
-# -----------------------
-# WHY BUY (HTML card)
-# -----------------------
-def why_buy_card(row: dict) -> str:
-    """
-    Produces a styled HTML card with clear bullets and bolded numbers.
-    """
-    tkr = row.get("Ticker", "")
-    price = row.get("Price")
-    tp = row.get("TP")
-    res = row.get("Resistance")
-    rr_res = row.get("RR_to_Res")
-    rr_tp = row.get("RR_to_TP")
-    support_type = row.get("SupportType", "")
-    support_price = row.get("SupportPrice")
-    change_pct = row.get("Change%")
-    relvol_timeadj = row.get("RelVol(TimeAdj63d)")
-    daily_atr = row.get("DailyATR")
-    daily_cap = row.get("DailyCap")
-    entry_ts = row.get("EntryTimeET", "")
-    hist_count = row.get("Hist21d_PassCount", "")
-    hist_best = row.get("Hist21d_Max%", "")
-
-    opt_exp = row.get("OptExpiry", "")
-    buy_k = row.get("BuyK", "")
-    sell_k = row.get("SellK", "")
-
-    # TP move ($ and %)
-    tp_move_d = (tp - price) if (tp is not None and price is not None) else None
-    tp_move_p = (tp_move_d / price * 100.0) if (tp_move_d not in (None, 0) and price) else None
-
-    # Volume snapshot (live)
-    vol_stats = _get_intraday_volume_stats(tkr)
-    vol_line = ""
-    if vol_stats and np.isfinite(vol_stats.get("relvol_now", np.nan)):
-        bump = (vol_stats["relvol_now"] - 1.0) * 100.0
-        vol_line = (
-            f"Up **{_pct(change_pct)}** today, and **volume** is **{_pct(bump)}** vs its usual pace "
-            f"(**{int(vol_stats['today_vol']):,}** vs **{int(vol_stats['expected_by_now']):,}** expected by now)."
+    # narrative
+    md = []
+    md.append(
+        f"**{t}** is a buy{opt_line} because it **recently reached about {_fmt_usd(res,0)} (resistance)** "
+        f"and now trades near **{_fmt_usd(price,2)} (current price)**. "
+        f"That makes the **target at {_fmt_usd(tp,2)}** feel realistic."
+    )
+    md.append("")
+    md.append("**Why this setup makes sense**")
+    bullets = [
+        f"**Reward vs. risk** from where buyers have stepped in before "
+        f"(**{_fmt_usd(sup_px,2)} support**) up to resistance is about "
+        f"**{rr_res:.2f}:1** (to the nearer target it’s **{rr_tp:.2f}:1**).",
+        f"**Move needed to TP:** **{_fmt_usd(tp_dollar,2)}** (≈ **{_fmt_pct(tp_pct,2)}**).",
+    ]
+    # ATR trio in plain English
+    if np.isfinite(daily_atr):
+        bullets.append(
+            f"**Volatility runway (ATR):** daily ATR is **{_fmt_usd(daily_atr,2)}**, "
+            f"so a typical month (~21 trading days) allows **~{_fmt_usd(monthly_atr,2)}** of movement. "
+            f"For context, a typical week allows **~{_fmt_usd(weekly_atr,2)}**."
         )
-    else:
-        # fallback to time-adjusted relvol from the screener
-        if relvol_timeadj not in (None, ""):
-            bump = (relvol_timeadj - 1.0) * 100.0
-            vol_line = f"Up **{_pct(change_pct)}** today, and **volume** is **{_pct(bump)}** vs usual."
-
-    # History examples
-    examples = _history_examples_list(row)
-    examples_items = "".join([f"<li>{e}</li>" for e in examples])
-
-    # Headline
-    if opt_exp and buy_k and sell_k:
-        headline = (
-            f"<div class='wb-headline'><b>{tkr}</b> buy this vertical call spread "
-            f"<b>{_dollar(buy_k)}</b> / <b>{_dollar(sell_k)}</b> expiring <b>{opt_exp}</b></div>"
+    # intraday tone + volume
+    if np.isfinite(chg):
+        bullets.append(
+            f"**Today’s tone & volume:** the stock is **{_fmt_pct(chg*100,2,signed=True)}** on the day; "
+            f"volume is {vol_note}"
         )
-    else:
-        headline = f"<div class='wb-headline'><b>{tkr}</b> setup</div>"
 
-    # Content bullets
-    bullets = f"""
-    <ul class='wb-list'>
-      <li><b>Price</b> now <b>{_dollar(price)}</b>, <b>TP</b> <b>{_dollar(tp)}</b>, <b>Resistance</b> <b>{_dollar(res)}</b>.</li>
-      <li><b>R:R</b> ≈ <b>{_safe(rr_res,2)}:1</b> to resistance (≈ <b>{_safe(rr_tp,2)}:1</b> to TP) with stop at
-          <b>{support_type}</b> <b>{_dollar(support_price)}</b>.</li>
-      <li><b>TP distance</b>: <b>{_dollar(tp_move_d)}</b> (≈ <b>{_pct(tp_move_p)}</b>).</li>
-      <li><b>Volatility (ATR)</b>: Daily ATR ≈ <b>{_dollar(daily_atr)}</b>, implying ≈ <b>{_dollar(daily_cap)}</b>
-          of potential movement over ~21 trading days.</li>
-      <li>{vol_line}</li>
-      <li><b>History</b>: {_int0(hist_count)} prior 21-day windows met/exceeded the required move; best was about <b>{_pct(hist_best)}</b>.
-        {"<ul>"+examples_items+"</ul>" if examples_items else ""}
-      </li>
-    </ul>
-    """
+    md.extend([f"- {b}" for b in bullets])
 
-    footer = f"<div class='wb-footer'>Data as of <b>{entry_ts}</b>.</div>" if entry_ts else ""
+    # History section
+    md.append("")
+    md.append(
+        f"**History check (21 trading days):** need about **{_fmt_pct(need_pct,2)}** to hit TP. "
+        f"Over the past year, **{pass_count}** separate 21-day windows met or exceeded that."
+    )
+    if examples:
+        md.append("**Examples:**")
+        for ex in [e.strip() for e in examples.split(";") if e.strip()]:
+            # ex already like "2025-06-23:+35.06%"
+            md.append(f"- {ex}")
 
-    html = f"""
-    <div class='wb-card'>
-      {headline}
-      {bullets}
-      {footer}
-    </div>
-    """
-    return html
+    # footer
+    ts = row.get("EntryTimeET","")
+    if ts:
+        md.append("")
+        md.append(f"_Data as of **{ts}**._")
+
+    return "\n".join(md)
 
 
-# -----------------------
-# Page
-# -----------------------
+# ---------- Page & styles ----------
 st.set_page_config(page_title="S&P 500 Options Screener", layout="wide")
 
-# Inject lightweight CSS once
-if "wb_css" not in st.session_state:
-    st.markdown(
-        """
-        <style>
-        .wb-card{
-          border:1px solid rgba(0,0,0,.08);
-          border-radius:12px;
-          padding:16px 18px;
-          background:#fff;
-          box-shadow:0 1px 2px rgba(0,0,0,.05);
-          margin-bottom: 10px;
-        }
-        .wb-headline{
-          font-size:1.05rem;
-          margin-bottom:6px;
-        }
-        .wb-list{
-          margin: 0.25rem 0 0.25rem 1.1rem;
-          line-height:1.6;
-          font-size:0.98rem;
-        }
-        .wb-list li{ margin-bottom:2px; }
-        .wb-footer{
-          font-size:.85rem;
-          color:#666;
-          margin-top:6px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.session_state["wb_css"] = True
+# Red primary action button (minimal CSS tweak)
+st.markdown("""
+<style>
+button[kind="primary"] { background-color: #dc2626 !important; } /* red-600 */
+</style>
+""", unsafe_allow_html=True)
 
 st.title("📈 S&P 500 Options Screener")
-st.caption(f"UI started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
 
-with st.expander("⚙️ Settings (optional)", expanded=False):
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-    with c1:
-        relvol_min = st.number_input("Min RelVol (time-adjusted)", value=1.10, step=0.05, format="%.2f")
-    with c2:
-        rr_min = st.number_input("Min RR to Resistance", value=2.0, step=0.1, format="%.2f")
-    with c3:
-        res_days = st.number_input("Resistance lookback (days)", value=21, step=1, min_value=10, max_value=252)
-    with c4:
-        opt_days = st.number_input("Target option days", value=30, step=1, min_value=7, max_value=90)
+# Top controls (simple)
+colA, colB = st.columns([1,2])
+with colA:
+    run_clicked = st.button("Run Screener", type="primary")
+with colB:
+    opt = st.expander("Options (advanced)", expanded=False)
+    with opt:
+        st.caption("Most users can leave these as-is.")
+        rr_min = st.slider("Minimum RR to Resistance", 1.0, 5.0, 2.0, 0.25)
+        relvol_min = st.slider("Minimum Relative Volume (time-adjusted)", 0.8, 3.0, 1.10, 0.05)
+        res_days = st.slider("Resistance lookback (days)", 10, 60, 21, 1)
+        stop_mode = st.selectbox("Stop preference", ["safest", "structure"], index=0)
+        opt_days = st.slider("Target option expiry (days)", 10, 60, 30, 1)
+        include_options = st.checkbox("Include option spread suggestion", True)
+        # optional custom universe
+        tickers_text = st.text_area("Tickers (comma/space/newline separated). Leave empty for defaults.",
+                                    value="", height=80)
 
-    stop_mode = st.selectbox("Stop preference", ["safest", "structure"], index=0)
-    with_options = st.checkbox("Include option-spread suggestion", value=True)
-    relvol_median = st.checkbox("Use median volume (63d) for RelVol", value=False)
-
-run_col = st.container()
-with run_col:
-    run_clicked = st.button("Run Screener", use_container_width=True)
-
-console = st.expander("🖨️ Console output", expanded=False)
-pass_area = st.container()
-
+# ---------- Run or warm welcome ----------
 if run_clicked:
-    with st.status("Running screener… this may take a bit on first run.", expanded=True) as s:
+    with st.status("Running screener…", expanded=True):
+        # Forward parameters to your core scanner
         out = run_scan(
-            tickers=None,
-            res_days=int(res_days),
-            rel_vol_min=float(relvol_min),
-            relvol_median=bool(relvol_median),
-            rr_min=float(rr_min),
+            tickers=[t.strip().upper() for t in tickers_text.replace("\n",",").replace(" ", ",").split(",") if t.strip()] if tickers_text.strip() else None,
+            res_days=res_days,
+            rel_vol_min=relvol_min,
+            relvol_median=False,
+            rr_min=rr_min,
             stop_mode=stop_mode,
-            with_options=with_options,
-            opt_days=int(opt_days),
+            with_options=include_options,
+            opt_days=opt_days,
         )
-        s.update(label="Screener finished.")
 
-    df = out.get("pass_df", pd.DataFrame())
+    df: pd.DataFrame = out.get("pass_df", pd.DataFrame())
+    if df is None or df.empty:
+        st.warning("No PASS tickers found (or CSV not produced).")
+    else:
+        # Sort by current price (ascending)
+        if "Price" in df.columns:
+            df = df.sort_values("Price", ascending=True).reset_index(drop=True)
 
-    # Sort by Price ascending (lowest -> highest)
-    if not df.empty and "Price" in df.columns:
-        df = df.sort_values(["Price", "Ticker"], ascending=[True, True]).reset_index(drop=True)
+        # ===== 1) PASS TABLE (first) =====
+        st.subheader("PASS tickers")
+        st.dataframe(
+            df,
+            use_container_width=True,
+            height=min(600, 48 + 31*max(4, len(df))),
+        )
 
-    with console:
-        if df.empty:
-            st.write("No PASS tickers found (or CSV not produced).")
-        else:
-            st.code("|".join(df.columns), language="text")
-            sample = io.StringIO()
-            df.to_csv(sample, sep="|", index=False)
-            st.code(sample.getvalue().splitlines()[0: min(6, len(df)+1)], language="text")
+        # ===== 2) WHY BUY (expandable per ticker) =====
+        st.subheader("Explain each PASS (WHY BUY)")
+        for _, row in df.iterrows():
+            with st.expander(f"WHY BUY — {row['Ticker']}", expanded=False):
+                md = _why_buy_card(row)
+                st.markdown(md)
 
-    with pass_area:
-        if df.empty:
-            st.warning("No PASS tickers found (or CSV not produced).")
-        else:
-            st.subheader("PASS tickers")
+        # ===== 3) Google Sheets (hidden by default) =====
+        with st.expander("Copy for Google Sheets (pipe-delimited)", expanded=False):
+            psv = _mk_copy_psv(df)
+            st.code(psv, language="text")
 
-            # Web-friendly table
-            show_cols = [
-                "Ticker","EvalDate","Price","EntryTimeET",
-                "Change%","RelVol(TimeAdj63d)",
-                "Resistance","TP",
-                "RR_to_Res","RR_to_TP",
-                "SupportType","SupportPrice","Risk$",
-                "TPReward$","TPReward%","ResReward$","ResReward%",
-                "DailyATR","DailyCap",
-                "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
-                "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons","BreakevenMid",
-            ]
-            show_cols = [c for c in show_cols if c in df.columns]
-            st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
-
-            # Copy-to-Sheets (ALL columns)
-            st.caption("Copy table (pipe-delimited for Google Sheets)")
-            buf = io.StringIO()
-            df.to_csv(buf, index=False, sep="|")
-            st.code(buf.getvalue(), language="text")
-
-            # WHY BUY section as styled cards
-            st.markdown("---")
-            st.subheader("Explain each PASS (WHY BUY)")
-            for _, row in df.iterrows():
-                card_html = why_buy_card(row.to_dict())
-                st.markdown(card_html, unsafe_allow_html=True)
-
+else:
+    st.info("Click **Run Screener** to fetch the latest candidates. Use **Options** if you need to tweak gates.")
 
