@@ -4,9 +4,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import argparse
 from datetime import datetime, timedelta, time
+from sp_universe import get_sp500_tickers
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
 
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
@@ -644,6 +646,8 @@ def explain_ticker(ticker,
 # ------------------------- #
 def main():
     p = argparse.ArgumentParser(description="Finviz-like Swing Screener (UNADJUSTED) — robust intraday")
+    p.add_argument("--universe", choices=["custom", "sp500"], default="custom",
+               help="Ticker universe: 'sp500' pulls the live list from Wikipedia; 'custom' uses --tickers or defaults")
     p.add_argument("--tickers", type=str, default="", help="Comma/space/newline-separated list")
     p.add_argument("--explain", type=str, default="", help="Explain a single ticker (prints diagnostics)")
     p.add_argument("--res-days", type=int, default=RES_LOOKBACK_DEFAULT)
@@ -655,6 +659,15 @@ def main():
     p.add_argument("--opt-days", type=int, default=TARGET_OPT_DAYS_DEFAULT)
     args = p.parse_args()
 
+if args.universe == "sp500":
+    live = get_sp500_tickers()
+    if not live:
+        print("WARN: could not fetch S&P 500 list from Wikipedia; falling back to defaults.")
+        tickers = list(DEFAULT_TICKERS)
+    else:
+        # Optional: drop any tickers that are known to fail with Yahoo (rare)
+        tickers = live
+else:
     tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
 
     if args.explain:
@@ -680,5 +693,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
