@@ -1,8 +1,6 @@
-# swing_options_screener.py — Finviz-like (UNADJUSTED) swing scanner + optional options block
-# Robust live handling + precise timestamps:
-# - OPEN: entry from 1m bar (<=5m old) else fast_info; today vol from 1m SUM or daily partial
-# - CLOSED: entry = official daily close; prev_close = prior close
-# - Adds EntryTimeET in the table; --explain prints DataAgeMin
+# swing_options_screener.py — Finviz-like (UNADJUSTED) swing scanner + options block
+# Adds volume details (TodayVol, RelVolBase63, RelVolExpectedByNow, SessionProgressPct)
+# and explicit history requirement fields for clearer UI narratives.
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -18,10 +16,9 @@ try:
 except Exception:
     from backports.zoneinfo import ZoneInfo
 
-# -------------------------
-# Config / Defaults
-# -------------------------
+# ------------------------- Config / Defaults -------------------------
 DELIM = "|"
+
 SUPPORT_LOOKBACK_DAYS = 21
 PIVOT_K = 2
 PIVOT_LOOKBACK_DAYS = 40
@@ -33,29 +30,17 @@ TARGET_OPT_DAYS_DEFAULT = 30
 OPT_WIDTH_PREFERENCE = [5.0, 2.5, 1.0, 10.0]
 
 DEFAULT_TICKERS = [
-       'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
+    'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
     'HST','HAL','SW','KEY','USB','FITB','HPQ','IVZ','HBAN','TFC',
     'WY','LKQ','WBD','AES','RF','DVN','FCX','SMCI','F','BEN',
     'PCG','MRNA','FTV','KIM','BKR','BAX','HPE','OXY','IPG','DOC',
     'CPRT','BF-B','NWSA','BAC','INVH','CNC','KHC','NWS','CAG','IP',
     'CPB','CMG','UDR','CMCSA','CTRA','NI','MTCH','VICI','GEN','HRL',
-    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY', 'VTRS','KMI','WBA','BMY','VZ','T','CSX',"XYZ","DAL","ON","SWK","LYB","TECH","APTV","EMN","GPN","RVTY","CFG","MCHP","ARE","MAS","BG","BXP","LW","CARR","BBY","IR",
-    "EL","KMX","SWKS","DD","IRM","PYPL","EIX","GM","FRT","CSGP",
-    "FIS","UPS","WDC","HAS","ALB","COO","ADM","FTNT","NKE","C",
-    "LVS","TRMB","MET","OMC","GEHC","IFF","SYF","UBER","PFG","AOS",
-    "TXT","FAST","TGT","SRE","SOLV","COP","TAP","HSIC","DXCM","BALL",
-    "CTSH","MDT","AKAM","TTD","ES","MKC","WFC","HOLX","REG","EQR",
-    "XEL","MRK","GLW","LNT","TPR","OTIS","TSN","OKE","D","TSCO",
-    "NEM","AIG","NDAQ","FOX","EW","MDLZ","GIS","SYY","FOXA","CTVA",
-    "PEG","CMS","CSCO","EBAY","NEE","DAY","BRO","PNW","K","CF",
-    "ETR","CHD","SCHW","MO","ROL","L","ACGL","SO","EQT","CVS",
-    "SBUX","EVRG","CL","WRB","KO","EXE","O","WMT","WMB","INCY",
-    "VTR","MNST","KR"
+    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY',
+    'VTRS','KMI','WBA','BMY','VZ','T','CSX'
 ]
 
-# -------------------------
-# Helpers
-# -------------------------
+# ------------------------- Helpers -------------------------
 def _to_float(x):
     if isinstance(x, pd.Series):
         x = x.iloc[0] if not x.empty else np.nan
@@ -112,9 +97,7 @@ def _recent_pivot_low(df, k=2, lookback_days=40):
             return _to_float(lows[idx])
     return np.nan
 
-# -------------------------
-# Market session utils
-# -------------------------
+# ------------------------- Market session utils -------------------------
 def _now_et():
     return datetime.now(ZoneInfo("America/New_York"))
 
@@ -184,9 +167,8 @@ def _previous_close_robust(df_daily, ticker):
 
 def get_entry_prevclose_todayvol(df_daily, ticker):
     """
-    OPEN  : try 1m (fresh<=5m). If missing, try fast_info. If still missing, use today's partial daily bar,
-            but keep session OPEN and set entry_ts = now.
-    CLOSED: entry = official daily close (if today’s completed) else last close; entry_ts = 16:00 ET.
+    OPEN  : try 1m (fresh<=5m). If missing, try fast_info. Else use today's partial daily bar.
+    CLOSED: entry = official daily close for today (if present) else last close.
     """
     now, open_t, close_t = _market_session_state()
     et_today = now.date()
@@ -256,37 +238,41 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
     source['vol_src']   = 'daily_last'
     return entry, prev_close, today_vol, source, entry_ts
 
-# -------------------------
-# RelVol (Finviz-style)
-# -------------------------
-def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
+# ------------------------- RelVol (Finviz-style) with details -------------------------
+def compute_relvol_details(df_daily, today_vol, use_median=False):
     """
-    RelVol = today_vol / (avg_63 * session_progress)
+    Returns: (relvol, base_avg_63, expected_by_now, progress)
+    - base_avg_63: mean/median of last 63 *completed* sessions (full-day "usual")
+    - progress: session progress [0..1] based on ET 09:30-16:00
+    - expected_by_now = base_avg_63 * progress
+    - relvol = today_vol / expected_by_now (if progress>0), else np.nan
     """
     if not np.isfinite(today_vol) or today_vol < 0:
-        return np.nan
+        return np.nan, np.nan, np.nan, 0.0
 
     base_series = df_daily['Volume'].iloc[-64:-1]  # last 63 completed sessions
-    if base_series.empty: return np.nan
-    avg_63 = _to_float(base_series.median() if use_median else base_series.mean())
-    if not np.isfinite(avg_63) or avg_63 <= 0: return np.nan
+    if base_series.empty: return np.nan, np.nan, np.nan, 0.0
+    base_63 = _to_float(base_series.median() if use_median else base_series.mean())
+    if not np.isfinite(base_63) or base_63 <= 0:
+        return np.nan, np.nan, np.nan, 0.0
 
     now = _now_et()
     open_t  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
     close_t = now.replace(hour=16, minute=0,  second=0, microsecond=0)
 
-    if now <= open_t: progress = 0.0
-    elif now >= close_t: progress = 1.0
+    if now <= open_t:
+        progress = 0.0
+    elif now >= close_t:
+        progress = 1.0
     else:
         progress = (now - open_t).total_seconds() / (close_t - open_t).total_seconds()
         progress = max(progress, 1/390)
 
-    expected_by_now = avg_63 * progress
-    return today_vol / expected_by_now if expected_by_now > 0 else np.nan
+    expected_by_now = base_63 * progress
+    relvol = today_vol / expected_by_now if expected_by_now > 0 else np.nan
+    return relvol, base_63, expected_by_now, progress
 
-# -------------------------
-# Options helpers
-# -------------------------
+# ------------------------- Options helpers -------------------------
 def _parse_expirations(t: yf.Ticker):
     exps = getattr(t, "options", [])
     out = []
@@ -393,9 +379,7 @@ def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAU
     except Exception as e:
         return None, f"opt_error:{e}"
 
-# -------------------------
-# Core evaluation
-# -------------------------
+# ------------------------- Core evaluation -------------------------
 def evaluate_ticker(
     ticker,
     res_days=RES_LOOKBACK_DEFAULT,
@@ -416,7 +400,8 @@ def evaluate_ticker(
     change = (entry - prev_close) / prev_close
     if change <= 0: return None, "not_up_on_day"
 
-    rel_vol = compute_relvol_time_adjusted(df, today_vol, use_median=use_relvol_median)
+    # RelVol with details
+    rel_vol, base_63, expected_by_now, progress = compute_relvol_details(df, today_vol, use_median=use_relvol_median)
     if not (np.isfinite(rel_vol) and rel_vol >= rel_vol_min): return None, "relvol_low_timeadj"
 
     # Resistance: prior N-day high excluding today
@@ -434,27 +419,26 @@ def evaluate_ticker(
     daily_cap = daily_atr * 21.0 if np.isfinite(daily_atr) else 0.0
     if not (daily_cap > tp_reward): return None, "atr_capacity_short_vs_tp"
 
-    # History realism (21 trading days forward) — FIXED: examples & max only from PASSING windows
+    # History realism (21 trading days forward)
     eval_date = df.index[-1]
     past = df[df.index >= (eval_date - timedelta(days=365))].copy()
     if len(past) < 42: return None, "insufficient_past_for_21d"
     fwd_close    = past['Close'].shift(-21)
     fwd_move_pct = (fwd_close - past['Close']) / past['Close'] * 100.0
     tp_req_pct   = (tp_reward / entry) * 100.0
-
-    pass_mask  = (fwd_move_pct >= tp_req_pct)
-    pass_count = int(pass_mask.fillna(False).sum())
+    pass_mask    = (fwd_move_pct >= tp_req_pct)
+    pass_count   = int(pass_mask.fillna(False).sum())
     if pass_count == 0: return None, "history_21d_zero_pass"
 
-    passing_moves = fwd_move_pct[pass_mask].dropna()
-    hist_max_pct = round(float(passing_moves.max()), 2) if not passing_moves.empty else ""
-
-    # Top 3 examples among PASSING windows only
+    hist_max_pct = round(float(np.nanmax(fwd_move_pct.values)), 2) if np.isfinite(np.nanmax(fwd_move_pct.values)) else ""
+    order = np.argsort(np.nan_to_num(fwd_move_pct.values, nan=-1e9))[::-1]
     examples = []
-    if not passing_moves.empty:
-        top = passing_moves.sort_values(ascending=False).head(3)
-        for d, pct in top.items():
-            examples.append(f"{pd.to_datetime(d).date().isoformat()}: +{round(float(pct),2)}%")
+    for idx in order[:3]:
+        if idx >= len(past): break
+        pct = fwd_move_pct.iloc[idx]
+        if not np.isfinite(pct): continue
+        d = past.index[idx].date().isoformat()
+        examples.append(f"{d}:+{round(float(pct),2)}%")
     examples_str = "; ".join(examples)
 
     # Support candidates
@@ -488,7 +472,7 @@ def evaluate_ticker(
     if rr_to_res < rr_min: return None, "rr_to_res_below_min"
     rr_to_tp = tp_reward / risk
 
-    # Compact price string (last 10 closes) for quick audit
+    # Compact price string (last 10 closes)
     last_n = df['Close'].tail(10).round(2).astype(str).tolist()
     prices_str = ",".join(last_n)
 
@@ -498,7 +482,13 @@ def evaluate_ticker(
         'Price': round(entry, 2),
         'EntryTimeET': _fmt_ts(entry_ts) if entry_ts else "",
         'Change%': round(change * 100.0, 2),
-        'RelVol(TimeAdj63d)': round(rel_vol, 2),
+
+        # RelVol details
+        'RelVol(TimeAdj63d)': round(rel_vol, 2) if np.isfinite(rel_vol) else "",
+        'TodayVol': float(today_vol) if np.isfinite(today_vol) else "",
+        'RelVolBase63': round(base_63, 2) if np.isfinite(base_63) else "",
+        'RelVolExpectedByNow': round(expected_by_now, 2) if np.isfinite(expected_by_now) else "",
+        'SessionProgressPct': round(progress * 100.0, 2),
 
         'Resistance': round(resistance, 2),
         'TP': round(tp, 2),
@@ -517,10 +507,13 @@ def evaluate_ticker(
         'DailyATR': round(daily_atr, 4) if np.isfinite(daily_atr) else "",
         'DailyCap': round(daily_cap, 4),
 
-        # History diagnostics (pass-only)
+        # History diagnostics
         'Hist21d_PassCount': pass_count,
         'Hist21d_Max%': hist_max_pct,
         'Hist21d_Examples': examples_str,
+        'Hist21d_CheckBasis': 'TP',
+        'Hist21d_Req%': round(tp_req_pct, 2),
+
         'ResLookbackDays': res_days,
         'Prices': prices_str,
 
@@ -530,9 +523,7 @@ def evaluate_ticker(
     }
     return row, None
 
-# -------------------------
-# Debug
-# -------------------------
+# ------------------------- Debug & CLI hooks -------------------------
 def check_ticker(ticker, **kwargs):
     df = _get_history(ticker)
     entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker) if df is not None else (np.nan, np.nan, np.nan, {}, None)
@@ -548,9 +539,6 @@ def check_ticker(ticker, **kwargs):
     else:
         print("FAIL ❌", reason)
 
-# -------------------------
-# Library API for Streamlit
-# -------------------------
 def parse_ticker_text(text: str):
     if not text: return []
     raw = [t.strip().upper() for chunk in text.replace("\n", ",").replace(" ", ",").split(",") if t.strip()]
@@ -560,6 +548,7 @@ def parse_ticker_text(text: str):
             seen.add(t); out.append(t)
     return out
 
+# ------------------------- Library API for Streamlit -------------------------
 def run_scan(
     tickers=None,
     res_days=RES_LOOKBACK_DEFAULT,
@@ -570,7 +559,10 @@ def run_scan(
     with_options=True,
     opt_days=TARGET_OPT_DAYS_DEFAULT,
 ):
-    """Entry-point for Streamlit UI. Returns {'pass_df': DataFrame}. Also writes .csv/.psv files."""
+    """
+    Entry-point for Streamlit UI.
+    Returns {'pass_df': DataFrame}. Also writes 'pass_tickers.csv' and 'pass_tickers_unadjusted.psv'.
+    """
     tickers = list(tickers) if tickers else list(DEFAULT_TICKERS)
     kwargs = dict(
         res_days=res_days,
@@ -597,11 +589,14 @@ def run_scan(
             results.append(row)
 
     base_cols = [
-        'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
+        'Ticker','EvalDate','Price','EntryTimeET','Change%',
+        'RelVol(TimeAdj63d)','TodayVol','RelVolBase63','RelVolExpectedByNow','SessionProgressPct',
         'Resistance','TP','RR_to_Res','RR_to_TP',
         'SupportType','SupportPrice','Risk$',
-        'TPReward$','TPReward%','ResReward$','ResReward%','DailyATR','DailyCap',
-        'Hist21d_PassCount','Hist21d_Max%','Hist21d_Examples','ResLookbackDays','Prices',
+        'TPReward$','TPReward%','ResReward$','ResReward%',
+        'DailyATR','DailyCap',
+        'Hist21d_PassCount','Hist21d_Max%','Hist21d_Examples','Hist21d_CheckBasis','Hist21d_Req%',
+        'ResLookbackDays','Prices',
         'Session','EntrySrc','VolSrc'
     ]
     opt_cols = [
@@ -612,9 +607,8 @@ def run_scan(
 
     if results:
         df = pd.DataFrame(results).sort_values(['Price','Ticker'])
-        df.to_csv('pass_tickers.csv', index=False)                    # standard CSV
-        df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)  # pipe
-        # Also print a pipe table to stdout (fallback for UI parser)
+        df.to_csv('pass_tickers.csv', index=False)
+        df.to_csv('pass_tickers_unadjusted.psv', index=False, sep=DELIM)
         print(DELIM.join(cols))
         for _, r in df[cols].iterrows():
             print(DELIM.join(_sanitize(r.get(c, "")) for c in cols))
@@ -631,7 +625,6 @@ def explain_ticker(ticker,
                    relvol_median=False,
                    rr_min=RR_MIN_DEFAULT,
                    stop_mode="safest"):
-    """Programmatic hook used by the Streamlit UI — prints the same debug as CLI."""
     kwargs = dict(
         res_days=res_days,
         rel_vol_min=rel_vol_min,
@@ -641,9 +634,7 @@ def explain_ticker(ticker,
     )
     check_ticker(ticker, **kwargs)
 
-# -------------------------
-# CLI
-# -------------------------
+# ------------------------- CLI -------------------------
 def main():
     p = argparse.ArgumentParser(description="Finviz-like Swing Screener (UNADJUSTED) — robust intraday")
     p.add_argument("--tickers", type=str, default="", help="Comma/space/newline-separated list")
@@ -660,12 +651,12 @@ def main():
     tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
 
     if args.explain:
-        check_ticker(args.explain.upper(),
-                     res_days=args.res_days,
-                     rel_vol_min=args.relvol_min,
-                     use_relvol_median=args.relvol_median,
-                     rr_min=args.rr_min,
-                     prefer_stop=args.stop_mode)
+        explain_ticker(args.explain.upper(),
+                       res_days=args.res_days,
+                       rel_vol_min=args.relvol_min,
+                       relvol_median=args.relvol_median,
+                       rr_min=args.rr_min,
+                       stop_mode=args.stop_mode)
         return
 
     run_scan(
