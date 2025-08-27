@@ -1,83 +1,169 @@
-# app.py — Streamlit UI for swing_options_screener
-
+# app.py — Streamlit UI for swing_options_screener (mobile-friendly, no sidebar)
 import streamlit as st
 import pandas as pd
-from swing_options_screener import run_scan, explain_ticker, parse_ticker_text, DEFAULT_TICKERS
-from sp_universe import get_sp500_tickers
+
+from swing_options_screener import (
+    run_scan, explain_ticker, parse_ticker_text, DEFAULT_TICKERS
+)
+from sp_universe import get_sp500_tickers, LAST_ERROR
 
 st.set_page_config(page_title="Swing Options Screener", layout="wide")
 
 st.title("📊 Swing Options Screener (Finviz-style, Unadjusted)")
 
-# Sidebar controls
-st.sidebar.header("Settings")
+# ----------------------------
+# Top: Quick-start controls
+# ----------------------------
+col1, col2 = st.columns([1, 2])
 
-universe = st.sidebar.radio(
-    "Choose ticker universe:",
-    options=["sp500", "custom"],
-    index=0,
-    help="Select 'sp500' for live S&P 500 from Wikipedia or 'custom' to type tickers below"
-)
-
-ticker_text = ""
-if universe == "custom":
-    ticker_text = st.sidebar.text_area(
-        "Custom tickers (comma/space/newline separated):",
-        value=",".join(DEFAULT_TICKERS[:10]),
-        height=100
+with col1:
+    universe = st.radio(
+        "Universe",
+        options=["Live S&P 500 (Wikipedia)", "Custom list"],
+        index=0,
+        help="Live list is scraped and cached for 6h."
     )
 
-res_days = st.sidebar.number_input("Resistance Lookback Days", min_value=10, max_value=60, value=21, step=1)
-relvol_min = st.sidebar.number_input("Minimum RelVol", min_value=0.5, max_value=3.0, value=1.10, step=0.05)
-rr_min = st.sidebar.number_input("Minimum RR (to Resistance)", min_value=1.0, max_value=5.0, value=2.0, step=0.1)
-stop_mode = st.sidebar.selectbox("Stop Mode", options=["safest","structure"], index=0)
-opt_days = st.sidebar.number_input("Target Option Expiry Days", min_value=10, max_value=60, value=30, step=1)
+with col2:
+    if universe == "Custom list":
+        tickers_text = st.text_input(
+            "Tickers (comma/space/newline)",
+            value="WMT INTC MOS",
+            placeholder="e.g., AAPL MSFT NVDA"
+        )
+    else:
+        tickers_text = ""  # ignored
 
-if st.sidebar.button("Run Scan"):
-    # Choose ticker universe
-    if universe == "sp500":
+# Big Run button
+run_btn = st.button("▶️ Run Scan", type="primary", use_container_width=True)
+
+# ----------------------------
+# Collapsible: Filters (default collapsed)
+# ----------------------------
+with st.expander("Filters (optional)", expanded=False):
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        res_days = st.number_input(
+            "Resistance lookback (days)", min_value=10, max_value=252, value=21, step=1
+        )
+    with c2:
+        rr_min = st.number_input(
+            "Min RR to Resistance", min_value=1.0, max_value=10.0, value=2.0, step=0.1
+        )
+    with c3:
+        relvol_min = st.number_input(
+            "Min RelVol (time-adjusted 63d)", min_value=0.5, max_value=5.0, value=1.10, step=0.05
+        )
+    with c4:
+        relvol_median = st.checkbox("Use median vol (63d)", value=False,
+                                    help="Median instead of mean for 63-day volume baseline")
+
+    # Optional UI-only price cap (OFF by default)
+    c5, c6 = st.columns(2)
+    with c5:
+        cap_under_100 = st.checkbox("Cap display to Price ≤ $100 (UI only)", value=False)
+    with c6:
+        price_cap_value = st.number_input("Price cap ($)", min_value=1, max_value=5000, value=100, step=1)
+
+# ----------------------------
+# Collapsible: Options settings (default collapsed)
+# ----------------------------
+with st.expander("Options (bull call spread suggestion)", expanded=False):
+    c7, c8 = st.columns(2)
+    with c7:
+        with_options = st.checkbox("Suggest bull call spread near TP", value=True)
+    with c8:
+        opt_days = st.number_input("Target days to expiry", min_value=7, max_value=90, value=30, step=1)
+
+# ----------------------------
+# Collapsible: Explain a ticker (debug)
+# ----------------------------
+with st.expander("Explain a ticker (debug)", expanded=False):
+    ex_ticker = st.text_input("Ticker to explain (e.g., WMT, NOW)", key="explain_tkr")
+    ex_go = st.button("Explain", key="explain_go")
+    if ex_go and ex_ticker.strip():
+        st.code(f"=== DEBUG {ex_ticker.upper()} ===", language="text")
+        # Prints detailed debug to logs; also executes the same checks
+        explain_ticker(
+            ex_ticker.upper(),
+            res_days=locals().get("res_days", 21),
+            rel_vol_min=locals().get("relvol_min", 1.10),
+            relvol_median=locals().get("relvol_median", False),
+            rr_min=locals().get("rr_min", 2.0),
+            stop_mode="safest",
+        )
+        st.info("Explanation printed to app logs (Streamlit Cloud → Logs).")
+
+# ----------------------------
+# RUN
+# ----------------------------
+if run_btn:
+    # Use defaults if user didn't open the expanders
+    res_days = locals().get("res_days", 21)
+    rr_min = locals().get("rr_min", 2.0)
+    relvol_min = locals().get("relvol_min", 1.10)
+    relvol_median = locals().get("relvol_median", False)
+    cap_under_100 = locals().get("cap_under_100", False)
+    price_cap_value = float(locals().get("price_cap_value", 100))
+    with_options = locals().get("with_options", True)
+    opt_days = locals().get("opt_days", 30)
+
+    # Build universe
+    if universe == "Live S&P 500 (Wikipedia)":
         tickers = get_sp500_tickers()
         if not tickers:
-            st.warning("Could not fetch S&P 500 from Wikipedia; falling back to custom tickers.")
-            tickers = parse_ticker_text(ticker_text) if ticker_text else list(DEFAULT_TICKERS)
+            warn = "Could not fetch S&P 500 from Wikipedia; using Custom list if provided, else defaults."
+            if LAST_ERROR:
+                warn += f"\n\nDetails: {LAST_ERROR}"
+            st.warning(warn)
+            tickers = parse_ticker_text(tickers_text) if tickers_text else list(DEFAULT_TICKERS)
     else:
-        tickers = parse_ticker_text(ticker_text) if ticker_text else list(DEFAULT_TICKERS)
+        tickers = parse_ticker_text(tickers_text) if tickers_text else list(DEFAULT_TICKERS)
 
-    with st.spinner("Running scan..."):
-        result = run_scan(
+    # Execute scan
+    with st.spinner("Scanning…"):
+        res = run_scan(
             tickers=tickers,
             res_days=res_days,
             rel_vol_min=relvol_min,
+            relvol_median=relvol_median,
             rr_min=rr_min,
-            stop_mode=stop_mode,
-            with_options=True,
+            stop_mode="safest",
+            with_options=with_options,
             opt_days=opt_days,
         )
-        df = result['pass_df']
+        df = res.get("pass_df", pd.DataFrame())
 
-    if not df.empty:
-        # Sort by Price ascending
+    # Optional UI-only cap
+    if cap_under_100 and not df.empty and "Price" in df.columns:
+        df = df[df["Price"] <= price_cap_value]
+
+    # Sort by Price ascending
+    if not df.empty and "Price" in df.columns:
         df = df.sort_values("Price", ascending=True)
 
-        st.success(f"Found {len(df)} passing tickers")
-        st.dataframe(df, use_container_width=True)
-
-        # Copy-to-clipboard text box
-        csv_str = df.to_csv(sep="|", index=False)
-        st.text_area("Copy-paste for Google Sheets (pipe-delimited)", csv_str, height=200)
+    st.subheader(f"Passes ({len(df)})")
+    if df.empty:
+        st.info("No PASS tickers.")
     else:
-        st.error("No PASS tickers found.")
+        # Clean table, scrollable, shows all columns
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-# Debug / Explain section
-st.sidebar.header("Explain a ticker")
-explain_symbol = st.sidebar.text_input("Enter ticker to explain:")
+        # Copy/paste (Google Sheets) – pipe-delimited
+        st.markdown("**Copy for Google Sheets (pipe-delimited)**")
+        cols = list(df.columns)
+        psv = "|".join(cols) + "\n" + "\n".join(
+            "|".join("" if pd.isna(v) else str(v).replace("|","/") for v in df.loc[i, cols].values)
+            for i in df.index
+        )
+        st.code(psv, language="text")
 
-if st.sidebar.button("Run Explain") and explain_symbol:
-    st.write(f"### Debug for {explain_symbol.upper()}")
-    explain_ticker(
-        explain_symbol.upper(),
-        res_days=res_days,
-        rel_vol_min=relvol_min,
-        rr_min=rr_min,
-        stop_mode=stop_mode
-    )
+        # Optional: raw CSV download
+        st.download_button(
+            label="Download CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name="pass_tickers.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
