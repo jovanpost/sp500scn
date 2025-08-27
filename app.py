@@ -4,9 +4,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import io
+from contextlib import redirect_stdout
 
 # Your existing screener module
-from swing_options_screener import run_scan
+from swing_options_screener import run_scan, explain_ticker
 
 # ---------- Styling (kept same, including red RUN button) ----------
 st.set_page_config(page_title="S&P 500 Options Screener", layout="wide")
@@ -57,7 +59,7 @@ def _parse_examples(ex_str: str):
     parts = [p.strip() for p in ex_str.split(";") if p.strip()]
     return parts[:3]
 
-# ---------- WHY BUY HTML (FIXED variable names) ----------
+# ---------- WHY BUY HTML ----------
 def _why_buy_html(row: pd.Series) -> str:
     """
     Plain-English WHY BUY rendered as HTML (no Markdown),
@@ -136,13 +138,14 @@ def _why_buy_html(row: pd.Series) -> str:
     if np.isfinite(chg):
         tone.append(f"price is up <strong>{chg:.2f}%</strong> today")
     if np.isfinite(relvol):
-        tone.append(
-            "volume is running about "
-            f"<strong>{(relvol-1)*100:.0f}%</strong> vs its typical pace "
-            "<span class='small-note'>(time-adjusted)</span>"
-            if relvol >= 1 else
-            "volume is a bit lighter than typical pace"
-        )
+        if relvol >= 1:
+            tone.append(
+                "volume is running about "
+                f"<strong>{(relvol-1)*100:.0f}%</strong> vs its typical pace "
+                "<span class='small-note'>(time-adjusted)</span>"
+            )
+        else:
+            tone.append("volume is a bit lighter than typical pace")
     if tone:
         items.append(f"<strong>Today’s tone & volume:</strong> " + " and ".join(tone) + ".")
 
@@ -262,4 +265,23 @@ else:
             lines.append("|".join(parts))
         block = "\n".join(lines)
         st.code(block, language="text")
+
+    # ---------- DEBUGGER (Why a ticker didn't pass) ----------
+    st.subheader("Debug a ticker (why it didn’t pass)")
+    with st.form("debug_form", clear_on_submit=False):
+        dbg_ticker = st.text_input("Ticker", placeholder="e.g., WMT, INTC, NOW").upper().strip()
+        dbg_go = st.form_submit_button("Explain")
+    if dbg_go and dbg_ticker:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            # same defaults used above, so the debug matches the screener's gates
+            explain_ticker(
+                dbg_ticker,
+                res_days=21,
+                rel_vol_min=1.10,
+                relvol_median=False,
+                rr_min=2.0,
+                stop_mode="safest",
+            )
+        st.code(buf.getvalue() or "No output", language="text")
 
