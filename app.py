@@ -91,7 +91,7 @@ def _why_buy_html(row: pd.Series) -> str:
     rr_tp    = _num(row.get("RR_to_TP"))
     sup_type = str(row.get("SupportType",""))
     sup_px   = _num(row.get("SupportPrice"))
-    tp_$     = _num(row.get("TPReward$"))
+    tp_dollars     = _num(row.get("TPReward$"))
     tp_%     = _num(row.get("TPReward%"))
     d_atr    = _num(row.get("DailyATR"))
     w_atr    = d_atr*5  if np.isfinite(d_atr) else np.nan
@@ -124,7 +124,7 @@ def _why_buy_html(row: pd.Series) -> str:
         f"<strong>{rr_res:.2f}:1</strong>. To the nearer target it’s <strong>{rr_tp:.2f}:1</strong>."
     )
     items.append(
-        f"<strong>Move needed to the target:</strong> <strong>{_fmt_money(tp_$)}</strong> "
+        f"<strong>Move needed to the target:</strong> <strong>{_fmt_money(tp_dollars)}</strong> "
         f"(≈ <strong>{tp_%:.2f}%</strong>)."
     )
     if np.isfinite(d_atr):
@@ -236,4 +236,5 @@ if go:
             st.code(_pipe_df(df), language="text")
 else:
     st.info("Click **Run Screener** to fetch fresh results.")
+
 
