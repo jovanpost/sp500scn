@@ -1,11 +1,4 @@
 # app.py — UI for Swing Options Screener
-# - Mobile-first, no sidebar
-# - One big RUN button
-# - Compact results table (Date/Time/Entry/TP/Options)
-# - Per-row "WHY BUY" narrative
-# - Full table expander (all columns)
-# - Copy-to-Google-Sheets expander (pipe-separated + download)
-
 import os
 import io
 import pandas as pd
@@ -59,7 +52,7 @@ if "scan_params" in st.session_state:
 
     with st.spinner("Scanning…"):
         out = run_scan(
-            tickers=None,  # default universe in the screener
+            tickers=None,
             res_days=p["res_days"],
             rel_vol_min=p["rel_vol_min"],
             relvol_median=p["relvol_median"],
@@ -75,21 +68,16 @@ if "scan_params" in st.session_state:
         st.info("No PASS tickers right now.")
         st.stop()
 
-    # Ensure types and missing columns handled
+    # Ensure required columns
     def col(df, name, default=""):
         if name not in df.columns: df[name] = default
         return df[name]
 
-    # ---------- Compact summary table (per your spec)
-    compact_cols = [
-        "Ticker", "EvalDate", "EntryTimeET", "Price", "TP",
-        "OptExpiry", "BuyK", "SellK"
-    ]
+    compact_cols = ["Ticker", "EvalDate", "EntryTimeET", "Price", "TP", "OptExpiry", "BuyK", "SellK"]
     for cc in compact_cols:
         col(df, cc)
 
     compact = df[compact_cols].copy()
-    # Format numeric columns
     for nc in ["Price","TP","BuyK","SellK"]:
         compact[nc] = pd.to_numeric(compact[nc], errors="coerce").round(2)
 
@@ -98,6 +86,7 @@ if "scan_params" in st.session_state:
 
     # ---------- WHY BUY narratives
     st.markdown("#### Why Buy (per pass)")
+
     def fmt_pct(x):
         try:
             return f"{float(x):.2f}%"
@@ -112,7 +101,6 @@ if "scan_params" in st.session_state:
             return v
 
     def build_why_buy(row: pd.Series) -> str:
-        # Core fields
         tkr   = row.get("Ticker","")
         price = _safe(row.get("Price",""))
         tp    = _safe(row.get("TP",""))
@@ -123,12 +111,12 @@ if "scan_params" in st.session_state:
         sup_p = _safe(row.get("SupportPrice",""))
 
         # Distances
-        tp_reward$ = _safe(row.get("TPReward$",""))
-        tp_reward% = fmt_pct(row.get("TPReward%",""))
-        res_reward$ = _safe(row.get("ResReward$",""))
-        res_reward% = fmt_pct(row.get("ResReward%",""))
+        tp_reward_d  = _safe(row.get("TPReward$",""))
+        tp_reward_p  = fmt_pct(row.get("TPReward%",""))
+        res_reward_d = _safe(row.get("ResReward$",""))
+        res_reward_p = fmt_pct(row.get("ResReward%",""))
 
-        # ATR capacities
+        # ATR
         d_atr = _safe(row.get("DailyATR",""), 4)
         d_cap = _safe(row.get("DailyCap",""), 2)
 
@@ -143,30 +131,22 @@ if "scan_params" in st.session_state:
         oxp = row.get("OptExpiry","")
         bk  = row.get("BuyK","")
         sk  = row.get("SellK","")
-        deb_mid = row.get("DebitMid","")
+        deb_mid   = row.get("DebitMid","")
         rr_sp_mid = row.get("RR_Spread_Mid","")
 
-        # Session/debug
-        sess = row.get("Session","")
-        esrc = row.get("EntrySrc","")
-        vsrc = row.get("VolSrc","")
-
-        # Narrative
         txt = []
         txt.append(f"**{tkr}** — entry ~ **{price}**, TP **{tp}**, resistance **{res}**.")
         if oxp and pd.notna(bk) and pd.notna(sk):
             txt.append(f"Suggested **bull call** ≈{oxp}: **{bk}/{sk}** (debit≈{deb_mid}, spread RR≈{rr_sp_mid}).")
 
         txt.append(
-            f"Rationale: price sits above support (**{sup_t} @ {sup_p}**) with **R:R to resistance ≈ {rr_r}:1** "
-            f"(to TP ≈ {rr_t}:1). Upside to TP is **${tp_reward$} ({tp_reward%})**; "
-            f"to resistance **${res_reward$} ({res_reward%})**."
+            f"Rationale: price above support (**{sup_t} @ {sup_p}**) with **R:R to resistance ≈ {rr_r}:1** "
+            f"(to TP ≈ {rr_t}:1). Upside to TP is **${tp_reward_d} ({tp_reward_p})**; "
+            f"to resistance **${res_reward_d} ({res_reward_p})**."
         )
 
         if d_atr and d_cap:
-            txt.append(
-                f"Volatility capacity: Daily ATR ≈ **{d_atr}**, implying ≈ **{d_cap}** possible over ~21 trading days."
-            )
+            txt.append(f"Volatility: Daily ATR ≈ **{d_atr}**, implying ≈ **{d_cap}** possible in ~21 trading days.")
 
         txt.append(
             f"History check (21d, basis **{h_basis.upper()}**, needs ≥ {h_req}): "
@@ -175,20 +155,17 @@ if "scan_params" in st.session_state:
         if h_ex:
             txt.append(f"Examples: {h_ex}")
 
-        txt.append(f"_Session:_ **{sess}** · _EntrySrc:_ **{esrc}** · _VolSrc:_ **{vsrc}**")
+        txt.append(f"_Session:_ **{row.get('Session','')}** · _EntrySrc:_ **{row.get('EntrySrc','')}** · _VolSrc:_ **{row.get('VolSrc','')}**")
         return "\n\n".join(txt)
 
     for _, r in df.sort_values(["Price","Ticker"]).iterrows():
         with st.expander(f"WHY BUY — {r.get('Ticker','')}  @ {r.get('Price','')}  (TP {r.get('TP','')})", expanded=False):
             st.markdown(build_why_buy(r))
 
-    # ---------- Full table (all columns)
     with st.expander("Show complete table (all columns)", expanded=False):
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # ---------- Copy to Google Sheets (pipe-separated) + download
     with st.expander("Copy for Google Sheets", expanded=False):
-        # Build PSV with every column currently in df
         cols = list(df.columns)
         header = "|".join(cols)
         lines = [header]
@@ -197,14 +174,11 @@ if "scan_params" in st.session_state:
             for c in cols:
                 v = row.get(c, "")
                 if pd.isna(v): v = ""
-                s = str(v)
-                # Replace pipe in data to avoid breaking the delimiter
-                s = s.replace("|", "/")
+                s = str(v).replace("|", "/")
                 vals.append(s)
             lines.append("|".join(vals))
         psv = "\n".join(lines)
 
-        st.caption("Select-all and copy. This format pastes cleanly into Google Sheets (use 'Split text to columns' with '|' if needed).")
         st.text_area("Pipe-separated output", value=psv, height=200)
         st.download_button("Download .psv", data=psv.encode("utf-8"), file_name="pass_tickers.psv", mime="text/plain")
 
