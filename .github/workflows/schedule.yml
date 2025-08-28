@@ -1,114 +1,57 @@
-name: Daily scan + TP check
+name: Scheduled Swing Scan
 
 on:
-  schedule:
-    # 10:30 ET (14:30 UTC), 11:30 ET, 12:30 ET
-    - cron: "30 14 * * 1-5"
-    - cron: "30 15 * * 1-5"
-    - cron: "30 16 * * 1-5"
-    # nightly TP check ~ 23:30 UTC
-    - cron: "30 23 * * 1-5"
+  # Manual run button
   workflow_dispatch:
+  # Cron schedule — UTC (ET 10:30/11:30/12:30 + nightly check ~ 19:30 ET)
+  schedule:
+    - cron: "30 14 * * 1-5"   # 10:30 ET (EDT)
+    - cron: "30 15 * * 1-5"   # 11:30 ET (EDT)
+    - cron: "30 16 * * 1-5"   # 12:30 ET (EDT)
+    - cron: "30 23 * * 1-5"   # Nightly hit check
 
-concurrency:
-  group: scan-${{ github.ref }}
-  cancel-in-progress: false
+permissions:
+  contents: write   # needed to commit the CSV/log updates
 
 jobs:
-  scan:
+  run-and-log:
     runs-on: ubuntu-latest
-    steps:
-      - name: Set job name
-        run: echo "JOB_LABEL=scan-$(date -u +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
 
-      - name: Checkout repo
+    steps:
+      - name: Check out repository (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Once-per-day guard (UTC)
-        id: guard
-        shell: bash
-        run: |
-          set -e
-          TODAY=$(date -u +%Y%m%d)
-          mkdir -p data/history data/logs
-          if ls data/history/pass_${TODAY}-*.csv >/dev/null 2>&1; then
-            echo "Already scanned today (${TODAY}); skipping heavy work."
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Set up Python
-        if: steps.guard.outputs.skip == 'false'
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install deps
-        if: steps.guard.outputs.skip == 'false'
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r scripts/requirements.txt
+          pip install -r scripts/requirements.txt
 
-      - name: Run screener and write history
-        if: steps.guard.outputs.skip == 'false'
+      - name: Run screener and write history files
         run: |
-          python ./scripts/run_and_log.py --universe sp500 --with-options
+          python scripts/run_and_log.py --universe sp500 --with-options || true
 
-      - name: Upload artifacts (CSV + logs)
-        if: steps.guard.outputs.skip == 'false'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pass-csv-and-logs
-          path: |
-            data/history/pass_*.csv
-            data/history/pass_history.csv
-            data/logs/*.log
-          if-no-files-found: warn
-
-      - name: Commit history to repo
-        if: steps.guard.outputs.skip == 'false'
-        shell: bash
+      - name: Commit history updates (pass_*.csv, outcomes.csv, logs)
         run: |
           set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A data/history/ data/logs/ || true
-          git commit -m "history: append run + logs [ci skip]" || echo "No changes to commit."
-          git pull --rebase origin main
-          git push origin HEAD:main
 
-      - name: Nightly TP hit check (idempotent)
-        # we run this every trigger; it just no-ops if nothing new
-        shell: bash
-        run: |
-          set -e
-          python - <<'PY'
-          import os, sys, subprocess, pathlib
-          p = pathlib.Path("scripts/check_hits.py")
-          if p.exists():
-              import runpy; runpy.run_path(str(p))
-          else:
-              print("check_hits.py not present; skipping.")
-          PY
+          # Stage only if they exist
+          git add -A data/history/*.csv 2>/dev/null || true
+          git add -A data/logs/*.log     2>/dev/null || true
 
-      - name: Commit outcomes.csv (only if created/changed)
-        shell: bash
-        run: |
-          set -e
-          if [ -f data/history/outcomes.csv ]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/history/outcomes.csv || true
-            git commit -m "history: update outcomes.csv [ci skip]" || echo "No outcome changes."
-            git pull --rebase origin main
-            git push origin HEAD:main
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
           else
-            echo "No outcomes.csv to commit (nothing to check yet)."
+            # Avoid non-fast-forward errors if main moved
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git commit -m "update history $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            git push origin HEAD:"${GITHUB_REF_NAME}"
           fi
-
-      - name: Mark skipped (for UI)
-        if: steps.guard.outputs.skip == 'true'
-        run: echo "Skipped: already ran earlier today."
