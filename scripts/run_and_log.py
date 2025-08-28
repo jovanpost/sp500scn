@@ -7,7 +7,15 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import swing_options_screener as sos  # uses your module
+# --- bootstrap: add repo root so we can import swing_options_screener.py ---
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]  # repo root
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+# --------------------------------------------------------------------------
 
+import swing_options_screener as sos
 
 def run_and_save(universe: str, with_options: bool):
     # Run the screener via the module API (same logic as the UI)
