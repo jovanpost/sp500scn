@@ -476,7 +476,7 @@ def _render_why_buy_block(df: pd.DataFrame):
 def render_scanner_tab():
     st.markdown("#### Scanner")
 
-    # Red RUN button (custom CSS inside this tab to avoid global collisions)
+    # Red RUN button (scoped CSS)
     st.markdown(
         """
         <style>
@@ -517,87 +517,6 @@ def render_scanner_tab():
             st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
     else:
         st.caption("No results yet. Press **RUN** to scan.")
-# ── Debugger tab (styled HTML narrative) ─────────────────────
-with tab3:
-    import json, html as _html
-
-    st.header("Debugger")
-    dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
-
-    if dbg_ticker:
-        title, details = diagnose_ticker(dbg_ticker.strip().upper())
-
-        # PASS/FAIL badge
-        is_fail = "FAIL" in (title or "").upper()
-        badge = '<span class="dbg-badge fail">FAIL</span>' if is_fail else '<span class="dbg-badge pass">PASS</span>'
-
-        # Safe getters
-        def g(d, k, default="—"):
-            try:
-                v = d.get(k, default)
-                return default if v is None else v
-            except Exception:
-                return default
-
-        entry          = g(details, "entry")
-        prev_close     = g(details, "prev_close")
-        today_vol      = g(details, "today_vol")
-        src            = g(details, "src", {})
-        session        = g(src, "session", "—") if isinstance(src, dict) else "—"
-        entry_src      = g(src, "entry_src", "—") if isinstance(src, dict) else "—"
-        vol_src        = g(src, "vol_src", "—") if isinstance(src, dict) else "—"
-        entry_ts       = g(details, "entry_ts")
-        resistance     = g(details, "resistance")
-        tp             = g(details, "tp")
-        relvol_timeadj = g(details, "relvol_time_adj")
-        daily_atr      = g(details, "daily_atr")
-        daily_cap      = g(details, "daily_cap")
-
-        # Narrative from diagnose_ticker (already HTML/Markdown)
-        narrative_html = details.get("explanation_md", "")
-
-        # Top/title block
-        html_top = f"""
-        <div class="dbg-wrap">
-          <div class="dbg-title">{title} {badge}</div>
-          <div class="dbg-subtle">{narrative_html}</div>
-        """
-
-        # Snapshot block
-        html_snapshot = f"""
-          <div class="dbg-snapshot">
-            <span class="dbg-snap-kv"><span class="k">Session:</span> <span class="v">{session}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Entry src:</span> <span class="v">{entry_src}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Vol src:</span> <span class="v">{vol_src}</span></span><br/>
-            <span class="dbg-snap-kv"><span class="k">Entry:</span> <span class="v">{entry}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Prev Close:</span> <span class="v">{prev_close}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Today Vol:</span> <span class="v">{today_vol}</span></span><br/>
-            <span class="dbg-snap-kv"><span class="k">Resistance:</span> <span class="v">{resistance}</span></span>
-            <span class="dbg-snap-kv"><span class="k">TP:</span> <span class="v">{tp}</span></span>
-            <span class="dbg-snap-kv"><span class="k">RelVol(Adj):</span> <span class="v">{relvol_timeadj}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Daily ATR:</span> <span class="v">{daily_atr}</span></span>
-            <span class="dbg-snap-kv"><span class="k">Daily Cap:</span> <span class="v">{daily_cap}</span></span><br/>
-            <span class="dbg-snap-kv"><span class="k">Timestamp:</span> <span class="v">{entry_ts}</span></span>
-          </div>
-        """
-
-        # Pretty JSON (HTML-escaped) in a collapsible
-        pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"},
-                            indent=2, default=str)
-        html_json = f"""
-          <div class="dbg-json">
-            <details>
-              <summary>Show raw JSON</summary>
-              <pre>{_html.escape(pretty)}</pre>
-            </details>
-          </div>
-        </div>
-        """
-
-        # Render as three separate HTML blocks to avoid Markdown code-block quirks
-        st.markdown(html_top, unsafe_allow_html=True)
-        st.markdown(html_snapshot, unsafe_allow_html=True)
-        st.markdown(html_json, unsafe_allow_html=True)
 
 # ============================================================
 # 10. UI – Tabs
@@ -700,7 +619,6 @@ with tab_debug:
           </div>
         """
 
-        import json, html as _html
         pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"},
                             indent=2, default=str)
         html_json = f"""
