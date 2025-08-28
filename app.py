@@ -180,8 +180,11 @@ tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
 # 10. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_run_scan() -> dict:
-    """Call sos.run_scan with backward-compatible signatures and normalize outputs."""
+    """Call sos.run_scan with backward-compatible signatures and normalize outputs
+    without using boolean truthiness on DataFrames."""
     import pandas as _pd
+
+    # Try the different signatures we’ve used across versions
     try:
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
@@ -191,17 +194,27 @@ def _safe_run_scan() -> dict:
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
+
     if isinstance(out, dict):
-        # prefer common keys
-        df_pass = out.get("pass") or out.get("pass_df") or out.get("pass_df_unadjusted")
-        df_scan = out.get("scan") or out.get("scan_df")
+        # Don’t use `or` with DataFrames — check keys explicitly
+        for k in ("pass", "pass_df", "pass_df_unadjusted"):
+            if k in out:
+                df_pass = out[k]
+                break
+        for k in ("scan", "scan_df"):
+            if k in out:
+                df_scan = out[k]
+                break
+
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
         if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
             df_scan = out[1]
+
     elif isinstance(out, _pd.DataFrame):
         df_pass = out
+
     return {"pass": df_pass, "scan": df_scan}
 
 
@@ -237,17 +250,7 @@ with tab1:
     st.markdown(
         """
         <style>
-        /* Default st.button */
-        div.stButton > button {
-            background-color: #d90429 !important;
-            color: #ffffff !important;
-            font-weight: 700 !important;
-            border: 0 !important;
-            border-radius: 8px !important;
-            padding: 0.6rem 1.2rem !important;
-        }
-        /* Some builds render buttons as 'secondary' */
-        button[kind="secondary"] {
+        div.stButton > button, button[kind="secondary"] {
             background-color: #d90429 !important;
             color: #ffffff !important;
             font-weight: 700 !important;
@@ -305,7 +308,8 @@ with tab1:
                 )
         else:
             st.caption("No results yet. Press **RUN** to scan.")
-            
+```0
+
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
@@ -328,6 +332,7 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
 
 
