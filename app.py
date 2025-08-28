@@ -1,72 +1,74 @@
-# app.py — Streamlit UI for Swing Options Screener + History reader (GitHub data branch)
-# NOTE: set GITHUB_OWNER below to your GitHub username.
+# app.py — Streamlit UI for Swing Options Screener
+# - Robust import of swing_options_screener (module-level import, no fragile named imports)
+# - Preserves red RUN button flow
+# - Shows full pass table first, then per-row WHY BUY (collapsible)
+# - Copy-to-Google-Sheets TSV output
+# - Separate Debugger toggle with plain-English + raw numbers
+# ------------------------------------------------------------
 
-import io
-import sys
+import importlib
+import traceback
 from datetime import datetime
 import pandas as pd
+import numpy as np
 import streamlit as st
 
-from swing_options_screener import (
-    run_scan,          # returns {'pass_df': DataFrame}
-    explain_ticker,    # prints CLI-style debug
-    diagnose_ticker    # prints plain-english debug (numbers + reasons)
-)
+# ---------- Safe import of the engine module ----------
+try:
+    sos = importlib.import_module("swing_options_screener")
+except Exception as e:
+    st.error("Could not import swing_options_screener.py. Make sure the file exists and has no syntax errors.")
+    st.exception(e)
+    st.stop()
 
-from app_history_reader import (
-    fetch_history_index,
-    fetch_run_csv,
-    fetch_latest,
-)
+def _fn(name, required=True):
+    fn = getattr(sos, name, None)
+    if fn is None and required:
+        st.error(f"Function '{name}' not found in swing_options_screener.py")
+        st.stop()
+    return fn
 
-# === GitHub data branch config ===
-GITHUB_OWNER = "jovanpost"   # <-- CHANGE THIS
-GITHUB_REPO = "sp500scn"
-GITHUB_DATA_BRANCH = "data"
+run_scan = _fn("run_scan", required=True)  # main engine
+evaluate_ticker = _fn("evaluate_ticker", required=True)
+_get_history = _fn("_get_history", required=True)
+get_entry_prevclose_todayvol = _fn("get_entry_prevclose_todayvol", required=True)
+compute_relvol_time_adjusted = _fn("compute_relvol_time_adjusted", required=True)
 
-# ----------- Small helpers (formatting) -----------
-def _num(x, nd=2):
-    try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return ""
-        return f"{float(x):.{nd}f}"
-    except Exception:
-        return ""
+# ---------- Small format helpers ----------
+def _safe(x):
+    return "" if x is None else str(x)
 
 def _usd(x, nd=2):
-    s = _num(x, nd)
-    return f"${s}" if s != "" else ""
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    try:
+        return f"${float(x):,.{nd}f}"
+    except Exception:
+        return _safe(x)
 
 def _pct(x, nd=2):
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
     try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return ""
         return f"{float(x):.{nd}f}%"
     except Exception:
-        return ""
-
-def _safe(val):
-    return "" if val is None else str(val)
-
-def _relvol_human(rv):
-    # Show multiple: value, and "above avg by X%"
-    if rv is None or pd.isna(rv) or rv == "":
-        return "—"
-    try:
-        rvf = float(rv)
-        if rvf <= 0:
-            return f"{rvf:.2f}×"
-        delta = (rvf - 1.0) * 100.0
-        sign = "+" if delta >= 0 else ""
-        return f"{rvf:.2f}× ({sign}{delta:.0f}%)"
-    except Exception:
-        return str(rv)
+        return _safe(x)
 
 def _bold(s):
-    return f"<strong>{s}</strong>"
+    return f"<b>{_safe(s)}</b>"
 
 def _mk_bullet(s):
     return f"<li style='margin: 0.15rem 0'>{s}</li>"
+
+def _relvol_human(x):
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    try:
+        return f"{float(x):.2f}×"
+    except Exception:
+        return _safe(x)
+
+# ---------- WHY BUY builder (plain English, clean HTML) ----------
 def build_why_buy_html(row: dict) -> str:
     tkr = _safe(row.get("Ticker",""))
     price = _usd(row.get("Price"))
@@ -82,7 +84,8 @@ def build_why_buy_html(row: dict) -> str:
     tp_reward = _usd(tp_reward_val)
     tp_reward_pct_s = _pct(tp_reward_pct_val)
 
-    daily_atr = _usd(row.get("DailyATR", None), nd=4 if isinstance(row.get("DailyATR"), float) and row.get("DailyATR")<1 else 2)
+    daily_atr_val = row.get("DailyATR", None)
+    daily_atr = _usd(daily_atr_val, nd=4 if isinstance(daily_atr_val, float) and daily_atr_val < 1 else 2)
     daily_cap = _usd(row.get("DailyCap"))
 
     hist_cnt = _safe(row.get("Hist21d_PassCount",""))
@@ -114,12 +117,13 @@ def build_why_buy_html(row: dict) -> str:
             f"of typical movement over ~21 trading days."
         )
     )
-    bullets.append(
-        _mk_bullet(
-            f"1-month history check: {_bold(str(hist_cnt))} instances in the last year where a 21-trading-day move "
-            f"met or exceeded the required % to TP. Examples: {_bold(hist_ex)}."
+    if hist_cnt:
+        bullets.append(
+            _mk_bullet(
+                f"1-month history check: {_bold(str(hist_cnt))} instances in the last year where a 21-trading-day move "
+                f"met or exceeded the required % to TP. Examples: {_bold(hist_ex)}."
+            )
         )
-    )
     bullets.append(
         _mk_bullet(
             f"Support: using {_bold(support_type)} around {_bold(support_price)} for risk management."
@@ -132,181 +136,198 @@ def build_why_buy_html(row: dict) -> str:
     )
 
     bullets_html = "<ul style='padding-left: 1.1rem; margin-top: 0.35rem'>" + "".join(bullets) + "</ul>"
-    return f"<div style='line-height:1.35'>{header}{bullets_html}</div>"
+    return f"<div style='line-height:1.35; font-size:0.98rem'>{header}{bullets_html}</div>"
 
+# ---------- Debugger (plain English + raw) ----------
+def diagnose_ticker(ticker: str,
+                    res_days: int,
+                    rel_vol_min: float,
+                    relvol_median: bool,
+                    rr_min: float,
+                    stop_mode: str):
+    # Recompute inputs to explain failure reasons
+    df = _get_history(ticker)
+    if df is None or df.empty:
+        return {"ok": False, "reason": "no_data", "details": "No daily history."}
 
-def build_google_sheet_psv(df: pd.DataFrame) -> str:
-    # Mirror the PSV (pipe-separated) table with all columns we emit from run_scan
-    cols = [
-        'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
-        'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
-        'TPReward$','TPReward%','ResReward$','ResReward%','DailyATR','DailyCap',
-        'Hist21d_PassCount','Hist21d_Max%','Hist21d_Examples','ResLookbackDays','Prices',
-        'Session','EntrySrc','VolSrc',
-        'OptExpiry','BuyK','SellK','Width','DebitMid','DebitCons','MaxProfitMid',
-        'MaxProfitCons','RR_Spread_Mid','RR_Spread_Cons','BreakevenMid','PricingNote'
-    ]
-    # Ensure columns exist
-    for c in cols:
-        if c not in df.columns:
-            df[c] = ""
-    lines = []
-    lines.append("|".join(cols))
-    for _, r in df[cols].iterrows():
-        row_vals = []
-        for c in cols:
-            v = "" if pd.isna(r[c]) else str(r[c])
-            row_vals.append(v.replace("|","/"))
-        lines.append("|".join(row_vals))
-    return "\n".join(lines)
+    entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker)
+    details = {
+        "Ticker": ticker,
+        "Session": src.get("session",""),
+        "EntrySrc": src.get("entry_src",""),
+        "VolSrc": src.get("vol_src",""),
+        "Entry": entry,
+        "PrevClose": prev_close,
+        "TodayVol": today_vol,
+        "EntryTimeET": entry_ts.strftime("%Y-%m-%d %H:%M:%S ET") if isinstance(entry_ts, datetime) else "",
+    }
 
-# ----------- Page config & styles -----------
-st.set_page_config(page_title="Swing Options Screener", page_icon="📈", layout="wide")
+    if not (np.isfinite(prev_close) and np.isfinite(entry)):
+        return {"ok": False, "reason": "bad_entry_prevclose", "details": details}
 
-# Red RUN button theme (scoped CSS)
-st.markdown("""
-<style>
-div.stButton > button:first-child {
-    background-color: #d62828;
-    color: white;
-    font-weight: 700;
-    border-radius: 6px;
-    border: 1px solid #aa1f1f;
-}
-div.stButton > button:first-child:hover {
-    background-color: #bb2424;
-    color: #f8f9fa;
-}
-.kpi-card {
-    border: 1px solid #e5e7eb; padding: 0.75rem 1rem; border-radius: 8px; background: #fff;
-}
-.explain-card {
-    border: 1px solid #e5e7eb; padding: 0.9rem 1rem; border-radius: 8px; background: #fcfcff;
-}
-.small-note { color: #6b7280; font-size: 0.9rem; }
-</style>
-""", unsafe_allow_html=True)
+    change = (entry - prev_close) / prev_close
+    if change <= 0:
+        details["Change%"] = change * 100.0
+        return {"ok": False, "reason": "not_up_on_day", "details": details}
 
-st.title("📈 Swing Options Screener")
+    relvol = compute_relvol_time_adjusted(df, today_vol, use_median=relvol_median)
+    details["RelVol(TimeAdj63d)"] = relvol
+    if not (np.isfinite(relvol) and relvol >= rel_vol_min):
+        return {"ok": False, "reason": "relvol_low_timeadj", "details": details}
 
-# ============ PRIMARY ACTIONS ============
-col_run, col_info = st.columns([1,4])
-with col_run:
-    do_run = st.button("RUN", use_container_width=True)
-with col_info:
-    st.write("Runs the screener with current market state (intraday-aware, unadjusted data).")
+    rolling_high = df['High'].rolling(window=res_days, min_periods=res_days).max()
+    resistance = float(rolling_high.shift(1).iloc[-1]) if np.isfinite(rolling_high.shift(1).iloc[-1]) else np.nan
+    details["Resistance"] = resistance
+    if not (np.isfinite(resistance) and resistance > entry):
+        return {"ok": False, "reason": "no_upside_to_resistance", "details": details}
 
-# On click, execute scan and persist in session
-if do_run or "last_df" not in st.session_state:
-    out = run_scan(
-        tickers=None,            # default universe (or sp500 if your backend is wired)
-        res_days=21,
-        rel_vol_min=1.10,
-        rr_min=2.0,
-        with_options=True,
-        opt_days=30,
+    # If it passed to here, call the real evaluator to capture the exact reason (if any)
+    row, reason = evaluate_ticker(
+        ticker,
+        res_days=res_days,
+        rel_vol_min=rel_vol_min,
+        use_relvol_median=relvol_median,
+        rr_min=rr_min,
+        prefer_stop=stop_mode
     )
-    df = out.get("pass_df", pd.DataFrame())
-    # Sort lowest price first (user preference)
-    if not df.empty:
-        sort_cols = [c for c in ["Price","Ticker"] if c in df.columns]
-        if sort_cols:
-            df = df.sort_values(sort_cols)
-    st.session_state["last_df"] = df
+    if reason is None:
+        return {"ok": True, "reason": None, "row": row, "details": details}
+    return {"ok": False, "reason": reason, "details": details}
 
-# ============ RESULTS TABLE FIRST ============
-df = st.session_state.get("last_df", pd.DataFrame())
-st.subheader("Passes")
-if df is None or df.empty:
-    st.info("No PASS tickers found this run.")
-else:
-    # Clean numeric columns for display (don’t alter underlying data)
-    show_cols = [
-        'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
-        'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
-        'TPReward$','TPReward%','ResReward$','ResReward%','DailyATR','DailyCap',
-        'Hist21d_PassCount','Hist21d_Max%','ResLookbackDays','Session'
-    ]
-    for c in show_cols:
-        if c not in df.columns:
-            df[c] = ""
-    st.dataframe(df[show_cols], hide_index=True, use_container_width=True)
+# ---------- Minimal page setup ----------
+st.set_page_config(page_title="Swing Options Screener", layout="wide")
+st.markdown(
+    """
+    <style>
+    .run-btn > button {
+        background-color: #d81b60 !important; /* red-ish */
+        color: white !important;
+        border: none !important;
+        font-weight: 700 !important;
+    }
+    .small-muted { color:#666; font-size:0.9rem; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-    # WHY BUY (expander per-row)
-    st.subheader("Why buy (plain English)")
+st.title("Swing Options Screener (UNADJUSTED)")
+
+# Controls (kept simple & visible)
+colA, colB, colC, colD, colE = st.columns([1,1,1,1,1])
+res_days = colA.number_input("Resistance lookback (days)", min_value=10, max_value=60, value=21, step=1)
+rel_vol_min = colB.number_input("RelVol (time-adj) min", min_value=0.5, max_value=5.0, value=1.10, step=0.05)
+relvol_median = colC.checkbox("Use median for RelVol", value=False)
+rr_min = colD.number_input("Min R:R to resistance", min_value=1.0, max_value=10.0, value=2.0, step=0.25)
+stop_mode = colE.selectbox("Stop preference", ["safest","structure"], index=0)
+
+# RUN
+run_col = st.container()
+with run_col:
+    c1, c2 = st.columns([1,5])
+    run_clicked = c1.button("RUN", use_container_width=True, key="run", help="Run the scanner now")
+    st.write("")
+
+results_state = st.session_state.get("last_results", None)
+
+if run_clicked:
+    try:
+        out = run_scan(
+            tickers=None,                # engine will use defaults/universe internally
+            res_days=res_days,
+            rel_vol_min=rel_vol_min,
+            relvol_median=relvol_median,
+            rr_min=rr_min,
+            stop_mode=stop_mode,
+            with_options=True,
+            opt_days=getattr(sos, "TARGET_OPT_DAYS_DEFAULT", 30),
+        )
+        df = out.get("pass_df", pd.DataFrame())
+        st.session_state["last_results"] = {"df": df, "when": datetime.utcnow().isoformat()+"Z"}
+        results_state = st.session_state["last_results"]
+    except Exception:
+        st.error("Scan failed.")
+        st.code(traceback.format_exc())
+
+# ---------- Show results ----------
+if results_state and isinstance(results_state.get("df", None), pd.DataFrame) and not results_state["df"].empty:
+    df = results_state["df"].copy()
+
+    # Sort by current price ascending (as requested)
+    if "Price" in df.columns:
+        df = df.sort_values(["Price","Ticker"], ascending=[True, True])
+
+    st.subheader("PASS tickers")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # WHY BUY per row
+    st.subheader("Why Buy (per ticker)")
     for _, row in df.iterrows():
-        with st.expander(f"{row.get('Ticker','')} — explain"):
+        t = row.get("Ticker","")
+        with st.expander(f"WHY BUY — {t}"):
             html = build_why_buy_html(row.to_dict())
-            st.markdown(f"<div class='explain-card'>{html}</div>", unsafe_allow_html=True)
+            st.markdown(html, unsafe_allow_html=True)
 
-    # Copy for Google Sheets — hidden by default
-    with st.expander("Copy for Google Sheets (pipe-separated)"):
-        psv = build_google_sheet_psv(df)
-        st.code(psv, language="text")
+    # Copy-to-Sheets TSV (pipe-separated)
+    st.subheader("Copy to Google Sheets")
+    cols = list(df.columns)
+    lines = ["|".join(cols)]
+    for _, r in df.iterrows():
+        parts = []
+        for c in cols:
+            v = r.get(c, "")
+            s = "" if pd.isna(v) else str(v)
+            parts.append(s.replace("|","/"))
+        lines.append("|".join(parts))
+    tsv_text = "\n".join(lines)
+    st.text_area("Pipe-separated output", tsv_text, height=200)
 
-# ============ HISTORY TAB ============
-st.markdown("---")
-st.header("🗂️ History")
-try:
-    idx = fetch_history_index(GITHUB_OWNER, GITHUB_REPO, GITHUB_DATA_BRANCH)
-    if idx.empty:
-        st.info("No history yet. The scheduler will populate results after the first run.")
-    else:
-        st.subheader("Run Index")
-        st.dataframe(idx.sort_values("RunTimeET"), use_container_width=True)
+else:
+    st.info("No PASS tickers yet. Adjust filters or click RUN.")
 
-        st.subheader("Latest Run (details)")
-        latest_df = fetch_latest(GITHUB_OWNER, GITHUB_REPO, GITHUB_DATA_BRANCH)
-        if latest_df is not None and not latest_df.empty:
-            st.dataframe(latest_df, use_container_width=True, hide_index=True)
+# ---------- Debugger toggle ----------
+with st.expander("Debugger"):
+    st.markdown("Enter a ticker to see **plain-English** reasons and raw numbers for pass/fail.")
+    dbg_tkr = st.text_input("Ticker", value="")
+    if st.button("Explain", key="explain_btn"):
+        if not dbg_tkr.strip():
+            st.warning("Enter a ticker, e.g., WMT")
         else:
-            st.info("Latest run has no PASS rows.")
-except Exception as e:
-    st.warning(f"Could not load history from GitHub: {e}")
-
-# ============ DEBUGGER (separate toggle) ============
-st.markdown("---")
-with st.expander("🛠️ Debug a ticker (plain English + numbers)"):
-    dbg_col1, dbg_col2 = st.columns([2,1])
-    with dbg_col1:
-        dbg_ticker = st.text_input("Ticker to diagnose", value="", placeholder="e.g., WMT")
-    with dbg_col2:
-        do_dbg = st.button("Run Debug")
-
-    if do_dbg and dbg_ticker.strip():
-        # Capture printed output from diagnose_ticker (which prints to stdout)
-        buf = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = buf
-        try:
-            # These kwargs mirror the main run
-            diagnose_ticker(
-                dbg_ticker.strip().upper(),
-                res_days=21,
-                rel_vol_min=1.10,
-                relvol_median=False,
-                rr_min=2.0,
-                stop_mode="safest",
-            )
-        except Exception as e:
-            sys.stdout = old_stdout
-            st.error(f"Debugger error: {e}")
-        else:
-            sys.stdout = old_stdout
-            out_text = buf.getvalue().strip()
-            if not out_text:
-                st.info("No output produced by debugger.")
-            else:
-                # Show raw and “explainer”
-                st.markdown("**Raw diagnostic output:**")
-                st.code(out_text, language="text")
-                st.markdown(
-                    "<div class='small-note'>Tip: if this says something like "
-                    "<em>relvol_low_timeadj</em> or <em>not_up_on_day</em>, it will also print the exact numbers "
-                    "(entry/prev_close/vol/relvol) right above.</div>",
-                    unsafe_allow_html=True
+            try:
+                d = diagnose_ticker(
+                    dbg_tkr.strip().upper(),
+                    res_days=res_days,
+                    rel_vol_min=rel_vol_min,
+                    relvol_median=relvol_median,
+                    rr_min=rr_min,
+                    stop_mode=stop_mode
                 )
-
-# Footer / timestamp
-st.caption(f"Rendered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                if d["ok"]:
+                    st.success(f"{dbg_tkr.upper()} PASSED all filters.")
+                    st.json(d.get("row", {}))
+                else:
+                    reason = d.get("reason","")
+                    details = d.get("details", {})
+                    # Plain-English mapping
+                    reasons = {
+                        "no_data": "No daily history available.",
+                        "insufficient_rows": "Not enough rows to compute indicators.",
+                        "bad_entry_prevclose": "Entry/previous close not available.",
+                        "not_up_on_day": "Price is not up on the day.",
+                        "relvol_low_timeadj": "Relative volume (time-adjusted) is below the minimum.",
+                        "no_upside_to_resistance": "No headroom to the recent high (resistance).",
+                        "atr_capacity_short_vs_tp": "ATR capacity is insufficient vs distance to TP.",
+                        "insufficient_past_for_21d": "Not enough past data to run 21-day history check.",
+                        "history_21d_zero_pass": "No 21-day forward windows meeting the required % to TP.",
+                        "no_valid_support": "No valid support (SwingLow21/Pivot/ATR stop) below entry.",
+                        "non_positive_risk": "Computed risk is non-positive.",
+                        "rr_to_res_below_min": "Reward-to-risk to resistance is below the minimum."
+                    }
+                    st.error(f"FAIL — {reasons.get(reason, reason)}")
+                    # Numbers
+                    pretty = {k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in details.items()}
+                    st.json(pretty)
+            except Exception:
+                st.error("Debugger crashed.")
+                st.code(traceback.format_exc())
 
