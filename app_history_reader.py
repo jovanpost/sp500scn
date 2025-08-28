@@ -1,24 +1,39 @@
 # app_history_reader.py
+# Helper for the Streamlit app to load historical runs written by the Action.
+
+import glob
+import os
 import pandas as pd
 
-def _raw_base(owner: str, repo: str, branch: str = "data") -> str:
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}"
+# Prefer the new GitHub Actions output location; fall back to legacy if present.
+HISTORY_GLOBS = [
+    "data/history/pass_*.psv",   # new path (written by schedule.yml)
+    "history/pass_*.psv",        # legacy fallback
+]
 
-def fetch_history_index(owner: str, repo: str, branch: str = "data") -> pd.DataFrame:
-    url = _raw_base(owner, repo, branch) + "/history/index.csv"
-    return pd.read_csv(url)
+def load_history_df() -> pd.DataFrame:
+    """Return a DataFrame concatenating all historical PASS snapshots."""
+    paths = []
+    for pat in HISTORY_GLOBS:
+        paths.extend(sorted(glob.glob(pat)))
 
-def fetch_run_csv(owner: str, repo: str, csv_rel_path: str, branch: str = "data") -> pd.DataFrame:
-    base = _raw_base(owner, repo, branch)
-    url = f"{base}/{csv_rel_path}"
-    return pd.read_csv(url)
+    if not paths:
+        return pd.DataFrame()
 
-def fetch_latest(owner: str, repo: str, branch: str = "data") -> pd.DataFrame:
-    idx = fetch_history_index(owner, repo, branch)
-    if idx.empty:
-        return idx
-    # pick most recent run
-    idx["__order"] = pd.to_datetime(idx["RunTimeET"], errors="coerce")
-    idx = idx.sort_values("__order")
-    latest_path = idx.iloc[-1]["CSVPath"]
-    return fetch_run_csv(owner, repo, latest_path, branch)
+    frames = []
+    for p in paths:
+        try:
+            df = pd.read_csv(p, sep="|")
+            df["__source_file"] = os.path.basename(p)
+            frames.append(df)
+        except Exception:
+            # Skip unreadable files; keep going
+            continue
+
+    if not frames:
+        return pd.DataFrame()
+
+    # Sort newest first by file name if timestamp is embedded in filename;
+    # otherwise the app can sort by EvalDate.
+    out = pd.concat(frames, ignore_index=True)
+    return out
