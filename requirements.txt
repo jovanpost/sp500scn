@@ -1,12 +1,8 @@
-streamlit>=1.32
 yfinance>=0.2.40
 pandas>=2.2
 numpy>=1.26
-requests>=2.32
+lxml>=5.0
 beautifulsoup4>=4.12
-lxml>=5.0          # <- needed by pandas.read_html
-lxml>=5.2
 html5lib>=1.1
-backports.zoneinfo; python_version < '3.9'
 tzdata
 
