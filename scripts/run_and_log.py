@@ -1,90 +1,83 @@
-# scripts/run_and_log.py
-import argparse
-import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
+#!/usr/bin/env python3
+# Minimal runner that always writes outputs & a log so Actions has something to save.
 
+import os
+import sys
+from datetime import datetime
 import pandas as pd
 
-import swing_options_screener as sos  # uses your module
-# --- bootstrap: add repo root so we can import swing_options_screener.py ---
-import sys
-from pathlib import Path
-ROOT = Path(__file__).resolve().parents[1]  # repo root
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-# --------------------------------------------------------------------------
+# Make repo root importable
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
-import swing_options_screener as sos
+import swing_options_screener as sos  # your module
 
-def run_and_save(universe: str, with_options: bool):
-    # Run the screener via the module API (same logic as the UI)
-    out = sos.run_scan(
-        tickers=None if universe == "sp500" else None,  # None -> default list inside module
-        with_options=with_options,
+def ensure_dirs():
+    os.makedirs("data/history", exist_ok=True)
+    os.makedirs("data/logs", exist_ok=True)
+
+def stamp_et() -> str:
+    # just for filenames; UTC is fine too — using ET keeps consistency with UI text
+    return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--universe", choices=["sp500", "custom"], default="sp500")
+    ap.add_argument("--tickers", type=str, default="")
+    ap.add_argument("--with-options", action="store_true")
+    args = ap.parse_args()
+
+    ensure_dirs()
+    ts = stamp_et()
+
+    # Run screener (this returns {'pass_df': df})
+    result = sos.run_scan(
+        tickers=None if args.universe == "sp500" else sos.parse_ticker_text(args.tickers),
+        with_options=args.with_options,
     )
-    df = out.get("pass_df", pd.DataFrame())
 
-    # Folder for today's run (ET date)
-    now_et = datetime.now(ZoneInfo("America/New_York"))
-    day_str = now_et.strftime("%Y-%m-%d")
-    out_dir = os.path.join("data", "history", day_str)
-    os.makedirs(out_dir, exist_ok=True)
+    df = result.get("pass_df", pd.DataFrame())
 
-    # Save files
-    csv_path = os.path.join(out_dir, f"pass_tickers_{day_str}.csv")
-    psv_path = os.path.join(out_dir, f"pass_tickers_{day_str}.psv")
+    # Always write an execution log (so artifacts never come up empty)
+    log_path = f"data/logs/scan_{ts}.txt"
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(f"Run at {datetime.utcnow().isoformat()}Z\n")
+        if df is None or df.empty:
+            f.write("No PASS tickers found.\n")
+        else:
+            f.write(f"PASS count: {len(df)}\n")
+            f.write("Columns: " + ", ".join(df.columns) + "\n")
+            try:
+                f.write(df.head(20).to_string(index=False) + "\n")
+            except Exception:
+                pass
 
-    if df.empty:
-        # Create empty files with headers so downstream code is stable
-        cols = [
-            'Ticker','EvalDate','Price','EntryTimeET','Change%','RelVol(TimeAdj63d)',
-            'Resistance','TP','RR_to_Res','RR_to_TP','SupportType','SupportPrice','Risk$',
-            'TPReward$','TPReward%','ResReward$','ResReward%','DailyATR','DailyCap',
-            'Hist21d_PassCount','Hist21d_Max%','Hist21d_Examples','ResLookbackDays','Prices',
-            'Session','EntrySrc','VolSrc',
-            'OptExpiry','BuyK','SellK','Width','DebitMid','DebitCons','MaxProfitMid',
-            'MaxProfitCons','RR_Spread_Mid','RR_Spread_Cons','BreakevenMid','PricingNote'
-        ]
-        pd.DataFrame(columns=cols).to_csv(csv_path, index=False)
-        pd.DataFrame(columns=cols).to_csv(psv_path, index=False, sep="|")
+    # Write today’s outputs at the repo root (for easy artifact pickup)
+    if df is None or df.empty:
+        # Still create empty files so the artifact step finds something
+        pd.DataFrame().to_csv("pass_tickers.csv", index=False)
+        pd.DataFrame().to_csv("pass_tickers_unadjusted.psv", index=False, sep="|")
     else:
-        # Sort by current price ascending (your preference)
-        df = df.sort_values(by=["Price", "Ticker"], ascending=[True, True])
-        df.to_csv(csv_path, index=False)
-        df.to_csv(psv_path, index=False, sep="|")
+        # Sorted by Price ascending as per your UI preference
+        df = df.sort_values(["Price", "Ticker"])
+        df.to_csv("pass_tickers.csv", index=False)
+        df.to_csv("pass_tickers_unadjusted.psv", index=False, sep="|")
 
-    # Update a tiny index file for quick “what happened when”
-    idx_path = os.path.join("data", "history", "index.csv")
-    row = {
-        "date": day_str,
-        "processed_at_et": now_et.strftime("%Y-%m-%d %H:%M:%S"),
-        "num_pass": 0 if df is None else int(len(df)),
-        "csv": os.path.relpath(csv_path),
-        "psv": os.path.relpath(psv_path),
-    }
-    if os.path.exists(idx_path):
-        idx = pd.read_csv(idx_path)
-        # Replace existing row for today if present
-        idx = idx[idx["date"] != day_str]
-        idx = pd.concat([idx, pd.DataFrame([row])], ignore_index=True)
-    else:
-        os.makedirs(os.path.dirname(idx_path), exist_ok=True)
-        idx = pd.DataFrame([row])
-    idx.sort_values("date").to_csv(idx_path, index=False)
+    # Also drop a timestamped copy into history
+    hist_csv = f"data/history/pass_{ts}.csv"
+    hist_psv = f"data/history/pass_{ts}.psv"
+    try:
+        pd.read_csv("pass_tickers.csv").to_csv(hist_csv, index=False)
+    except Exception:
+        pd.DataFrame().to_csv(hist_csv, index=False)
+    try:
+        pd.read_csv("pass_tickers_unadjusted.psv", sep="|").to_csv(hist_psv, index=False)
+    except Exception:
+        pd.DataFrame().to_csv(hist_psv, index=False)
 
-    # Commit the changes back to the repo
-    os.system('git config user.name "github-actions"')
-    os.system('git config user.email "actions@github.com"')
-    os.system('git add -A')
-    os.system(f'git commit -m "[skip ci] Scan results for {day_str}" || echo "Nothing to commit"')
-    os.system('git push || echo "Nothing to push"')
-
+    print("Scan complete.")
+    print(f"Wrote: pass_tickers.csv, pass_tickers_unadjusted.psv, {hist_csv}, {hist_psv}, {log_path}")
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--universe", default="sp500", choices=["sp500", "custom"])
-    p.add_argument("--with-options", action="store_true")
-    args = p.parse_args()
-    run_and_save(args.universe, args.with_options)
-
+    main()
