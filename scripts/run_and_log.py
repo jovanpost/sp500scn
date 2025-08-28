@@ -1,151 +1,123 @@
-#!/usr/bin/env python3
+# scripts/run_and_log.py
 """
-Run the screener, save the PASS file into data/history/,
-and immediately append/merge a PENDING row for each PASS into
-data/history/outcomes.csv (created if missing).
-
-This guarantees the Streamlit UI shows today's items as Pending right away.
+Run the swing screener, save a dated PASS CSV under data/history/,
+and append PENDING rows to data/history/outcomes.csv for later settlement.
 """
 
-import os
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+from pathlib import Path
 import sys
-import csv
-from datetime import datetime, timedelta, timezone
 import pandas as pd
 
-# Make repo root importable
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
+# --- Local imports (repo files) ---
+try:
+    import swing_options_screener as sos
+except Exception as e:
+    print(f"[FATAL] Could not import swing_options_screener: {e}", file=sys.stderr)
+    raise
 
-import swing_options_screener as sos  # your module
+try:
+    from sp_universe import get_sp500_tickers
+except Exception:
+    # Fallback: return empty; sos.run_scan will use defaults
+    def get_sp500_tickers() -> list[str]:
+        return []
 
-HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
-LOG_DIR  = os.path.join(REPO_ROOT, "data", "logs")
-os.makedirs(HIST_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
+# ---------- IO helpers ----------
+ROOT = Path(".")
+HIST_DIR = ROOT / "data" / "history"
+LOG_DIR = ROOT / "data" / "logs"
+OUTCOMES_PATH = HIST_DIR / "outcomes.csv"
 
-# Columns we’ll ensure exist for outcomes
-OPT_COLS = [
-    "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
-    "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons",
-    "BreakevenMid","PricingNote"
-]
+def _utc_stamp() -> str:
+    # e.g., 20250828-1351 (UTC)
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
 
-OUTCOME_COLS = [
-    "Ticker","EvalDate","EntryTimeET","Price","TP","Resistance",
-    "SupportType","SupportPrice",
-    "OptExpiry","BuyK","SellK","Width",
-    "result_status","result_note","hit_time","hit_price"
-]
+def _ensure_dirs():
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def _utcnow_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _safe_float(x):
-    try:
-        return float(x)
-    except Exception:
-        return None
-
-
-def _ensure_opt_cols(df: pd.DataFrame) -> pd.DataFrame:
-    for c in OPT_COLS:
-        if c not in df.columns:
-            df[c] = ""
-    return df
-
-
-def _fallback_expiry(eval_date_str: str) -> str:
-    """If real option expiry not available, assume ~30 calendar days."""
-    try:
-        d = datetime.strptime(eval_date_str, "%Y-%m-%d")
-        return (d + timedelta(days=30)).date().isoformat()
-    except Exception:
-        # fallback to 30d from today
-        return (datetime.utcnow().date() + timedelta(days=30)).isoformat()
-
-
-def _make_pending_rows(df_pass: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each PASS, create a Pending outcome row immediately. If OptExpiry is
-    blank, we synthesize one ≈ EvalDate + 30d so the UI can track it.
-    """
-    rows = []
-    for _, r in df_pass.iterrows():
-        eval_date = str(r.get("EvalDate",""))
-        rows.append({
-            "Ticker":       str(r.get("Ticker","")),
-            "EvalDate":     eval_date,
-            "EntryTimeET":  str(r.get("EntryTimeET","")),
-            "Price":        r.get("Price",""),
-            "TP":           r.get("TP",""),
-            "Resistance":   r.get("Resistance",""),
-            "SupportType":  r.get("SupportType",""),
-            "SupportPrice": r.get("SupportPrice",""),
-            "OptExpiry":    (str(r.get("OptExpiry","")) or _fallback_expiry(eval_date)),
-            "BuyK":         r.get("BuyK",""),
-            "SellK":        r.get("SellK",""),
-            "Width":        r.get("Width",""),
-            "result_status":"PENDING",
-            "result_note":  "Awaiting TP hit or expiry",
-            "hit_time":     "",
-            "hit_price":    ""
-        })
-    return pd.DataFrame(rows, columns=OUTCOME_COLS)
-
-
+# ---------- main ----------
 def main():
-    # ---------------- Run screener ----------------
-    res = sos.run_scan(
-        tickers=None,
-        with_options=True,            # ensure options columns are requested
-        res_days=sos.RES_LOOKBACK_DEFAULT,
-        rel_vol_min=sos.REL_VOL_MIN_DEFAULT,
-        relvol_median=False,
-        rr_min=sos.RR_MIN_DEFAULT,
-        stop_mode="safest",
-        opt_days=sos.TARGET_OPT_DAYS_DEFAULT,
-    )
-    df_pass = res.get("pass_df", pd.DataFrame())
+    _ensure_dirs()
 
-    # If no PASS, still write a short log and exit cleanly
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M")
-    pass_name = f"pass_{ts}.csv"
-    pass_path = os.path.join(HIST_DIR, pass_name)
+    ap = argparse.ArgumentParser(description="Run screener and write history.")
+    ap.add_argument("--universe", choices=["sp500", "custom"], default="sp500")
+    ap.add_argument("--tickers", type=str, default="", help="comma/space/newline separated")
+    ap.add_argument("--with-options", action="store_true", help="include options columns")
+    # pass through some knobs (keep defaults same as app)
+    ap.add_argument("--res-days", type=int, default=sos.RES_LOOKBACK_DEFAULT)
+    ap.add_argument("--relvol-min", type=float, default=sos.REL_VOL_MIN_DEFAULT)
+    ap.add_argument("--rr-min", type=float, default=sos.RR_MIN_DEFAULT)
+    ap.add_argument("--stop-mode", choices=["safest","structure"], default="safest")
+    ap.add_argument("--opt-days", type=int, default=sos.TARGET_OPT_DAYS_DEFAULT)
+    args = ap.parse_args()
+
+    # --- Build universe ---
+    if args.universe == "sp500":
+        tickers = get_sp500_tickers() or None  # None => sos uses defaults safely
+        if not tickers:
+            print("[WARN] Could not fetch S&P 500 tickers; using module defaults.")
+    else:
+        # custom list from string, use module helper if present
+        if hasattr(sos, "parse_ticker_text"):
+            tickers = sos.parse_ticker_text(args.tickers)
+        else:
+            raw = args.tickers.replace("\n", ",").replace(" ", ",")
+            tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+        if not tickers:
+            tickers = None  # let sos pick defaults
+
+    # --- Run scan (returns dict with 'pass_df') ---
+    print("[INFO] Running screener…")
+    out = sos.run_scan(
+        tickers=tickers,
+        res_days=args.res_days,
+        rel_vol_min=args.relvol_min,
+        relvol_median=False,
+        rr_min=args.rr_min,
+        stop_mode=args.stop_mode,
+        with_options=True if args.with_options else True,  # keep options by default
+        opt_days=args.opt_days,
+    )
+    df_pass: pd.DataFrame = out.get("pass_df", pd.DataFrame())
+
+    ts = _utc_stamp()
+    pass_csv = HIST_DIR / f"pass_{ts}.csv"
+
     if df_pass is None or df_pass.empty:
-        # Write an empty-but-valid file so we can see the run happened
-        pd.DataFrame(columns=["Ticker","EvalDate","Price","EntryTimeET"]).to_csv(pass_path, index=False)
-        print(f"[{_utcnow_iso()}] No passes; wrote empty {pass_path}")
+        # still write an empty file so the run is recorded
+        print("[INFO] No PASS results. Writing empty pass file.")
+        df_pass = pd.DataFrame(columns=[
+            "Ticker","EvalDate","Price","EntryTimeET","Change%","RelVol(TimeAdj63d)",
+            "Resistance","TP","RR_to_Res","RR_to_TP"
+        ])
+        df_pass.to_csv(pass_csv, index=False)
+        print(f"[DONE] Wrote {pass_csv}")
+        # nothing to append to outcomes
         return
 
-    # Guarantee option columns exist (in case of rate-limit/etc.)
-    df_pass = _ensure_opt_cols(df_pass)
+    # Save full pass table for the run
+    df_pass.to_csv(pass_csv, index=False)
+    print(f"[DONE] Wrote PASS table: {pass_csv}  (rows={len(df_pass)})")
 
-    # Save full PASS file
-    df_pass.to_csv(pass_path, index=False)
-    print(f"[{_utcnow_iso()}] Wrote PASS file: {pass_path} ({len(df_pass)} rows)")
+    # ---- Append PENDING rows to outcomes.csv ----
+    # minimal columns needed by app History tab
+    cols_needed = ["Ticker", "EvalDate", "Price", "EntryTimeET"]
+    for c in cols_needed:
+        if c not in df_pass.columns:
+            df_pass[c] = ""  # ensure columns exist
 
-    # ---------------- Seed outcomes as Pending ----------------
-    outcomes_path = os.path.join(HIST_DIR, "outcomes.csv")
-    pending = _make_pending_rows(df_pass)
+    df_out = df_pass[cols_needed].copy()
+    df_out["result_status"] = "PENDING"  # <- key for Pending count
 
-    if os.path.exists(outcomes_path):
-        cur = pd.read_csv(outcomes_path)
-        # Merge by (Ticker, EvalDate); keep existing rows (in case they were updated later)
-        key = ["Ticker","EvalDate"]
-        merged = pd.concat([cur, pending], ignore_index=True)
-        merged = merged.sort_values(by=["EvalDate","Ticker"]).drop_duplicates(subset=key, keep="first")
-        merged.to_csv(outcomes_path, index=False, quoting=csv.QUOTE_MINIMAL)
-    else:
-        pending.to_csv(outcomes_path, index=False, quoting=csv.QUOTE_MINIMAL)
-
-    print(f"[{_utcnow_iso()}] Outcomes updated: {outcomes_path}")
-
+    # Append (create header only if file doesn't exist yet)
+    header = not OUTCOMES_PATH.exists()
+    df_out.to_csv(OUTCOMES_PATH, mode="a", header=header, index=False)
+    print(f"[DONE] Appended {len(df_out)} PENDING rows -> {OUTCOMES_PATH}")
 
 if __name__ == "__main__":
     main()
-
-
