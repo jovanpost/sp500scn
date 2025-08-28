@@ -1,215 +1,57 @@
 name: Daily scan + TP check
 
 on:
-  workflow_dispatch:
-    inputs:
-      force_scan:
-        description: "Force run scan now"
-        type: boolean
-        default: true
-      force_check:
-        description: "Force run TP-hit check now"
-        type: boolean
-        default: false
-  schedule:
-    # NOTE: GitHub Actions cron is UTC (no DST).
-    # 10:30 ET ≈ 14:30 UTC (EDT), 11:30 ET ≈ 15:30 UTC, 12:30 ET ≈ 16:30 UTC
-    - cron: "30 14 * * 1-5"   # 10:30 ET
-    - cron: "30 15 * * 1-5"   # 11:30 ET
-    - cron: "30 16 * * 1-5"   # 12:30 ET
-    # Nightly hit check ~ 23:30 UTC (after US close + buffer)
+  workflow_dispatch: {}        # Run by hand
+  schedule:                    # (keeps your timers too)
+    # 10:30 / 11:30 / 12:30 ET  (cron is UTC)
+    - cron: "30 14 * * 1-5"
+    - cron: "30 15 * * 1-5"
+    - cron: "30 16 * * 1-5"
+    # Nightly ~ 23:30 UTC for TP-hit check
     - cron: "30 23 * * 1-5"
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    env:
-      PYTHONUNBUFFERED: "1"
-    if: |
-      github.event_name == 'workflow_dispatch' && inputs.force_scan == 'true'
-      || (github.event_name == 'schedule' && (
-           github.event.schedule == '30 14 * * 1-5' ||
-           github.event.schedule == '30 15 * * 1-5' ||
-           github.event.schedule == '30 16 * * 1-5'
-         ))
+    permissions:
+      contents: write       # allow commit to the repo
     steps:
-      - name: Check out repo
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Show repo tree (debug)
+      - name: Install deps
         run: |
-          pwd
-          ls -la
-          echo "---- scripts dir ----"
-          ls -la ./scripts || true
+          python -m pip install -U pip
+          python -m pip install -r ./scripts/requirements.txt
 
-      - name: Install Python dependencies
+      - name: Run screener and write history
         run: |
-          python -m pip install --upgrade pip
-          if [ -f ./scripts/requirements.txt ]; then
-            echo "Using ./scripts/requirements.txt"
-            python -m pip install -r ./scripts/requirements.txt
-          elif [ -f ./requirements.txt ]; then
-            echo "Using ./requirements.txt"
-            python -m pip install -r ./requirements.txt
-          else
-            echo "No requirements file found. Installing minimal set…"
-            python -m pip install yfinance pandas numpy lxml beautifulsoup4 html5lib tzdata
-          fi
+          python ./scripts/run_and_log.py --universe sp500 --with-options
+        env:
+          TZ: America/New_York
 
-      - name: Run scan (root script; no imports)
-        run: |
-          mkdir -p run_logs data/daily_passes
-          TS_UTC=$(date -u +'%Y-%m-%dT%H-%M-%SZ')
-          DATE_UTC=$(date -u +'%Y-%m-%d')
-          python swing_options_screener.py --universe sp500 --with-options | tee "run_logs/scan_${TS_UTC}.log"
-
-          # Save copies of outputs if present
-          if [ -f pass_tickers_unadjusted.psv ]; then
-            cp pass_tickers_unadjusted.psv "data/daily_passes/pass_${DATE_UTC}.psv"
-          fi
-          if [ -f pass_tickers.csv ]; then
-            cp pass_tickers.csv "data/daily_passes/pass_${DATE_UTC}.csv"
-          fi
-
-      - name: Commit & push artifacts
-        run: |
-          git config user.name  "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git add run_logs/ data/daily_passes/ || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "scan: update outputs $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
-          fi
-
-      - name: Upload run logs (artifact)
+      - name: Upload artifacts (CSV + logs)
         uses: actions/upload-artifact@v4
         with:
-          name: run-logs
-          path: run_logs/*
+          name: pass-files
+          path: |
+            pass_tickers.csv
+            pass_tickers_unadjusted.psv
+            data/history/**/*.psv
+            data/history/**/*.csv
+            data/logs/**/*.txt
+          if-no-files-found: warn
 
-  check:
-    runs-on: ubuntu-latest
-    needs: []
-    if: |
-      github.event_name == 'workflow_dispatch' && inputs.force_check == 'true'
-      || (github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5')
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+      - name: Commit history to repo
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          persist-credentials: true
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Python dependencies (minimal)
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f ./scripts/requirements.txt ]; then
-            python -m pip install -r ./scripts/requirements.txt
-          elif [ -f ./requirements.txt ]; then
-            python -m pip install -r ./requirements.txt
-          else
-            python -m pip install yfinance pandas numpy tzdata
-          fi
-
-      - name: Nightly TP-hit check (inline Python)
-        run: |
-          python - <<'PY'
-          import pandas as pd, numpy as np, yfinance as yf
-          from pathlib import Path
-          from datetime import datetime, timedelta
-          import sys
-
-          base = Path("data/daily_passes")
-          outdir = Path("data/hit_checks")
-          outdir.mkdir(parents=True, exist_ok=True)
-
-          # Find latest .psv
-          files = sorted(base.glob("pass_*.psv"))
-          if not files:
-            print("No pass_*.psv found; skipping check.")
-            sys.exit(0)
-          latest = files[-1]
-          print(f"Using latest: {latest}")
-
-          df = pd.read_csv(latest, sep="|")
-          if df.empty:
-            print("Latest pass file is empty; nothing to check.")
-            sys.exit(0)
-
-          # Expect columns: Ticker, TP, EvalDate
-          need_cols = {"Ticker","TP","EvalDate"}
-          if not need_cols.issubset(df.columns):
-            print(f"Missing columns in {latest.name}: need {need_cols}, have {set(df.columns)}")
-            sys.exit(0)
-
-          rows = []
-          for _, r in df.iterrows():
-            t = str(r["Ticker"]).strip().upper()
-            tp = float(r["TP"])
-            eval_date = str(r.get("EvalDate",""))
-            try:
-              # fetch next ~30 calendar days unadjusted
-              hist = yf.Ticker(t).history(period="45d", auto_adjust=False, actions=False)
-              if hist is None or hist.empty:
-                rows.append({"Ticker":t,"EvalDate":eval_date,"TP":tp,"Hit":False,"HitDate":"","MaxAfterHigh":np.nan})
-                continue
-              hist = hist.tz_localize(None) if hist.index.tz is not None else hist
-              # Identify the first row AFTER eval_date
-              after = hist[hist.index.date > pd.to_datetime(eval_date).date()]
-              if after.empty:
-                rows.append({"Ticker":t,"EvalDate":eval_date,"TP":tp,"Hit":False,"HitDate":"","MaxAfterHigh":np.nan})
-                continue
-              # Look ahead up to ~21 trading days (≈ one month)
-              ahead = after.head(30)  # generous buffer for holidays
-              hit_idx = ahead[ahead["High"] >= tp].index
-              hit = len(hit_idx) > 0
-              hit_date = hit_idx[0].date().isoformat() if hit else ""
-              max_after_high = float(ahead["High"].max()) if not ahead.empty else np.nan
-              rows.append({"Ticker":t,"EvalDate":eval_date,"TP":tp,"Hit":hit,"HitDate":hit_date,"MaxAfterHigh":max_after_high})
-            except Exception as e:
-              rows.append({"Ticker":t,"EvalDate":eval_date,"TP":tp,"Hit":False,"HitDate":"","MaxAfterHigh":np.nan})
-
-          out = pd.DataFrame(rows)
-          ts = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%SZ")
-          out_file = outdir / f"hits_{ts}.csv"
-          out.to_csv(out_file, index=False)
-          print(f"Wrote {out_file}")
-
-          # Append to rolling history
-          hist_file = outdir / "history.csv"
-          if hist_file.exists():
-            old = pd.read_csv(hist_file)
-            all_df = pd.concat([old, out], ignore_index=True)
-          else:
-            all_df = out
-          all_df.to_csv(hist_file, index=False)
-          print(f"Updated {hist_file}")
-          PY
-
-      - name: Commit & push hit-check results
-        run: |
-          git config user.name  "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git add data/hit_checks/ || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "hit-check: update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
-          fi
+          commit_message: "History update (auto)"
+          file_pattern: |
+            data/history/**/*.psv
+            data/history/**/*.csv
+            data/logs/**/*.txt
