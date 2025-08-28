@@ -4,7 +4,7 @@ on:
   schedule:
     # NOTE: GitHub Actions cron is UTC only (no DST). Adjust if needed.
     # 10:30 ET ≈ 14:30 UTC (EDT), 11:30 ET ≈ 15:30 UTC, 12:30 ET ≈ 16:30 UTC
-    - cron: "45 00 * * 1-5"
+    - cron: "50 00 * * 1-5"
     - cron: "30 15 * * 1-5"
     - cron: "30 16 * * 1-5"
     # Nightly hit check ~ 23:30 UTC (after US close + buffer)
