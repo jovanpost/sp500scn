@@ -1,0 +1,2 @@
+[INFO] Running scan: universe=sp500 with_options=True
+[OK] Wrote data/history/pass_20250828-1818.csv (0 rows)
