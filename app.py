@@ -263,16 +263,37 @@ with tab2:
             # normalize booleans
             hit_mask = (s_hit == True) | (s_hit.astype("string").str.lower() == "true")
 
-            settled_mask = (s_status == "SETTLED")
-            pending_mask = (s_status != "SETTLED")
+# === PATCH: robust counters with immediate "Pending" for today ===
+import pandas as _pd  # no-op if already imported
 
-            settled = int(settled_mask.sum())
-            pending = int(pending_mask.sum())
-            hits    = int((settled_mask & hit_mask).sum())
-            misses  = int((settled_mask & ~hit_mask).sum())
+has_status = ("result_status" in dfh.columns)
+has_result = ("result" in dfh.columns)
 
-            st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
-            st.dataframe(dfh, use_container_width=True, height=min(600, 80 + 28*len(dfh)))
+# settled/hit/miss over ALL rows that have results
+settled = int(dfh["result_status"].eq("SETTLED").sum()) if has_status else 0
+hits    = int(dfh["result"].eq("HIT").sum())            if has_result else 0
+misses  = int(dfh["result"].eq("MISS").sum())           if has_result else 0
+
+# "pending" should reflect *today's* entries that don't have a result/status yet.
+# Safely parse EvalDate -> date
+_eval_date = _pd.to_datetime(dfh.get("EvalDate"), errors="coerce").dt.date
+_today = _pd.Timestamp.utcnow().date()
+
+# rows from today
+_today_rows = dfh[_eval_date == _today]
+
+if len(_today_rows) == 0:
+    # no fresh rows today -> pending is 0
+    pending = 0
+else:
+    if has_status:
+        # treat blanks/NaN/not SETTLED as pending until nightly check settles them
+        _status = _today_rows["result_status"].fillna("PENDING")
+        pending = int((_status == "PENDING").sum())
+    else:
+        # no status column yet -> everything from today is pending
+        pending = int(len(_today_rows))
+# === END PATCH ===
 
 # -----------------------------
 # TAB 3 — EXPLAIN / DEBUG
@@ -337,3 +358,4 @@ with tab3:
                 pass
 
 # ------------- End of file -------------
+
