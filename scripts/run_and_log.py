@@ -109,74 +109,162 @@ def append_text(path: str, txt: str):
 
 
 # --------------------------------------------------------------------
-# 4. Outcomes Upsert (non-destructive append/update)
-# --------------------------------------------------------------------
-# Columns we own inside outcomes.csv (we DO NOT overwrite settlement fields)
-CORE_OUTCOME_COLS = [
-    "Ticker", "EvalDate", "Price", "EntryTimeET"
-]
+# ============================================================
+# 4) Outcomes Upsert (non-destructive append/update)
+# ------------------------------------------------------------
+# Purpose:
+#   - Create "PENDING" rows from the latest pass DataFrame
+#   - Upsert them into data/history/outcomes.csv
+#     * Never clobber a resolved row (HIT/MISS/EXPIRED/CANCELLED)
+#     * Ensure the file and header exist
+#     * Deduplicate by a stable key: (Ticker, EvalDate, EntryTimeET)
+#
+# Public entry point for section:
+#   upsert_outcomes_from_pass(df_pass: pd.DataFrame) -> Path
+# ============================================================
 
-# Settlement & evaluation columns that might be added later by nightly checks
-PROTECTED_COLS = [
-    "Outcome", "OutcomeDate", "HitPrice", "MissPrice",
-    "Expiry", "BuyK", "SellK", "Width", "TP", "Resistance"
-]
+from typing import List
 
+_RESOLVED_STATES = {"HIT", "MISS", "EXPIRED", "CANCELLED"}
 
-def normalize_outcome_row(row: dict) -> dict:
+def _ensure_outcomes_file() -> pd.DataFrame:
+    """Load outcomes.csv or initialize an empty one with the canonical header."""
+    out_file = HIST_DIR / "outcomes.csv"
+    if not out_file.exists():
+        pd.DataFrame(columns=OUTCOME_COLS).to_csv(out_file, index=False)
+        return pd.DataFrame(columns=OUTCOME_COLS)
+    try:
+        df = pd.read_csv(out_file)
+    except Exception:
+        # If the file is corrupt, reinitialize with header (last resort).
+        df = pd.DataFrame(columns=OUTCOME_COLS)
+        df.to_csv(out_file, index=False)
+    # Guarantee all columns exist and in the right order
+    for c in OUTCOME_COLS:
+        if c not in df.columns:
+            df[c] = None
+    return df[OUTCOME_COLS]
+
+def _make_pending_rows(df_pass: pd.DataFrame) -> pd.DataFrame:
     """
-    Construct a minimal outcomes row from a pass row without clobbering any
-    potential settlement fields.
+    Map pass rows to canonical OUTCOME_COLS with Status=PENDING.
+    Missing source columns are filled with None.
     """
-    out = {
-        "Ticker":       row.get("Ticker"),
-        "EvalDate":     row.get("EvalDate"),
-        "Price":        row.get("Price"),
-        "EntryTimeET":  row.get("EntryTimeET"),
-    }
-    return out
+    if df_pass is None or df_pass.empty:
+        return pd.DataFrame(columns=OUTCOME_COLS)
 
+    base = df_pass.copy()
 
-def upsert_outcomes(outcomes_path: str, pass_df: pd.DataFrame) -> pd.DataFrame:
+    # Ensure required source fields exist (fill missing)
+    src_needed = ["Ticker", "EvalDate", "Price", "EntryTimeET", "TP", "OptExpiry", "BuyK", "SellK"]
+    for c in src_needed:
+        if c not in base.columns:
+            base[c] = None
+
+    pending = pd.DataFrame({
+        "Ticker":      base["Ticker"],
+        "EvalDate":    base["EvalDate"],
+        "Price":       base["Price"],
+        "EntryTimeET": base["EntryTimeET"],
+        "Status":      "PENDING",
+        "HitDateET":   None,
+        "Expiry":      base["OptExpiry"],
+        "BuyK":        base["BuyK"],
+        "SellK":       base["SellK"],
+        "TP":          base["TP"],
+        "Notes":       None,
+    }, columns=OUTCOME_COLS)
+
+    # Normalize types (especially dates as strings) to avoid merge weirdness
+    for col in ["EvalDate", "EntryTimeET", "HitDateET", "Expiry"]:
+        if col in pending.columns:
+            pending[col] = pending[col].astype(str).replace({"nan": None, "NaT": None})
+    return pending
+
+def _coalesce_cols(df_target: pd.DataFrame, df_source: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     """
-    Upsert new core rows from pass_df into outcomes.csv without overwriting
-    any of the protected settlement fields.
+    For each column in cols: if target value is null and source has a value, fill it.
+    This is used to non-destructively add details to existing rows.
     """
-    existing = read_csv(outcomes_path)
+    for c in cols:
+        if c in df_target.columns and c in df_source.columns:
+            df_target[c] = df_target[c].where(df_target[c].notna(), df_source[c])
+    return df_target
 
-    # Prepare incoming minimal core rows
-    incoming_core = pass_df.apply(lambda r: pd.Series(normalize_outcome_row(r)), axis=1)
-    # Drop duplicates in the incoming set by (Ticker, EvalDate, EntryTimeET)
-    incoming_core = incoming_core.drop_duplicates(subset=["Ticker", "EvalDate", "EntryTimeET"])
+def upsert_outcomes_from_pass(df_pass: pd.DataFrame) -> Path:
+    """
+    Non-destructive upsert of PENDING rows derived from df_pass into outcomes.csv.
+    - Keeps resolved rows intact (HIT/MISS/EXPIRED/CANCELLED)
+    - Adds any missing PENDING keys
+    - Coalesces empty fields (e.g., TP/Expiry) without overwriting existing values
+    """
+    out_file = HIST_DIR / "outcomes.csv"
+    df_out = _ensure_outcomes_file()
 
-    if existing.empty:
-        merged = incoming_core.copy()
-        write_csv(merged, outcomes_path)
-        return merged
+    # Build incoming PENDING rows
+    df_new = _make_pending_rows(df_pass)
+    if df_new.empty:
+        # Nothing to upsert; still ensure file exists with proper header
+        df_out.to_csv(out_file, index=False)
+        return out_file
 
-    # Ensure existing has all CORE columns
-    for c in CORE_OUTCOME_COLS:
-        if c not in existing.columns:
-            existing[c] = None
+    # Stable key used for idempotent upsert
+    key = ["Ticker", "EvalDate", "EntryTimeET"]
 
-    # Build a key for matching
-    existing["_key"] = existing["Ticker"].astype(str) + "|" + existing["EvalDate"].astype(str) + "|" + existing["EntryTimeET"].astype(str)
-    incoming_core["_key"] = incoming_core["Ticker"].astype(str) + "|" + incoming_core["EvalDate"].astype(str) + "|" + incoming_core["EntryTimeET"].astype(str)
+    # Split existing into resolved vs open
+    if not df_out.empty:
+        resolved_mask = df_out["Status"].isin(_RESOLVED_STATES)
+        df_resolved = df_out[resolved_mask].copy()
+        df_open     = df_out[~resolved_mask].copy()
+    else:
+        df_resolved = pd.DataFrame(columns=OUTCOME_COLS)
+        df_open     = pd.DataFrame(columns=OUTCOME_COLS)
 
-    # Find which incoming keys are new
-    existing_keys = set(existing["_key"].tolist())
-    new_rows = incoming_core[~incoming_core["_key"].isin(existing_keys)].copy()
+    # Left-merge new PENDING against existing OPEN to detect matches
+    if not df_open.empty:
+        merged = df_new.merge(df_open, on=key, how="left", suffixes=("", "_old"), indicator=True)
+        # Rows already present in OPEN: keep existing row but coalesce missing fields
+        in_open = merged["_merge"].eq("both")
+        to_update_keys = merged.loc[in_open, key]
 
-    if new_rows.empty:
-        print("[INFO] No new outcomes to append.")
-        existing.drop(columns=["_key"], errors="ignore", inplace=True)
-        return existing
+        if not to_update_keys.empty:
+            # Extract the current open rows and new rows aligned by key
+            open_on_key = df_open.merge(to_update_keys, on=key, how="inner")
+            new_on_key  = df_new.merge(to_update_keys, on=key, how="inner")
 
-    # Append new rows (protected fields remain whatever they were; here new rows have none)
-    combined = pd.concat([existing.drop(columns=["_key"], errors="ignore"), new_rows.drop(columns=["_key"], errors="ignore")], ignore_index=True)
-    write_csv(combined, outcomes_path)
-    return combined
+            # Coalesce into the open rows (do NOT overwrite non-null with null)
+            open_on_key = _coalesce_cols(
+                open_on_key, new_on_key,
+                cols=["Price", "Status", "HitDateET", "Expiry", "BuyK", "SellK", "TP", "Notes"]
+            )
 
+            # Rebuild df_open: replace the affected keys with the coalesced version
+            keep_open = df_open.merge(to_update_keys, on=key, how="left", indicator=True)
+            keep_open = keep_open[keep_open["_merge"] == "left_only"].drop(columns=["_merge"])
+            df_open = pd.concat([keep_open, open_on_key], ignore_index=True)
+
+        # Rows not present in OPEN become brand-new OPEN rows
+        to_insert = merged["_merge"].eq("left_only")
+        insert_rows = merged.loc[to_insert, OUTCOME_COLS]
+        df_open = pd.concat([df_open, insert_rows], ignore_index=True)
+    else:
+        # No open rows exist; all new rows are inserted
+        df_open = df_new.copy()
+
+    # Reassemble: resolved rows first preserved, then (updated/new) open rows
+    df_final = pd.concat([df_resolved[OUTCOME_COLS], df_open[OUTCOME_COLS]], ignore_index=True)
+
+    # Final de-duplication by key, keeping the last occurrence (most recent write)
+    if not df_final.empty:
+        df_final = df_final.sort_values(key).drop_duplicates(subset=key, keep="last")
+
+    # Enforce column order and write
+    for c in OUTCOME_COLS:
+        if c not in df_final.columns:
+            df_final[c] = None
+    df_final = df_final[OUTCOME_COLS]
+    df_final.to_csv(out_file, index=False)
+    return out_file
 
 # --------------------------------------------------------------------
 # 5. Screener Runner (invoke library, gather DataFrames)
