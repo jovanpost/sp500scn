@@ -1,169 +1,151 @@
 #!/usr/bin/env python3
-# scripts/run_and_log.py
-# - Runs the screener
-# - Saves today's PASS list to data/history/pass_YYYYMMDD-HHMM.csv
-# - ALSO writes/updates data/history/outcomes.csv with new rows initialized as PENDING
+"""
+Run the screener, save the PASS file into data/history/,
+and immediately append/merge a PENDING row for each PASS into
+data/history/outcomes.csv (created if missing).
+
+This guarantees the Streamlit UI shows today's items as Pending right away.
+"""
 
 import os
 import sys
-from datetime import datetime, timedelta
+import csv
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 
-# allow importing from repo root
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+# Make repo root importable
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
-import argparse
 import swing_options_screener as sos  # your module
 
-HIST_DIR = os.path.join(ROOT, "data", "history")
+HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
+LOG_DIR  = os.path.join(REPO_ROOT, "data", "logs")
 os.makedirs(HIST_DIR, exist_ok=True)
-OUTCOMES_CSV = os.path.join(HIST_DIR, "outcomes.csv")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# Columns we’ll ensure exist for outcomes
+OPT_COLS = [
+    "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
+    "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons",
+    "BreakevenMid","PricingNote"
+]
+
+OUTCOME_COLS = [
+    "Ticker","EvalDate","EntryTimeET","Price","TP","Resistance",
+    "SupportType","SupportPrice",
+    "OptExpiry","BuyK","SellK","Width",
+    "result_status","result_note","hit_time","hit_price"
+]
 
 
-def _parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--universe", choices=["custom", "sp500"], default="sp500")
-    p.add_argument("--tickers", type=str, default="")
-    p.add_argument("--res-days", type=int, default=sos.RES_LOOKBACK_DEFAULT)
-    p.add_argument("--relvol-min", type=float, default=sos.REL_VOL_MIN_DEFAULT)
-    p.add_argument("--relvol-median", action="store_true")
-    p.add_argument("--rr-min", type=float, default=sos.RR_MIN_DEFAULT)
-    p.add_argument("--stop-mode", choices=["safest","structure"], default="safest")
-    p.add_argument("--with-options", action="store_true", help="append option suggestion")
-    p.add_argument("--opt-days", type=int, default=sos.TARGET_OPT_DAYS_DEFAULT)
-    return p.parse_args()
+def _utcnow_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _today_timestamp():
-    now = datetime.utcnow()
-    return now.strftime("%Y%m%d-%H%M")
-
-
-def _coerce_float(x):
+def _safe_float(x):
     try:
         return float(x)
     except Exception:
-        return float("nan")
+        return None
 
 
-def _evaldate_to_dt(row):
-    # EvalDate is ISO date string (yyyy-mm-dd)
+def _ensure_opt_cols(df: pd.DataFrame) -> pd.DataFrame:
+    for c in OPT_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    return df
+
+
+def _fallback_expiry(eval_date_str: str) -> str:
+    """If real option expiry not available, assume ~30 calendar days."""
     try:
-        return datetime.strptime(str(row["EvalDate"]), "%Y-%m-%d")
+        d = datetime.strptime(eval_date_str, "%Y-%m-%d")
+        return (d + timedelta(days=30)).date().isoformat()
     except Exception:
-        # fallback: try to coerce from other formats
-        try:
-            return pd.to_datetime(row["EvalDate"]).to_pydatetime()
-        except Exception:
-            return None
+        # fallback to 30d from today
+        return (datetime.utcnow().date() + timedelta(days=30)).isoformat()
 
 
-def _initial_outcome_row(row):
+def _make_pending_rows(df_pass: pd.DataFrame) -> pd.DataFrame:
     """
-    Build the initial outcome fields for a PASS row:
-    - TargetType: OPTION_SELLK if we have a SellK, else TP_PRICE
-    - TargetLevel: float(SellK) or float(TP)
-    - WindowEnd: OptExpiry (if present) else EvalDate + 30 calendar days
-    - Outcome=PENDING, HitDate="", MaxHigh=""
+    For each PASS, create a Pending outcome row immediately. If OptExpiry is
+    blank, we synthesize one ≈ EvalDate + 30d so the UI can track it.
     """
-    sellk = row.get("SellK", "")
-    tp    = row.get("TP", "")
-    expiry = row.get("OptExpiry", "")
-
-    if str(sellk).strip() != "":
-        target_type = "OPTION_SELLK"
-        target_level = _coerce_float(sellk)
-    else:
-        target_type = "TP_PRICE"
-        target_level = _coerce_float(tp)
-
-    # Window end
-    if str(expiry).strip() != "":
-        window_end = str(expiry)  # already ISO date
-    else:
-        evdt = _evaldate_to_dt(row)
-        if evdt is None:
-            # fallback: 30 days from now
-            window_end = (datetime.utcnow() + timedelta(days=30)).date().isoformat()
-        else:
-            window_end = (evdt + timedelta(days=30)).date().isoformat()
-
-    out = dict(
-        Outcome="PENDING",
-        TargetType=target_type,
-        TargetLevel=target_level,
-        WindowEnd=window_end,
-        HitDate="",
-        MaxHigh="",
-        CheckedAtUTC=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-    )
-    return out
-
-
-def _unique_key(df):
-    """
-    Build a de-dup key: (Ticker, EvalDate, EntryTimeET).
-    If EntryTimeET missing, fall back to (Ticker, EvalDate).
-    """
-    key = df.get("EntryTimeET")
-    if key is None or key.isna().all():
-        return df["Ticker"].astype(str) + "|" + df["EvalDate"].astype(str)
-    return df["Ticker"].astype(str) + "|" + df["EvalDate"].astype(str) + "|" + df["EntryTimeET"].astype(str)
+    rows = []
+    for _, r in df_pass.iterrows():
+        eval_date = str(r.get("EvalDate",""))
+        rows.append({
+            "Ticker":       str(r.get("Ticker","")),
+            "EvalDate":     eval_date,
+            "EntryTimeET":  str(r.get("EntryTimeET","")),
+            "Price":        r.get("Price",""),
+            "TP":           r.get("TP",""),
+            "Resistance":   r.get("Resistance",""),
+            "SupportType":  r.get("SupportType",""),
+            "SupportPrice": r.get("SupportPrice",""),
+            "OptExpiry":    (str(r.get("OptExpiry","")) or _fallback_expiry(eval_date)),
+            "BuyK":         r.get("BuyK",""),
+            "SellK":        r.get("SellK",""),
+            "Width":        r.get("Width",""),
+            "result_status":"PENDING",
+            "result_note":  "Awaiting TP hit or expiry",
+            "hit_time":     "",
+            "hit_price":    ""
+        })
+    return pd.DataFrame(rows, columns=OUTCOME_COLS)
 
 
 def main():
-    args = _parse_args()
-
-    # Run the screener
-    if args.universe == "sp500":
-        tickers = None  # sos will pull live S&P 500 when None
-    else:
-        tickers = sos.parse_ticker_text(args.tickers) if args.tickers else None
-
-    out = sos.run_scan(
-        tickers=tickers,
-        res_days=args.res_days,
-        rel_vol_min=args.relvol_min,
-        relvol_median=args.relvol_median,
-        rr_min=args.rr_min,
-        stop_mode=args.stop_mode,
-        with_options=args.with_options,
-        opt_days=args.opt_days,
+    # ---------------- Run screener ----------------
+    res = sos.run_scan(
+        tickers=None,
+        with_options=True,            # ensure options columns are requested
+        res_days=sos.RES_LOOKBACK_DEFAULT,
+        rel_vol_min=sos.REL_VOL_MIN_DEFAULT,
+        relvol_median=False,
+        rr_min=sos.RR_MIN_DEFAULT,
+        stop_mode="safest",
+        opt_days=sos.TARGET_OPT_DAYS_DEFAULT,
     )
+    df_pass = res.get("pass_df", pd.DataFrame())
 
-    df = out["pass_df"]
-    ts = _today_timestamp()
-    pass_path = os.path.join(HIST_DIR, f"pass_{ts}.csv")
-    df.to_csv(pass_path, index=False)
-    print(f"Wrote {pass_path} with {len(df)} rows")
+    # If no PASS, still write a short log and exit cleanly
+    ts = datetime.utcnow().strftime("%Y%m%d-%H%M")
+    pass_name = f"pass_{ts}.csv"
+    pass_path = os.path.join(HIST_DIR, pass_name)
+    if df_pass is None or df_pass.empty:
+        # Write an empty-but-valid file so we can see the run happened
+        pd.DataFrame(columns=["Ticker","EvalDate","Price","EntryTimeET"]).to_csv(pass_path, index=False)
+        print(f"[{_utcnow_iso()}] No passes; wrote empty {pass_path}")
+        return
 
-    # Prepare/merge outcomes with PENDING rows immediately
-    cols_keep = list(df.columns)  # keep original columns
-    # Add initial outcome fields
-    enriched = []
-    for r in df.to_dict(orient="records"):
-        r2 = dict(r)
-        r2.update(_initial_outcome_row(r))
-        enriched.append(r2)
+    # Guarantee option columns exist (in case of rate-limit/etc.)
+    df_pass = _ensure_opt_cols(df_pass)
 
-    df_new = pd.DataFrame(enriched)
+    # Save full PASS file
+    df_pass.to_csv(pass_path, index=False)
+    print(f"[{_utcnow_iso()}] Wrote PASS file: {pass_path} ({len(df_pass)} rows)")
 
-    # Merge into outcomes.csv (append, then drop duplicates by key)
-    if os.path.exists(OUTCOMES_CSV):
-        old = pd.read_csv(OUTCOMES_CSV)
-        merged = pd.concat([old, df_new], ignore_index=True)
+    # ---------------- Seed outcomes as Pending ----------------
+    outcomes_path = os.path.join(HIST_DIR, "outcomes.csv")
+    pending = _make_pending_rows(df_pass)
+
+    if os.path.exists(outcomes_path):
+        cur = pd.read_csv(outcomes_path)
+        # Merge by (Ticker, EvalDate); keep existing rows (in case they were updated later)
+        key = ["Ticker","EvalDate"]
+        merged = pd.concat([cur, pending], ignore_index=True)
+        merged = merged.sort_values(by=["EvalDate","Ticker"]).drop_duplicates(subset=key, keep="first")
+        merged.to_csv(outcomes_path, index=False, quoting=csv.QUOTE_MINIMAL)
     else:
-        merged = df_new
+        pending.to_csv(outcomes_path, index=False, quoting=csv.QUOTE_MINIMAL)
 
-    merged["_key"] = _unique_key(merged)
-    merged = merged.sort_values(["EvalDate", "Ticker"]).drop_duplicates("_key", keep="last")
-    merged = merged.drop(columns=["_key"])
-
-    merged.to_csv(OUTCOMES_CSV, index=False)
-    print(f"Updated {OUTCOMES_CSV} with {len(merged)} total rows")
+    print(f"[{_utcnow_iso()}] Outcomes updated: {outcomes_path}")
 
 
 if __name__ == "__main__":
     main()
+
 
