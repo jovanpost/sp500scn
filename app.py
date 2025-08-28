@@ -1,382 +1,281 @@
 # app.py — Streamlit UI for Swing Options Screener (UNADJUSTED)
-# - Scanner tab: big red RUN button -> PASS table -> WHY BUY expanders -> Copy to Google Sheets
-# - History tab: auto-load all CSVs in data/history/pass_*.csv
-# - Debugger tab: plain-English explanation + numbers for a single ticker
-
-import os
-import io
-import glob
-import re
+import os, glob, io, textwrap
 from datetime import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
 
-# Import your screener as a module
-import swing_options_screener as sos  # must be in repo root
+import swing_options_screener as sos  # your module (evaluate_ticker, run_scan, etc.)
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-def _safe(x):
-    return "" if x is None else str(x)
-
-def _usd(x, nd=2):
-    try:
-        fx = float(x)
-        # show more precision for very small ATRs
-        if nd is None:
-            nd = 4 if abs(fx) < 1 else 2
-        return f"${fx:,.{nd}f}"
-    except Exception:
-        return _safe(x)
-
-def _pct(x, nd=2):
-    try:
-        fx = float(x)
-        return f"{fx:.{nd}f}%"
-    except Exception:
-        return _safe(x)
-
-def _relvol_human(x):
-    try:
-        fx = float(x)
-        # Express as “+87% vs typical” if >1, else “-30% vs typical”
-        delta = (fx - 1.0) * 100.0
-        sign = "+" if delta >= 0 else ""
-        return f"{sign}{delta:.0f}% vs typical"
-    except Exception:
-        return _safe(x)
-
-def _mk_bullet(s):
-    return f"<li style='margin:0.2rem 0'>{s}</li>"
-
-def _bold(s):
-    return f"<strong>{_safe(s)}</strong>"
-
-def _timestamp_et():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S ET")
-
-# -----------------------------------------------------------------------------
-# WHY BUY builder (plain English; readable numbers with $/%; includes ATR & volume)
-# -----------------------------------------------------------------------------
-def build_why_buy_html(row: dict) -> str:
-    tkr     = _safe(row.get("Ticker",""))
-    entry   = _usd(row.get("Price"))
-    tp      = _usd(row.get("TP"))
-    res     = _usd(row.get("Resistance"))
-    rr_res  = _safe(row.get("RR_to_Res",""))
-    rr_tp   = _safe(row.get("RR_to_TP",""))
-    change  = _pct(row.get("Change%"))
-    relvol  = _relvol_human(row.get("RelVol(TimeAdj63d)"))
-
-    tp_move_abs  = _usd(row.get("TPReward$", None))
-    tp_move_pct  = _pct(row.get("TPReward%", None))
-
-    daily_atr    = _usd(row.get("DailyATR", None), nd=None)  # auto nd
-    daily_cap    = _usd(row.get("DailyCap", None), nd=2)
-
-    support_type = _safe(row.get("SupportType",""))
-    support_px   = _usd(row.get("SupportPrice", None))
-
-    hist_cnt     = _safe(row.get("Hist21d_PassCount",""))
-    hist_ex      = _safe(row.get("Hist21d_Examples",""))
-
-    opt_exp      = _safe(row.get("OptExpiry",""))
-    buy_k        = _safe(row.get("BuyK",""))
-    sell_k       = _safe(row.get("SellK",""))
-
-    header = (
-        f"{_bold(tkr)} is a buy via the {_bold(buy_k)}/{_bold(sell_k)} vertical call spread "
-        f"expiring {_bold(opt_exp)} because it recently reached a level near {_bold(res)} "
-        f"(resistance) and now trades around {_bold(entry)}. "
-        f"That makes a target at {_bold(tp)} feel realistic."
-    )
-
-    bullets = []
-    bullets.append(_mk_bullet(
-        f"Reward vs. risk: from where buyers have stepped in before "
-        f"({_bold(support_px)} {_bold('support')}) up to resistance is about {_bold(str(rr_res))}:1; "
-        f"to the nearer take-profit it’s {_bold(str(rr_tp))}:1."
-    ))
-    bullets.append(_mk_bullet(
-        f"Move needed to TP: {_bold(tp_move_abs)} (≈ {_bold(tp_move_pct)})."
-    ))
-    bullets.append(_mk_bullet(
-        f"Volatility runway (ATR): daily ATR ≈ {_bold(daily_atr)}, which implies roughly "
-        f"{_bold(daily_cap)} of potential movement over ~21 trading days."
-    ))
-    bullets.append(_mk_bullet(
-        f"Today’s tone & volume: price is {_bold(change)} on the day; "
-        f"volume is running {_bold(relvol)} (time-adjusted)."
-    ))
-
-    hist = (
-        f"<p style='margin:0.4rem 0 0.2rem 0'><em>History check (21 trading days)</em>: "
-        f"over the past year, {_bold(hist_cnt)} separate 21-day windows met or exceeded the required move. "
-        f"<em>Examples</em>: { _safe(hist_ex) }</p>"
-    )
-
-    bullets_html = "<ul style='padding-left:1.1rem; margin:0.6rem 0 0.2rem 0'>" + "".join(bullets) + "</ul>"
-
-    footer = f"<p style='margin-top:0.3rem; color:#6b7280;'>Data as of {_bold(_timestamp_et())}.</p>"
-
-    return f"<div style='line-height:1.35'>{header}{bullets_html}{hist}{footer}</div>"
-
-# -----------------------------------------------------------------------------
-# Streamlit page config & style
-# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Swing Options Screener (UNADJUSTED)", layout="wide")
 
-# A tiny CSS tweak: red RUN button
+# ----------- tiny style: red primary button & compact table -----------
 st.markdown("""
 <style>
-div.stButton > button[kind="primary"]{
-  background-color:#e11d48 !important; /* rose-600 */
-  border-color:#e11d48 !important;
-}
+div.stButton > button[kind="primary"] { background: #e63946; color: white; border: 0; }
+div.stButton > button[kind="primary"]:hover { background: #c92e3f; }
+.dataframe td, .dataframe th { font-size: 0.90rem; }
 </style>
 """, unsafe_allow_html=True)
 
+# ----------- small format helpers -----------
+def _safe(x, default=""):
+    if x is None: return default
+    return x
+
+def _usd(x, nd=2):
+    try:
+        if pd.isna(x): return ""
+        return f"${float(x):,.{nd}f}"
+    except Exception:
+        return ""
+
+def _pct(x, nd=2):
+    try:
+        if pd.isna(x): return ""
+        return f"{float(x):.{nd}f}%"
+    except Exception:
+        return ""
+
+def _relvol_human(x):
+    try:
+        if pd.isna(x): return ""
+        f = float(x)
+        # convert multiplier to % over typical pace
+        return f"+{int(round((f-1.0)*100))}%"
+    except Exception:
+        return ""
+
+def _bold(s): return f"**{s}**"
+def _mk_li(s): return f"- {s}"
+
+# ----------- WHY BUY builder (plain English) -----------
+def build_why_buy_html(row: dict) -> str:
+    tkr = _safe(row.get("Ticker",""))
+    price = _usd(row.get("Price"))
+    tp = _usd(row.get("TP"))
+    res = _usd(row.get("Resistance"))
+    rr_res = _safe(row.get("RR_to_Res",""))
+    rr_tp  = _safe(row.get("RR_to_TP",""))
+    change = _pct(row.get("Change%"))
+    relvol = _relvol_human(row.get("RelVol(TimeAdj63d)"))
+    daily_atr = row.get("DailyATR", None)
+    daily_atr_s = _usd(daily_atr, nd=4 if isinstance(daily_atr,float) and daily_atr < 1 else 2)
+    daily_cap = _usd(row.get("DailyCap"))
+    tp_reward = _usd(row.get("TPReward$"))
+    tp_reward_pct = _pct(row.get("TPReward%"))
+    support_type = _safe(row.get("SupportType",""))
+    support_price = _usd(row.get("SupportPrice"))
+    hist_cnt = _safe(row.get("Hist21d_PassCount",""))
+    hist_ex  = _safe(row.get("Hist21d_Examples",""))
+    entry_src = _safe(row.get("EntrySrc",""))
+    session = _safe(row.get("Session",""))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S ET")
+
+    header = (
+        f"{_bold(tkr)} is a buy via the vertical call spread {_bold(_safe(row.get('BuyK','')))} / "
+        f"{_bold(_safe(row.get('SellK','')))} expiring {_bold(_safe(row.get('OptExpiry','')))}, "
+        f"because it recently topped around {_bold(res)} (resistance) and now trades near "
+        f"{_bold(price)} (current price). That makes a target at {_bold(tp)} feel realistic."
+    )
+
+    bullets = [
+        _mk_li(
+            f"**Reward vs. risk:** from support at {_bold(support_price)} "
+            f"to resistance is about {_bold(str(rr_res))}:1 "
+            f"(to the nearer TP it’s {_bold(str(rr_tp))}:1)."),
+        _mk_li(
+            f"**Move needed to TP:** {_bold(tp_reward)} (≈ {_bold(tp_reward_pct)})."),
+        _mk_li(
+            f"**Volatility runway (ATR):** daily ATR is {_bold(daily_atr_s)}, so a typical month "
+            f"(~21 trading days) allows up to {_bold(daily_cap)} of movement."),
+        _mk_li(
+            f"**Today’s tone & volume:** price is {_bold(change)} on the day and "
+            f"volume is running about {_bold(relvol)} vs typical pace (time-adjusted)."),
+        _mk_li(
+            f"**History check (21 trading days):** need about {_bold(tp_reward_pct)} to reach TP. "
+            f"Over the past year, {_bold(hist_cnt)} separate 21-day windows met or exceeded that move. "
+            f"Examples: {hist_ex}")
+    ]
+
+    html = f"""
+<div style="line-height:1.35">
+<p>{header}</p>
+<p><strong>Why this setup makes sense</strong></p>
+<ul>
+<li>{bullets[0][2:]}</li>
+<li>{bullets[1][2:]}</li>
+<li>{bullets[2][2:]}</li>
+<li>{bullets[3][2:]}</li>
+<li>{bullets[4][2:]}</li>
+</ul>
+<p><em>Data as of {now}. Session: {session}; EntrySrc: {entry_src}.</em></p>
+</div>
+"""
+    return html
+
+# ----------- Debugger (plain English with numbers) -----------
+def diagnose_ticker(ticker: str, **kwargs) -> str:
+    # Grab helpers from module safely
+    _get_history = getattr(sos, "_get_history", None)
+    get_eptv     = getattr(sos, "get_entry_prevclose_todayvol", None)
+    comp_relvol  = getattr(sos, "compute_relvol_time_adjusted", None)
+    eval_tick    = getattr(sos, "evaluate_ticker", None)
+    if not (_get_history and get_eptv and comp_relvol and eval_tick):
+        return "Debugger unavailable: internal helpers not found."
+
+    df = _get_history(ticker)
+    if df is None or df.empty:
+        return f"**{ticker}** — no daily history available."
+
+    entry, prev_close, today_vol, src, entry_ts = get_eptv(df, ticker)
+    change = (entry - prev_close) / prev_close if (entry and prev_close) else np.nan
+    relvol = comp_relvol(df, today_vol, use_median=kwargs.get("use_relvol_median", False))
+
+    row, reason = eval_tick(ticker, **kwargs)
+
+    src_s = f"session={src.get('session')} · entry_src={src.get('entry_src')} · vol_src={src.get('vol_src')}"
+    base = (
+        f"**{ticker}** — price {_usd(entry)} vs prior close {_usd(prev_close)} "
+        f"({ _pct(change*100) if not pd.isna(change) else '' }). "
+        f"Today vol ≈ {today_vol:,.0f} (relVol {_relvol_human(relvol)}). "
+        f"[{src_s}]"
+    )
+    if reason is None and row:
+        return base + "\n\n**Result:** PASS — meets all gates."
+    else:
+        # Friendly reasons
+        reasons = {
+            "not_up_on_day": "Not up on the day.",
+            "relvol_low_timeadj": "Relative volume too low for the time of day.",
+            "no_upside_to_resistance": "No reasonable upside to resistance.",
+            "atr_capacity_short_vs_tp": "ATR capacity too small to reach TP.",
+            "history_21d_zero_pass": "No similar 21-day windows reached the needed move.",
+            "no_valid_support": "No valid support below entry.",
+            "non_positive_risk": "Computed risk was non-positive.",
+            "rr_to_res_below_min": "Reward-to-risk to resistance below minimum.",
+            "bad_entry_prevclose": "Could not compute a valid entry or prior close.",
+            "insufficient_rows": "Not enough daily rows.",
+            "no_data": "No data for ticker.",
+        }
+        friendly = reasons.get(reason, reason)
+        return base + f"\n\n**Result:** FAIL — {friendly}"
+
+# =================== UI ===================
 st.title("Swing Options Screener\n(UNADJUSTED)")
 
-tab_scan, tab_hist, tab_dbg = st.tabs(["🔎 Scanner", "📜 History", "🧪 Debugger"])
+tab_scan, tab_hist, tab_dbg = st.tabs(["🔎 Scanner", "🧺 History", "🧪 Debugger"])
 
-# -----------------------------------------------------------------------------
-# Scanner tab
-# -----------------------------------------------------------------------------
 with tab_scan:
-    c1, c2 = st.columns([1,3])
-    with c1:
-        run_clicked = st.button("Run Screener", type="primary", use_container_width=True)
-    with c2:
-        st.caption(f"UI started: {_timestamp_et()}")
+    st.caption("Click **Run Screener** to evaluate the universe and show PASS tickers. Sorted by price (low → high).")
 
-    console = st.expander("🖥️ Console output", expanded=False)
-
-    passed_df = None
-    pipe_text = ""
-
-    if run_clicked:
-        with st.status("Running screener… this may take a bit on first run.", expanded=True):
-            # Run the scan — always include options so those columns appear
+    col_btn, _ = st.columns([1,5])
+    run = col_btn.button("Run Screener", type="primary")
+    if run:
+        with st.info("Running screener… this may take a bit on first run."):
             out = sos.run_scan(
-                tickers=None,
+                tickers=None,            # use default / S&P per your module
+                res_days=21,
+                rel_vol_min=1.10,
+                relvol_median=False,
+                rr_min=2.0,
+                stop_mode="safest",
                 with_options=True,
+                opt_days=30,
             )
-            passed_df = out.get("pass_df", pd.DataFrame())
 
-            with console:
-                st.write("Processed at", _timestamp_et())
+        df = out.get("pass_df", pd.DataFrame())
+        if df.empty:
+            st.warning("No PASS tickers found (or CSV not produced).")
+        else:
+            # Sort by current price, lowest first
+            if "Price" in df.columns:
+                df = df.sort_values("Price", ascending=True).reset_index(drop=True)
 
-    # If we already have a cached run in memory (e.g., Streamlit rerun), keep it
-    if passed_df is None:
-        st.info("Click **Run Screener** to generate today’s PASS list.")
+            st.subheader("PASS tickers")
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
-    elif passed_df.empty:
-        st.warning("No PASS tickers found (or CSV not produced).")
+            with st.expander("Copy table (pipe-delimited for Google Sheets)"):
+                cols = list(df.columns)
+                s = io.StringIO()
+                s.write("|".join(cols) + "\n")
+                for _, r in df.iterrows():
+                    line = "|".join(str(_safe(r.get(c,""))).replace("|","/") for c in cols)
+                    s.write(line + "\n")
+                st.code(s.getvalue(), language="text")
 
-    else:
-        # Sort by current Price (lowest -> highest) per your preference
-        if "Price" in passed_df.columns:
-            try:
-                passed_df = passed_df.sort_values(["Price","Ticker"], ascending=[True, True])
-            except Exception:
-                pass
-
-        st.subheader("PASS tickers")
-        st.dataframe(
-            passed_df,
-            use_container_width=True,
-            height=min(520, 220 + 28*len(passed_df))
-        )
-
-        # WHY BUY expanders
-        st.subheader("Explain each PASS (WHY BUY)")
-        for _, row in passed_df.iterrows():
-            sym = _safe(row.get("Ticker",""))
-            with st.expander(f"WHY BUY — {sym}", expanded=False):
-                html = build_why_buy_html(row)
-                st.markdown(html, unsafe_allow_html=True)
-
-        # Google Sheets copy expander (pipe-delimited)
-        with st.expander("Copy table (pipe-delimited for Google Sheets)", expanded=False):
-            cols = list(passed_df.columns)
-            buf = io.StringIO()
-            buf.write("|".join(cols) + "\n")
-            for _, r in passed_df.iterrows():
-                line = "|".join(_safe(r.get(c, "")) for c in cols)
-                buf.write(line + "\n")
-            pipe_text = buf.getvalue()
-            st.code(pipe_text, language="text")
-
-# -----------------------------------------------------------------------------
-# History tab — auto-load all data/history/pass_*.csv
-# -----------------------------------------------------------------------------
-HISTORY_DIR = "data/history"
-
-def _parse_run_ts_from_filename(fname: str):
-    m = re.search(r"pass_(\d{8})-(\d{6})", fname)
-    if not m:
-        return ""
-    ymd, hms = m.group(1), m.group(2)
-    return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]} {hms[:2]}:{hms[2:4]}:{hms[4:]}"
-
-@st.cache_data(show_spinner=False)
-def load_history_df():
-    files = sorted(glob.glob(os.path.join(HISTORY_DIR, "pass_*.csv")))
-    if not files:
-        return None, []
-
-    frames = []
-    for f in files:
-        try:
-            df = pd.read_csv(f)
-            run_file = os.path.basename(f)
-            df["RunFile"] = run_file
-            df["RunET"]   = _parse_run_ts_from_filename(run_file)  # from filename
-            frames.append(df)
-        except Exception:
-            continue
-
-    if not frames:
-        return None, files
-
-    all_hist = pd.concat(frames, ignore_index=True)
-    if "RunET" in all_hist.columns:
-        all_hist["RunET_sort"] = pd.to_datetime(all_hist["RunET"], errors="coerce")
-        all_hist = all_hist.sort_values(["RunET_sort","Ticker"], ascending=[False, True]) \
-                           .drop(columns=["RunET_sort"])
-    return all_hist, files
+            st.subheader("Explain each PASS (WHY BUY)")
+            for _, r in df.iterrows():
+                tkr = r.get("Ticker","")
+                with st.expander(f"WHY BUY — {tkr}"):
+                    st.markdown(build_why_buy_html(r.to_dict()), unsafe_allow_html=True)
 
 with tab_hist:
-    st.header("📜 History")
-    hist_df, hist_files = load_history_df()
+    st.caption("This tab shows saved daily runs and their outcomes.")
 
-    if hist_df is None:
-        st.warning(f"No history files found in `{HISTORY_DIR}` yet.")
-        st.caption("Once the GitHub Action writes daily CSVs, they will appear here automatically.")
+    hist_files = sorted(glob.glob("data/history/pass_*.csv"))
+    if not hist_files:
+        st.warning("No history file found at history/pass_*.csv yet.")
     else:
-        st.caption(f"Loaded **{len(hist_files)}** run file(s), **{len(hist_df)}** rows.")
-        c1, c2, c3 = st.columns([1,1,1])
-        with c1:
-            f_ticker = st.text_input("Filter by ticker (optional):", "").strip().upper()
-        with c2:
-            f_from = st.date_input("From date (EvalDate):", value=None)
-        with c3:
-            f_to = st.date_input("To date (EvalDate):", value=None)
-
-        df = hist_df.copy()
-        if "EvalDate" in df.columns:
-            df["_EvalDate"] = pd.to_datetime(df["EvalDate"], errors="coerce")
+        frames = []
+        for f in hist_files:
+            try:
+                d = pd.read_csv(f)
+                d["RunFile"] = os.path.basename(f)
+                frames.append(d)
+            except Exception:
+                continue
+        if not frames:
+            st.warning("Could not read any history CSVs.")
         else:
-            df["_EvalDate"] = pd.NaT
+            hist_df = pd.concat(frames, ignore_index=True)
 
-        if f_ticker:
-            df = df[df["Ticker"].astype(str).str.upper() == f_ticker]
-        if f_from:
-            df = df[df["_EvalDate"] >= pd.to_datetime(f_from)]
-        if f_to:
-            df = df[df["_EvalDate"] <= pd.to_datetime(f_to)]
+            # Merge outcomes if present
+            out_path = "data/outcomes/outcomes.csv"
+            if os.path.exists(out_path):
+                outc = pd.read_csv(out_path)
+                # Ensure keys exist
+                if "RunFile" not in hist_df.columns:
+                    hist_df["RunFile"] = ""
+                merged = hist_df.merge(outc, on=["Ticker","EvalDate","RunFile"], how="left", suffixes=("","_out"))
+            else:
+                merged = hist_df.copy()
 
-        preferred = [
-            "RunET","Ticker","EvalDate","Price","TP","Resistance","RR_to_TP","RR_to_Res",
-            "Change%","RelVol(TimeAdj63d)","SupportType","SupportPrice","TPReward$","TPReward%",
-            "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons"
-        ]
-        ordered = [c for c in preferred if c in df.columns] + \
-                  [c for c in df.columns if c not in preferred + ["_EvalDate"]]
-        df = df[ordered]
+            # KPI for closed windows only
+            if "WindowClosed" in merged.columns and "Outcome" in merged.columns:
+                closed = merged[merged["WindowClosed"] == True]
+                if not closed.empty:
+                    yes = (closed["Outcome"] == "YES").sum()
+                    total = len(closed)
+                    win = (yes/total)*100.0
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Closed windows", f"{total}")
+                    c2.metric("Hit (YES)", f"{yes}")
+                    c3.metric("Win rate", f"{win:.1f}%")
+                else:
+                    st.info("No closed windows yet — outcomes will appear as trades finish their window.")
 
-        st.dataframe(df, use_container_width=True, height=520)
+            # Put outcome columns up front if available
+            front_cols = [c for c in ["Outcome","TargetType","TargetLevel","HitDate","WindowEnd","WindowClosed","MaxHigh"] if c in merged.columns]
+            rest = [c for c in merged.columns if c not in front_cols]
+            merged = merged[front_cols + rest]
 
-        csv = df.to_csv(index=False).encode()
-        st.download_button(
-            "⬇️ Download filtered history CSV",
-            data=csv,
-            file_name="pass_history_filtered.csv",
-            mime="text/csv",
-            type="secondary"
-        )
-
-# -----------------------------------------------------------------------------
-# Debugger tab — plain English diagnosis + numbers
-# -----------------------------------------------------------------------------
-def diagnose_ticker_plain(ticker: str,
-                          res_days=sos.RES_LOOKBACK_DEFAULT,
-                          rel_vol_min=sos.REL_VOL_MIN_DEFAULT,
-                          use_relvol_median=False,
-                          rr_min=sos.RR_MIN_DEFAULT,
-                          stop_mode="safest"):
-    """
-    Returns (ok, html) where ok=True means PASS, False means FAIL; html is human readable.
-    """
-    try:
-        # Re-compute core inputs to show numbers
-        df = sos._get_history(ticker)
-        if df is None or df.empty:
-            return False, f"{_bold(ticker)} — could not load price history."
-
-        entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, ticker)
-        change = (entry - prev_close) / prev_close * 100.0 if (np.isfinite(entry) and np.isfinite(prev_close)) else np.nan
-        relvol = sos.compute_relvol_time_adjusted(df, today_vol, use_median=use_relvol_median)
-
-        row, reason = sos.evaluate_ticker(
-            ticker,
-            res_days=res_days,
-            rel_vol_min=rel_vol_min,
-            use_relvol_median=use_relvol_median,
-            rr_min=rr_min,
-            prefer_stop=stop_mode,
-        )
-
-        # Build message
-        parts = []
-        parts.append(f"<p><strong>{ticker}</strong> session={src.get('session','?')} · "
-                     f"EntrySrc={_safe(src.get('entry_src',''))} · VolSrc={_safe(src.get('vol_src',''))}</p>")
-        parts.append("<ul>")
-
-        if np.isfinite(entry) and np.isfinite(prev_close):
-            parts.append(_mk_bullet(f"Entry used: {_usd(entry)}; previous close: {_usd(prev_close)} "
-                                    f"({ _pct(change) } on day)."))
-        if np.isfinite(relvol):
-            parts.append(_mk_bullet(f"Relative volume (time-adjusted 63d): { _relvol_human(relvol) }."))
-
-        if reason is None and row:
-            parts.append(_mk_bullet(f"Resistance: {_usd(row.get('Resistance'))}; TP: {_usd(row.get('TP'))}."))
-            parts.append(_mk_bullet(f"Reward-to-risk — to resistance: {_safe(row.get('RR_to_Res'))}:1; "
-                                    f"to TP: {_safe(row.get('RR_to_TP'))}:1."))
-            parts.append(_mk_bullet(f"Move to TP: {_usd(row.get('TPReward$'))} "
-                                    f"({ _pct(row.get('TPReward%')) })."))
-            parts.append("</ul>")
-            parts.append("<p><strong>PASS ✅</strong></p>")
-            return True, "".join(parts)
-        else:
-            # Translate common reasons
-            readable = {
-                "not_up_on_day": "Price is not up on the day (needs green day).",
-                "relvol_low_timeadj": "Relative volume is below the minimum (time-adjusted).",
-                "no_upside_to_resistance": "Not enough upside to the prior high (resistance).",
-                "atr_capacity_short_vs_tp": "ATR suggests insufficient typical movement to reach TP.",
-                "history_21d_zero_pass": "No 21-day windows in the last year met the required move.",
-                "no_valid_support": "No valid support below price for a reasonable stop.",
-                "rr_to_res_below_min": "Reward-to-risk to resistance is below the minimum.",
-                "non_positive_risk": "Calculated risk (entry − stop) is not positive.",
-            }.get(reason, f"Failed gate: {reason}")
-            parts.append("</ul>")
-            parts.append(f"<p><strong>FAIL ❌</strong> — {readable}</p>")
-            return False, "".join(parts)
-
-    except Exception as e:
-        return False, f"Error diagnosing {ticker}: {e}"
+            st.dataframe(merged, use_container_width=True, hide_index=True)
 
 with tab_dbg:
-    st.header("🧪 Debugger")
-    dbg_ticker = st.text_input("Explain a ticker", placeholder="e.g., WMT, INTC, NOW").strip().upper()
-    if st.button("Explain", type="secondary"):
-        if not dbg_ticker:
-            st.warning("Enter a ticker symbol.")
+    st.caption("Type a ticker to see **plain-English** explanation of why it passes or which gate fails (with numbers).")
+    dbg_ticker = st.text_input("Ticker", placeholder="e.g., WMT, INTC, MOS")
+    if st.button("Explain"):
+        if not dbg_ticker.strip():
+            st.warning("Enter a ticker first.")
         else:
-            ok, html = diagnose_ticker_plain(dbg_ticker)
-            st.markdown(html, unsafe_allow_html=True)
+            html = diagnose_ticker(
+                dbg_ticker.strip().upper(),
+                res_days=21,
+                rel_vol_min=1.10,
+                use_relvol_median=False,
+                rr_min=2.0,
+                prefer_stop="safest",
+            )
+            st.markdown(html)
 
