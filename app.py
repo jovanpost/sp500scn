@@ -116,20 +116,44 @@ def load_outcomes():
 # 7. Outcomes counters (robust to minimal/extended schemas)
 # ============================================================
 def outcomes_summary(dfh: pd.DataFrame):
-    if dfh.empty:
+    if dfh is None or dfh.empty:
         st.info("No outcomes yet.")
         return
-    s_status = dfh.get("result_status","")
-    hit_mask = dfh.get("hit", pd.Series(False)).astype(bool)
-    settled_mask = (s_status == "SETTLED")
-    pending_mask = (s_status != "SETTLED")
+
+    n = len(dfh)
+    # Ensure we always have Series (never scalars) to avoid .sum() errors
+    if "result_status" in dfh.columns:
+        s_status = dfh["result_status"].astype(str)
+    else:
+        # Assume not yet settled if the column is missing
+        s_status = pd.Series(["PENDING"] * n, index=dfh.index, dtype="string")
+
+    if "hit" in dfh.columns:
+        hit_mask = dfh["hit"].astype(bool)
+    else:
+        hit_mask = pd.Series([False] * n, index=dfh.index, dtype=bool)
+
+    settled_mask = s_status.eq("SETTLED")
+    pending_mask = ~settled_mask
+
     settled = int(settled_mask.sum())
     pending = int(pending_mask.sum())
     hits    = int((settled_mask & hit_mask).sum())
-    misses  = int((settled_mask & ~hit_mask).sum())
-    st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
-    st.dataframe(dfh, use_container_width=True, height=min(600, 80 + 28*len(dfh)))
+    misses  = settled - hits
 
+    st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
+
+    # Nice sort if the columns exist; otherwise just show as-is
+    sort_cols = [c for c in ["run_date", "ticker"] if c in dfh.columns]
+    if sort_cols:
+        # run_date desc if present
+        ascending = [False if c == "run_date" else True for c in sort_cols]
+        df_show = dfh.sort_values(sort_cols, ascending=ascending)
+    else:
+        df_show = dfh
+
+    st.dataframe(df_show, use_container_width=True, height=min(600, 80 + 28 * len(df_show)))
+    
 # ============================================================
 # 8. Debugger (plain-English reasons with numbers)
 # ============================================================
@@ -187,3 +211,4 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
