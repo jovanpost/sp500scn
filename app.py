@@ -9,8 +9,8 @@
 #  6. CSV helpers (latest pass file, outcomes)
 #  7. Outcomes counters (robust to minimal/extended schemas)
 #  8. Debugger (plain-English reasons with numbers)
-#  9. UI – Tabs
-# 10. TAB – Scanner (table → WHY BUY → Sheets export)
+#  9. TAB – Scanner (table → WHY BUY → Sheets export)
+#  10. UI – Tabs
 # 11. TAB – History & Outcomes
 # 12. TAB – Debugger (plain English + numbers)
 # ============================================================
@@ -170,36 +170,9 @@ def diagnose_ticker(ticker, **kwargs):
         "src": src, "entry_ts": entry_ts
     }
 
-# ============================================================
-# 9. UI – Tabs
-# ============================================================
-tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
-
-# Call the scanner tab renderer so the red RUN button shows up
-with tab1:
-    render_scanner_tab()
-
-# History & Outcomes tab
-with tab2:
-    st.header("History & Outcomes")
-    lastf = latest_pass_file()
-    if lastf:
-        st.success(f"Last run file: {lastf}")
-        st.dataframe(pd.read_csv(lastf), use_container_width=True)
-    dfh = load_outcomes()
-    outcomes_summary(dfh)
-
-# Debugger tab
-with tab3:
-    st.header("Debugger")
-    dbg_ticker = st.text_input("Enter ticker to debug")
-    if dbg_ticker:
-        msg, details = diagnose_ticker(dbg_ticker.strip().upper())
-        st.subheader(msg)
-        st.json(details)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. TAB – Scanner (table → WHY BUY → Sheets export)
+# 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_run_scan() -> dict:
     """Call sos.run_scan with backward-compatible signatures and normalize outputs
@@ -299,7 +272,36 @@ def render_scanner_tab():
             st.caption("No results yet. Press **RUN** to scan.")
     else:
         st.caption("No results yet. Press **RUN** to scan.")
-        
+
+# ============================================================
+# 10. UI – Tabs
+# ============================================================
+tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
+
+# Call the scanner tab renderer so the red RUN button shows up
+with tab1:
+    render_scanner_tab()
+
+# History & Outcomes tab
+with tab2:
+    st.header("History & Outcomes")
+    lastf = latest_pass_file()
+    if lastf:
+        st.success(f"Last run file: {lastf}")
+        st.dataframe(pd.read_csv(lastf), use_container_width=True)
+    dfh = load_outcomes()
+    outcomes_summary(dfh)
+
+# Debugger tab
+with tab3:
+    st.header("Debugger")
+    dbg_ticker = st.text_input("Enter ticker to debug")
+    if dbg_ticker:
+        msg, details = diagnose_ticker(dbg_ticker.strip().upper())
+        st.subheader(msg)
+        st.json(details)
+
+
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
@@ -322,6 +324,7 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
 
 
