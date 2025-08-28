@@ -1,91 +1,87 @@
 name: Daily scan + TP check
 
 on:
-  # Click “Run workflow” in the Actions tab to start immediately
   workflow_dispatch:
     inputs:
-      run_type:
-        description: "What to run"
+      run_scan:
+        description: "Run the scanner now"
         required: true
-        default: "both"
+        default: "true"
         type: choice
-        options:
-          - both
-          - scan
-          - check
-  # UTC-only cron. You already picked these times.
+        options: ["true","false"]
+      run_check:
+        description: "Run the TP hit checker now"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true","false"]
   schedule:
-    - cron: "30 14 * * 1-5"   # 10:30 ET (14:30 UTC)
-    - cron: "30 15 * * 1-5"   # 11:30 ET (15:30 UTC)
-    - cron: "30 16 * * 1-5"   # 12:30 ET (16:30 UTC)
-    - cron: "30 23 * * 1-5"   # nightly hit check ~ after close (23:30 UTC)
-
-permissions:
-  contents: write   # allow the job to commit files to the repo
-
-env:
-  PYTHONUNBUFFERED: "1"
-  TZ: America/New_York   # for logs printed by our scripts
+    # UTC times (no DST). Tweak as needed.
+    - cron: "30 14 * * 1-5"   # 10:30 ET
+    - cron: "30 15 * * 1-5"   # 11:30 ET
+    - cron: "30 16 * * 1-5"   # 12:30 ET
+    - cron: "30 23 * * 1-5"   # 18:30 ET (post-close checks)
 
 jobs:
   scan:
-    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_type != 'check' }}
+    if: github.event_name == 'schedule' || inputs.run_scan == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install scan dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
+          python -m pip install -r ./scripts/requirements.txt
 
       - name: Run screener and save results
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python scripts/run_and_log.py --universe sp500 --with-options
-
-      - name: Upload scan artifact (CSV)
-        uses: actions/upload-artifact@v4
-        with:
-          name: pass-files
-          path: |
-            data/history/**
+          python ./scripts/run_and_log.py --universe sp500 --with-options
+          # Commit any new/updated files under data/
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "history: add scan $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+          git push
 
   check:
-    needs: [scan]
-    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_type != 'scan' }}
+    needs: scan
+    if: github.event_name == 'schedule' || inputs.run_check == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Check out
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install check dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
+          python -m pip install -r ./scripts/requirements.txt
 
-      - name: Update TP-hit status
+      - name: Check TP hits and update summaries
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python scripts/check_hits.py
+          python ./scripts/check_hits.py
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "hits: refresh $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+          git push
 
-      - name: Upload hit-check artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hit-check
-          path: |
-            data/hits/**
 
