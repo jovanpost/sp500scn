@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 =======================================================================
 Bibliography (Section Index)
@@ -21,303 +20,250 @@ import argparse
 import os
 import sys
 from datetime import datetime, timezone
-import pandas as pd
 from pathlib import Path
+import inspect
+import pandas as pd
 
-# Your screener module
+# Screener module (must be importable from repo root)
 try:
-    import swing_options_screener as sos  # must be importable from repo root
+    import swing_options_screener as sos
 except Exception as e:
     print(f"[FATAL] Could not import swing_options_screener: {e}", file=sys.stderr)
     sys.exit(1)
 
+# Optional universe helper (only used if present)
+try:
+    import sp_universe as spuni  # optional
+except Exception:
+    spuni = None
+
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run swing scan and write history/outcomes.")
-    p.add_argument("--universe", default="sp500", help="Universe key understood by the screener (default: sp500).")
-    p.add_argument("--with-options", action="store_true", help="Ask the screener to include options fields.")
-    p.add_argument("--also-save-scan", action="store_true", help="If available, save raw scan DF alongside pass file.")
+    p = argparse.ArgumentParser(
+        description="Run swing scan and write history/outcomes."
+    )
+    p.add_argument(
+        "--universe",
+        default="sp500",
+        help="Universe key (kept for logs/metadata; not passed to screener unless tickers param is supported).",
+    )
+    p.add_argument(
+        "--with-options",
+        action="store_true",
+        help="Ask the screener to include options fields.",
+    )
+    p.add_argument(
+        "--also-save-scan",
+        action="store_true",
+        help="If available, save raw scan DF alongside pass file.",
+    )
     return p.parse_args()
 
 
 # --------------------------------------------------------------------
 # 2. Paths, Constants, Helpers
 # --------------------------------------------------------------------
-DATA_DIR = os.path.join("data", "history")
-LOG_DIR = os.path.join("data", "logs")
-OUTCOMES_FILE = os.path.join(DATA_DIR, "outcomes.csv")
+HISTORY_DIR = Path("data/history")
+LOGS_DIR = Path("data/logs")
+OUTCOMES_FILE = HISTORY_DIR / "outcomes.csv"
 
 UTC_NOW = datetime.now(timezone.utc)
 STAMP = UTC_NOW.strftime("%Y%m%d-%H%M")
 
-PASS_BASENAME = f"pass_{STAMP}.csv"
-SCAN_BASENAME = f"scan_{STAMP}.csv"
-LOG_BASENAME = f"scan_{STAMP}.txt"
-
-PASS_PATH = os.path.join(DATA_DIR, PASS_BASENAME)
-SCAN_PATH = os.path.join(DATA_DIR, SCAN_BASENAME)
-LOG_PATH = os.path.join(LOG_DIR, LOG_BASENAME)
+PASS_PATH = HISTORY_DIR / f"pass_{STAMP}.csv"
+SCAN_PATH = HISTORY_DIR / f"scan_{STAMP}.csv"
+LOG_PATH = LOGS_DIR / f"scan_{STAMP}.txt"
 
 
-def ensure_dirs():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR, exist_ok=True)
+def ensure_dirs() -> None:
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def pick(df: pd.DataFrame, col: str, default=None):
-    """Safe column getter for a homogeneous value, returns default if column missing."""
-    if df is None or df.empty:
-        return default
-    if col not in df.columns:
-        return default
-    # If the column is constant across rows, return the first value; otherwise return default
+    """Safe column getter for a homogeneous value; returns default if missing."""
     try:
-        v = df[col].iloc[0]
-        return v
+        if df is None or df.empty or col not in df.columns:
+            return default
+        vals = df[col].dropna().unique()
+        if len(vals) == 0:
+            return default
+        return vals[0]
     except Exception:
         return default
+
+
+def safe_str(x):
+    return "" if x is None else str(x)
 
 
 # --------------------------------------------------------------------
 # 3. Robust IO (read/write CSV)
 # --------------------------------------------------------------------
-def read_csv(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path)
-    except Exception as e:
-        print(f"[WARN] Could not read CSV {path}: {e}", file=sys.stderr)
-        return pd.DataFrame()
+def read_csv_if_exists(path: Path) -> pd.DataFrame:
+    if path.exists():
+        try:
+            return pd.read_csv(path)
+        except Exception as e:
+            print(f"[WARN] Failed reading {path}: {e}", file=sys.stderr)
+    return pd.DataFrame()
 
 
-def write_csv(df: pd.DataFrame, path: str):
+def write_csv(path: Path, df: pd.DataFrame) -> None:
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         df.to_csv(path, index=False)
-        print(f"[OK] Wrote {path} ({len(df)} rows)")
     except Exception as e:
-        print(f"[ERROR] Could not write CSV {path}: {e}", file=sys.stderr)
-
-
-def append_text(path: str, txt: str):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(txt)
-    except Exception as e:
-        print(f"[ERROR] Could not write log {path}: {e}", file=sys.stderr)
+        print(f"[ERROR] Failed writing {path}: {e}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------
-# ============================================================
-# 4) Outcomes Upsert (non-destructive append/update)
-# ------------------------------------------------------------
-# Purpose:
-#   - Create "PENDING" rows from the latest pass DataFrame
-#   - Upsert them into data/history/outcomes.csv
-#     * Never clobber a resolved row (HIT/MISS/EXPIRED/CANCELLED)
-#     * Ensure the file and header exist
-#     * Deduplicate by a stable key: (Ticker, EvalDate, EntryTimeET)
-#
-# Public entry point for section:
-#   upsert_outcomes_from_pass(df_pass: pd.DataFrame) -> Path
-# ============================================================
+# 4. Outcomes Upsert (non-destructive append/update)
+# --------------------------------------------------------------------
+OUTCOME_COLS = [
+    "Ticker",
+    "EvalDate",
+    "Price",
+    "EntryTimeET",
+    "Status",     # PENDING / SETTLED
+    "HitDateET",  # filled when settled as HIT/MISS date
+    "Expiry",     # options expiry (if available)
+    "BuyK",       # option buy strike (if available)
+    "SellK",      # option sell strike (if available)
+    "TP",         # target price
+    "Notes",
+]
 
-from typing import List
 
-_RESOLVED_STATES = {"HIT", "MISS", "EXPIRED", "CANCELLED"}
+def _empty_outcomes_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=OUTCOME_COLS)
 
-def _ensure_outcomes_file() -> pd.DataFrame:
-    """Load outcomes.csv or initialize an empty one with the canonical header."""
-    out_file = HIST_DIR / "outcomes.csv"
-    if not out_file.exists():
-        pd.DataFrame(columns=OUTCOME_COLS).to_csv(out_file, index=False)
-        return pd.DataFrame(columns=OUTCOME_COLS)
-    try:
-        df = pd.read_csv(out_file)
-    except Exception:
-        # If the file is corrupt, reinitialize with header (last resort).
-        df = pd.DataFrame(columns=OUTCOME_COLS)
-        df.to_csv(out_file, index=False)
-    # Guarantee all columns exist and in the right order
-    for c in OUTCOME_COLS:
-        if c not in df.columns:
-            df[c] = None
-    return df[OUTCOME_COLS]
 
-def _make_pending_rows(df_pass: pd.DataFrame) -> pd.DataFrame:
+def _extract_value(row: pd.Series, *names, default=""):
+    for n in names:
+        if n in row and pd.notna(row[n]):
+            return row[n]
+    return default
+
+
+def upsert_outcomes_from_pass(df_pass: pd.DataFrame, path: Path) -> None:
     """
-    Map pass rows to canonical OUTCOME_COLS with Status=PENDING.
-    Missing source columns are filled with None.
+    Add one 'PENDING' row per pass (Ticker, EvalDate) if not already present.
+    Never overwrites existing non-empty rows.
     """
-    if df_pass is None or df_pass.empty:
-        return pd.DataFrame(columns=OUTCOME_COLS)
+    base = read_csv_if_exists(path)
+    if base.empty:
+        base = _empty_outcomes_df()
 
-    base = df_pass.copy()
+    # Build new rows
+    rows = []
+    for _, r in df_pass.iterrows():
+        tkr = _extract_value(r, "Ticker", "ticker", default="")
+        if not tkr:
+            continue
 
-    # Ensure required source fields exist (fill missing)
-    src_needed = ["Ticker", "EvalDate", "Price", "EntryTimeET", "TP", "OptExpiry", "BuyK", "SellK"]
-    for c in src_needed:
-        if c not in base.columns:
-            base[c] = None
+        eval_date = _extract_value(r, "EvalDate", "eval_date", default=UTC_NOW.date().isoformat())
+        price = _extract_value(r, "Price", "price", default="")
+        entry_time = _extract_value(r, "EntryTimeET", "EntryET", default="")
+        expiry = _extract_value(r, "Expiry", "ExpDate", "OptionsExpiry", default="")
+        buyk = _extract_value(r, "BuyK", "BuyStrike", "Buy", default="")
+        sellk = _extract_value(r, "SellK", "SellStrike", "Sell", default="")
+        tp = _extract_value(r, "TP", "Target", default="")
 
-    pending = pd.DataFrame({
-        "Ticker":      base["Ticker"],
-        "EvalDate":    base["EvalDate"],
-        "Price":       base["Price"],
-        "EntryTimeET": base["EntryTimeET"],
-        "Status":      "PENDING",
-        "HitDateET":   None,
-        "Expiry":      base["OptExpiry"],
-        "BuyK":        base["BuyK"],
-        "SellK":       base["SellK"],
-        "TP":          base["TP"],
-        "Notes":       None,
-    }, columns=OUTCOME_COLS)
+        rows.append(
+            {
+                "Ticker": tkr,
+                "EvalDate": eval_date,
+                "Price": price,
+                "EntryTimeET": entry_time,
+                "Status": "PENDING",
+                "HitDateET": "",
+                "Expiry": expiry,
+                "BuyK": buyk,
+                "SellK": sellk,
+                "TP": tp,
+                "Notes": "",
+            }
+        )
 
-    # Normalize types (especially dates as strings) to avoid merge weirdness
-    for col in ["EvalDate", "EntryTimeET", "HitDateET", "Expiry"]:
-        if col in pending.columns:
-            pending[col] = pending[col].astype(str).replace({"nan": None, "NaT": None})
-    return pending
+    add_df = pd.DataFrame(rows, columns=OUTCOME_COLS)
+    if add_df.empty:
+        return
 
-def _coalesce_cols(df_target: pd.DataFrame, df_source: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    """
-    For each column in cols: if target value is null and source has a value, fill it.
-    This is used to non-destructively add details to existing rows.
-    """
-    for c in cols:
-        if c in df_target.columns and c in df_source.columns:
-            df_target[c] = df_target[c].where(df_target[c].notna(), df_source[c])
-    return df_target
-
-def upsert_outcomes_from_pass(df_pass: pd.DataFrame) -> Path:
-    """
-    Non-destructive upsert of PENDING rows derived from df_pass into outcomes.csv.
-    - Keeps resolved rows intact (HIT/MISS/EXPIRED/CANCELLED)
-    - Adds any missing PENDING keys
-    - Coalesces empty fields (e.g., TP/Expiry) without overwriting existing values
-    """
-    out_file = HIST_DIR / "outcomes.csv"
-    df_out = _ensure_outcomes_file()
-
-    # Build incoming PENDING rows
-    df_new = _make_pending_rows(df_pass)
-    if df_new.empty:
-        # Nothing to upsert; still ensure file exists with proper header
-        df_out.to_csv(out_file, index=False)
-        return out_file
-
-    # Stable key used for idempotent upsert
-    key = ["Ticker", "EvalDate", "EntryTimeET"]
-
-    # Split existing into resolved vs open
-    if not df_out.empty:
-        resolved_mask = df_out["Status"].isin(_RESOLVED_STATES)
-        df_resolved = df_out[resolved_mask].copy()
-        df_open     = df_out[~resolved_mask].copy()
+    # Non-destructive upsert on key (Ticker, EvalDate).
+    key_cols = ["Ticker", "EvalDate"]
+    if not base.empty:
+        merged = pd.concat([base, add_df], ignore_index=True)
+        merged = merged.drop_duplicates(subset=key_cols, keep="first")
     else:
-        df_resolved = pd.DataFrame(columns=OUTCOME_COLS)
-        df_open     = pd.DataFrame(columns=OUTCOME_COLS)
+        merged = add_df
 
-    # Left-merge new PENDING against existing OPEN to detect matches
-    if not df_open.empty:
-        merged = df_new.merge(df_open, on=key, how="left", suffixes=("", "_old"), indicator=True)
-        # Rows already present in OPEN: keep existing row but coalesce missing fields
-        in_open = merged["_merge"].eq("both")
-        to_update_keys = merged.loc[in_open, key]
+    write_csv(path, merged)
 
-        if not to_update_keys.empty:
-            # Extract the current open rows and new rows aligned by key
-            open_on_key = df_open.merge(to_update_keys, on=key, how="inner")
-            new_on_key  = df_new.merge(to_update_keys, on=key, how="inner")
-
-            # Coalesce into the open rows (do NOT overwrite non-null with null)
-            open_on_key = _coalesce_cols(
-                open_on_key, new_on_key,
-                cols=["Price", "Status", "HitDateET", "Expiry", "BuyK", "SellK", "TP", "Notes"]
-            )
-
-            # Rebuild df_open: replace the affected keys with the coalesced version
-            keep_open = df_open.merge(to_update_keys, on=key, how="left", indicator=True)
-            keep_open = keep_open[keep_open["_merge"] == "left_only"].drop(columns=["_merge"])
-            df_open = pd.concat([keep_open, open_on_key], ignore_index=True)
-
-        # Rows not present in OPEN become brand-new OPEN rows
-        to_insert = merged["_merge"].eq("left_only")
-        insert_rows = merged.loc[to_insert, OUTCOME_COLS]
-        df_open = pd.concat([df_open, insert_rows], ignore_index=True)
-    else:
-        # No open rows exist; all new rows are inserted
-        df_open = df_new.copy()
-
-    # Reassemble: resolved rows first preserved, then (updated/new) open rows
-    df_final = pd.concat([df_resolved[OUTCOME_COLS], df_open[OUTCOME_COLS]], ignore_index=True)
-
-    # Final de-duplication by key, keeping the last occurrence (most recent write)
-    if not df_final.empty:
-        df_final = df_final.sort_values(key).drop_duplicates(subset=key, keep="last")
-
-    # Enforce column order and write
-    for c in OUTCOME_COLS:
-        if c not in df_final.columns:
-            df_final[c] = None
-    df_final = df_final[OUTCOME_COLS]
-    df_final.to_csv(out_file, index=False)
-    return out_file
 
 # --------------------------------------------------------------------
 # 5. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-def run_screener(universe: str, with_options: bool) -> dict:
-    """
-    Call your library function. We expect a dictionary or namespace with:
-      - 'passes' (DataFrame)   : required
-      - 'scan'   (DataFrame)   : optional
-      - 'log'    (str)         : optional
-    We keep this wrapper resilient regardless of the exact return shape.
-    """
-    print(f"[INFO] Running scan: universe={universe} with_options={with_options}")
-    out = {"passes": pd.DataFrame(), "scan": pd.DataFrame(), "log": ""}
-
+def _candidate_tickers_from_universe(universe_key: str):
+    """Try to turn a universe key into a list of tickers (if helpers exist)."""
+    if spuni is None:
+        return None
     try:
-        # Your module may expose a single function, adjust as needed:
-        #   results = sos.run_scan(universe=universe, with_options=with_options)
-        # For safety, try a few patterns:
-        if hasattr(sos, "run_scan"):
-            results = sos.run_scan(universe=universe, with_options=with_options)
-        elif hasattr(sos, "main") and callable(sos.main):
-            results = sos.main(universe=universe, with_options=with_options)
-        else:
-            raise RuntimeError("No suitable entry point in swing_options_screener.")
+        if hasattr(spuni, "get_universe"):
+            return spuni.get_universe(universe_key)
+        if hasattr(spuni, "UNIVERSES"):
+            return spuni.UNIVERSES.get(universe_key)
+    except Exception:
+        pass
+    return None
 
-        # Normalize outputs
-        if isinstance(results, dict):
-            out["passes"] = results.get("passes", pd.DataFrame())
-            out["scan"] = results.get("scan", pd.DataFrame())
-            out["log"] = results.get("log", "")
-        elif isinstance(results, pd.DataFrame):
-            out["passes"] = results
-        else:
-            # Try attributes
-            out["passes"] = getattr(results, "passes", pd.DataFrame())
-            out["scan"] = getattr(results, "scan", pd.DataFrame())
-            out["log"] = getattr(results, "log", "")
 
-        # Enforce required columns minimality on passes
-        for c in ["Ticker", "EvalDate", "Price", "EntryTimeET"]:
-            if c not in out["passes"].columns:
-                out["passes"][c] = None
-
-        print(f"[INFO] Scan done. Passes: {len(out['passes'])}, Scan rows: {len(out['scan'])}")
+def _extract_df(out, *keys) -> pd.DataFrame:
+    """If screener returns dict, try multiple keys; if DF, return it; else empty DF."""
+    if isinstance(out, pd.DataFrame):
         return out
+    if isinstance(out, dict):
+        for k in keys:
+            v = out.get(k)
+            if isinstance(v, pd.DataFrame):
+                return v
+    return pd.DataFrame()
 
-    except Exception as e:
-        msg = f"[ERROR] Screener failed: {e}\n"
-        print(msg, file=sys.stderr)
-        out["log"] += msg
-        return out
+
+def run_screener(universe: str, with_options: bool, save_scan: bool):
+    """
+    Calls sos.run_scan defensively:
+      - only passes kwargs that the function actually supports (introspection)
+      - if it returns dict, tries common keys to pull pass/scan dataframes
+    """
+    fn = getattr(sos, "run_scan", None)
+    if fn is None:
+        raise RuntimeError("swing_options_screener.run_scan not found")
+
+    sig = inspect.signature(fn)
+    params = sig.parameters.keys()
+
+    kwargs = {}
+    if "with_options" in params:
+        kwargs["with_options"] = bool(with_options)
+
+    # only pass tickers if the function supports it
+    if "tickers" in params:
+        tickers = _candidate_tickers_from_universe(universe)
+        if tickers:
+            kwargs["tickers"] = tickers
+
+    # Optional "return_scan_df" style flags (support several common names)
+    for flag in ("return_scan_df", "return_full_scan", "return_scan"):
+        if flag in params:
+            kwargs[flag] = bool(save_scan)
+
+    out = fn(**kwargs)
+
+    # Try to extract dataframes
+    df_pass = _extract_df(out, "pass", "passes", "df_pass", "pass_df", "passes_df")
+    df_scan = _extract_df(out, "scan", "df_scan", "scan_df", "full_scan")
+
+    return df_pass, df_scan
 
 
 # --------------------------------------------------------------------
@@ -327,41 +273,45 @@ def main():
     args = parse_args()
     ensure_dirs()
 
-    results = run_screener(args.universe, args.with_options)
+    ts = STAMP
+    log_lines = [
+        f"UTC start: {UTC_NOW.isoformat()}",
+        f"universe={args.universe}",
+        f"with_options={args.with_options}",
+        f"also_save_scan={args.also_save_scan}",
+    ]
 
-    # Write logs if present
-    if results.get("log"):
-        append_text(LOG_PATH, results["log"])
+    try:
+        df_pass, df_scan = run_screener(
+            universe=args.universe,
+            with_options=args.with_options,
+            save_scan=args.also_save_scan,
+        )
+    except Exception as e:
+        msg = f"[FATAL] Screener failed: {e}"
+        print(msg, file=sys.stderr)
+        log_lines.append(msg)
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_PATH, "w") as f:
+            f.write("\n".join(log_lines) + "\n")
+        return
 
-    # Save pass file (always attempt)
-    passes = results.get("passes", pd.DataFrame())
-    if passes is None:
-        passes = pd.DataFrame()
+    # Save pass results
+    if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
+        write_csv(PASS_PATH, df_pass)
+        upsert_outcomes_from_pass(df_pass, OUTCOMES_FILE)
+        log_lines.append(f"pass_rows={len(df_pass)} -> {PASS_PATH.name}")
+    else:
+        log_lines.append("pass_rows=0 (nothing to save)")
 
-    # If EvalDate is missing, fill with today's date (YYYY-MM-DD)
-    if "EvalDate" not in passes.columns or passes["EvalDate"].isna().all():
-        passes["EvalDate"] = UTC_NOW.strftime("%Y-%m-%d")
+    # Save scan results (optional)
+    if args.also_save_scan and isinstance(df_scan, pd.DataFrame) and not df_scan.empty:
+        write_csv(SCAN_PATH, df_scan)
+        log_lines.append(f"scan_rows={len(df_scan)} -> {SCAN_PATH.name}")
 
-    write_csv(passes, PASS_PATH)
-
-    # Optional raw scan
-    if args.also_save_scan:
-        scan_df = results.get("scan", pd.DataFrame())
-        if scan_df is None:
-            scan_df = pd.DataFrame()
-        write_csv(scan_df, SCAN_PATH)
-
-    # Upsert outcomes with the non-destructive rule
-    upsert_outcomes(OUTCOMES_FILE, passes)
-
-    # Human-readable console summary
-    print("------------------------------------------------------------")
-    print(f"[SUMMARY] Finished at {UTC_NOW.isoformat()}")
-    print(f"[SUMMARY] pass file : {PASS_PATH}")
-    if args.also_save_scan:
-        print(f"[SUMMARY] scan file : {SCAN_PATH}")
-    print(f"[SUMMARY] outcomes  : {OUTCOMES_FILE}")
-    print("------------------------------------------------------------")
+    # Write log
+    with open(LOG_PATH, "w") as f:
+        f.write("\n".join(log_lines) + "\n")
 
 
 if __name__ == "__main__":
