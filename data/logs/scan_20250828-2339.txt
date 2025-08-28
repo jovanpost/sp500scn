@@ -1,0 +1,5 @@
+UTC start: 2025-08-28T23:39:00.896874+00:00
+universe=sp500
+with_options=True
+also_save_scan=False
+pass_rows=2 -> pass_20250828-2339.csv
