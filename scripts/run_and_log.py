@@ -1,83 +1,169 @@
 #!/usr/bin/env python3
-# Minimal runner that always writes outputs & a log so Actions has something to save.
+# scripts/run_and_log.py
+# - Runs the screener
+# - Saves today's PASS list to data/history/pass_YYYYMMDD-HHMM.csv
+# - ALSO writes/updates data/history/outcomes.csv with new rows initialized as PENDING
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 
-# Make repo root importable
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)
+# allow importing from repo root
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
+import argparse
 import swing_options_screener as sos  # your module
 
-def ensure_dirs():
-    os.makedirs("data/history", exist_ok=True)
-    os.makedirs("data/logs", exist_ok=True)
+HIST_DIR = os.path.join(ROOT, "data", "history")
+os.makedirs(HIST_DIR, exist_ok=True)
+OUTCOMES_CSV = os.path.join(HIST_DIR, "outcomes.csv")
 
-def stamp_et() -> str:
-    # just for filenames; UTC is fine too — using ET keeps consistency with UI text
-    return datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--universe", choices=["custom", "sp500"], default="sp500")
+    p.add_argument("--tickers", type=str, default="")
+    p.add_argument("--res-days", type=int, default=sos.RES_LOOKBACK_DEFAULT)
+    p.add_argument("--relvol-min", type=float, default=sos.REL_VOL_MIN_DEFAULT)
+    p.add_argument("--relvol-median", action="store_true")
+    p.add_argument("--rr-min", type=float, default=sos.RR_MIN_DEFAULT)
+    p.add_argument("--stop-mode", choices=["safest","structure"], default="safest")
+    p.add_argument("--with-options", action="store_true", help="append option suggestion")
+    p.add_argument("--opt-days", type=int, default=sos.TARGET_OPT_DAYS_DEFAULT)
+    return p.parse_args()
+
+
+def _today_timestamp():
+    now = datetime.utcnow()
+    return now.strftime("%Y%m%d-%H%M")
+
+
+def _coerce_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return float("nan")
+
+
+def _evaldate_to_dt(row):
+    # EvalDate is ISO date string (yyyy-mm-dd)
+    try:
+        return datetime.strptime(str(row["EvalDate"]), "%Y-%m-%d")
+    except Exception:
+        # fallback: try to coerce from other formats
+        try:
+            return pd.to_datetime(row["EvalDate"]).to_pydatetime()
+        except Exception:
+            return None
+
+
+def _initial_outcome_row(row):
+    """
+    Build the initial outcome fields for a PASS row:
+    - TargetType: OPTION_SELLK if we have a SellK, else TP_PRICE
+    - TargetLevel: float(SellK) or float(TP)
+    - WindowEnd: OptExpiry (if present) else EvalDate + 30 calendar days
+    - Outcome=PENDING, HitDate="", MaxHigh=""
+    """
+    sellk = row.get("SellK", "")
+    tp    = row.get("TP", "")
+    expiry = row.get("OptExpiry", "")
+
+    if str(sellk).strip() != "":
+        target_type = "OPTION_SELLK"
+        target_level = _coerce_float(sellk)
+    else:
+        target_type = "TP_PRICE"
+        target_level = _coerce_float(tp)
+
+    # Window end
+    if str(expiry).strip() != "":
+        window_end = str(expiry)  # already ISO date
+    else:
+        evdt = _evaldate_to_dt(row)
+        if evdt is None:
+            # fallback: 30 days from now
+            window_end = (datetime.utcnow() + timedelta(days=30)).date().isoformat()
+        else:
+            window_end = (evdt + timedelta(days=30)).date().isoformat()
+
+    out = dict(
+        Outcome="PENDING",
+        TargetType=target_type,
+        TargetLevel=target_level,
+        WindowEnd=window_end,
+        HitDate="",
+        MaxHigh="",
+        CheckedAtUTC=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    return out
+
+
+def _unique_key(df):
+    """
+    Build a de-dup key: (Ticker, EvalDate, EntryTimeET).
+    If EntryTimeET missing, fall back to (Ticker, EvalDate).
+    """
+    key = df.get("EntryTimeET")
+    if key is None or key.isna().all():
+        return df["Ticker"].astype(str) + "|" + df["EvalDate"].astype(str)
+    return df["Ticker"].astype(str) + "|" + df["EvalDate"].astype(str) + "|" + df["EntryTimeET"].astype(str)
+
 
 def main():
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--universe", choices=["sp500", "custom"], default="sp500")
-    ap.add_argument("--tickers", type=str, default="")
-    ap.add_argument("--with-options", action="store_true")
-    args = ap.parse_args()
+    args = _parse_args()
 
-    ensure_dirs()
-    ts = stamp_et()
+    # Run the screener
+    if args.universe == "sp500":
+        tickers = None  # sos will pull live S&P 500 when None
+    else:
+        tickers = sos.parse_ticker_text(args.tickers) if args.tickers else None
 
-    # Run screener (this returns {'pass_df': df})
-    result = sos.run_scan(
-        tickers=None if args.universe == "sp500" else sos.parse_ticker_text(args.tickers),
+    out = sos.run_scan(
+        tickers=tickers,
+        res_days=args.res_days,
+        rel_vol_min=args.relvol_min,
+        relvol_median=args.relvol_median,
+        rr_min=args.rr_min,
+        stop_mode=args.stop_mode,
         with_options=args.with_options,
+        opt_days=args.opt_days,
     )
 
-    df = result.get("pass_df", pd.DataFrame())
+    df = out["pass_df"]
+    ts = _today_timestamp()
+    pass_path = os.path.join(HIST_DIR, f"pass_{ts}.csv")
+    df.to_csv(pass_path, index=False)
+    print(f"Wrote {pass_path} with {len(df)} rows")
 
-    # Always write an execution log (so artifacts never come up empty)
-    log_path = f"data/logs/scan_{ts}.txt"
-    with open(log_path, "w", encoding="utf-8") as f:
-        f.write(f"Run at {datetime.utcnow().isoformat()}Z\n")
-        if df is None or df.empty:
-            f.write("No PASS tickers found.\n")
-        else:
-            f.write(f"PASS count: {len(df)}\n")
-            f.write("Columns: " + ", ".join(df.columns) + "\n")
-            try:
-                f.write(df.head(20).to_string(index=False) + "\n")
-            except Exception:
-                pass
+    # Prepare/merge outcomes with PENDING rows immediately
+    cols_keep = list(df.columns)  # keep original columns
+    # Add initial outcome fields
+    enriched = []
+    for r in df.to_dict(orient="records"):
+        r2 = dict(r)
+        r2.update(_initial_outcome_row(r))
+        enriched.append(r2)
 
-    # Write today’s outputs at the repo root (for easy artifact pickup)
-    if df is None or df.empty:
-        # Still create empty files so the artifact step finds something
-        pd.DataFrame().to_csv("pass_tickers.csv", index=False)
-        pd.DataFrame().to_csv("pass_tickers_unadjusted.psv", index=False, sep="|")
+    df_new = pd.DataFrame(enriched)
+
+    # Merge into outcomes.csv (append, then drop duplicates by key)
+    if os.path.exists(OUTCOMES_CSV):
+        old = pd.read_csv(OUTCOMES_CSV)
+        merged = pd.concat([old, df_new], ignore_index=True)
     else:
-        # Sorted by Price ascending as per your UI preference
-        df = df.sort_values(["Price", "Ticker"])
-        df.to_csv("pass_tickers.csv", index=False)
-        df.to_csv("pass_tickers_unadjusted.psv", index=False, sep="|")
+        merged = df_new
 
-    # Also drop a timestamped copy into history
-    hist_csv = f"data/history/pass_{ts}.csv"
-    hist_psv = f"data/history/pass_{ts}.psv"
-    try:
-        pd.read_csv("pass_tickers.csv").to_csv(hist_csv, index=False)
-    except Exception:
-        pd.DataFrame().to_csv(hist_csv, index=False)
-    try:
-        pd.read_csv("pass_tickers_unadjusted.psv", sep="|").to_csv(hist_psv, index=False)
-    except Exception:
-        pd.DataFrame().to_csv(hist_psv, index=False)
+    merged["_key"] = _unique_key(merged)
+    merged = merged.sort_values(["EvalDate", "Ticker"]).drop_duplicates("_key", keep="last")
+    merged = merged.drop(columns=["_key"])
 
-    print("Scan complete.")
-    print(f"Wrote: pass_tickers.csv, pass_tickers_unadjusted.psv, {hist_csv}, {hist_psv}, {log_path}")
+    merged.to_csv(OUTCOMES_CSV, index=False)
+    print(f"Updated {OUTCOMES_CSV} with {len(merged)} total rows")
+
 
 if __name__ == "__main__":
     main()
+
