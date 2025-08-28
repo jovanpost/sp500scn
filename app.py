@@ -180,24 +180,21 @@ tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
 # 10. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_run_scan() -> dict:
-    """Call sos.run_scan with backward-compatible signatures."""
+    """Call sos.run_scan with backward-compatible signatures and normalize outputs."""
     import pandas as _pd
     try:
-        # Newer signature
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
         try:
-            # Older alt signature
             out = sos.run_scan(universe="sp500", with_options=True)
         except TypeError:
-            # Oldest: no universe argument
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
     if isinstance(out, dict):
-        # Preferred keys if provided by the library
-        df_pass = out.get("pass_df") or out.get("pass") or out.get("pass_df_unadjusted")
-        df_scan = out.get("scan_df") or out.get("scan")
+        # prefer common keys
+        df_pass = out.get("pass") or out.get("pass_df") or out.get("pass_df_unadjusted")
+        df_scan = out.get("scan") or out.get("scan_df")
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
@@ -205,25 +202,17 @@ def _safe_run_scan() -> dict:
             df_scan = out[1]
     elif isinstance(out, _pd.DataFrame):
         df_pass = out
-
-    # Sort by current price ascending if available
-    if isinstance(df_pass, _pd.DataFrame) and "Price" in df_pass.columns:
-        df_pass = df_pass.sort_values(["Price", "Ticker"], ascending=[True, True]).reset_index(drop=True)
-
     return {"pass": df_pass, "scan": df_scan}
 
 
 def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
-    """Produce a sheet-friendly subset (subset of columns)."""
+    """Produce a Google-Sheets-friendly subset of columns."""
     prefer = [
         "Ticker","EvalDate","Price","EntryTimeET",
         "Change%","RelVol(TimeAdj63d)","Resistance","TP",
         "RR_to_Res","RR_to_TP","SupportType","SupportPrice",
         "Risk$","TPReward$","TPReward%","ResReward$","ResReward%",
-        "DailyATR","DailyCap","Hist21d_PassCount","Hist21d_Max%","Hist21d_Examples",
-        "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
-        "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons","BreakevenMid","PricingNote",
-        "Session","EntrySrc","VolSrc"
+        "DailyATR","DailyCap","Hist21d_PassCount"
     ]
     cols = [c for c in prefer if c in df.columns]
     return df.loc[:, cols].copy() if cols else df.copy()
@@ -241,41 +230,82 @@ def _render_why_buy_block(df: pd.DataFrame):
             st.markdown(html, unsafe_allow_html=True)
 
 
-def render_scanner_tab():
+with tab1:
     st.markdown("#### Scanner")
 
-    # Primary (theme-colored) RUN button
-    run_clicked = st.button("RUN", type="primary")
+    # Strong red button styling (works across Streamlit versions)
+    st.markdown(
+        """
+        <style>
+        /* Default st.button */
+        div.stButton > button {
+            background-color: #d90429 !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            border: 0 !important;
+            border-radius: 8px !important;
+            padding: 0.6rem 1.2rem !important;
+        }
+        /* Some builds render buttons as 'secondary' */
+        button[kind="secondary"] {
+            background-color: #d90429 !important;
+            color: #ffffff !important;
+            font-weight: 700 !important;
+            border: 0 !important;
+            border-radius: 8px !important;
+            padding: 0.6rem 1.2rem !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    run_clicked = st.button("RUN", key="run_scan_btn")
 
     if run_clicked:
         with st.spinner("Scanning…"):
             out = _safe_run_scan()
         df_pass: pd.DataFrame | None = out.get("pass")
 
+        # keep in session to persist on tab switch
         st.session_state["last_pass"] = df_pass
 
         if df_pass is None or df_pass.empty:
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers.")
-            st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
+            st.dataframe(
+                df_pass,
+                use_container_width=True,
+                height=min(560, 80 + 28 * len(df_pass))
+            )
             _render_why_buy_block(df_pass)
-            with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
-
-    elif "last_pass" in st.session_state and isinstance(st.session_state["last_pass"], pd.DataFrame):
-        df_pass: pd.DataFrame = st.session_state["last_pass"]
-        if not df_pass.empty:
+            with st.expander("Google-Sheets view (optional)", expanded=False):
+                st.dataframe(
+                    _sheet_friendly(df_pass),
+                    use_container_width=True,
+                    height=min(560, 80 + 28 * len(df_pass))
+                )
+    else:
+        # Show last results from this session (if any)
+        df_pass = st.session_state.get("last_pass")
+        if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
             st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-            st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
+            st.dataframe(
+                df_pass,
+                use_container_width=True,
+                height=min(560, 80 + 28 * len(df_pass))
+            )
             _render_why_buy_block(df_pass)
-            with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
+            with st.expander("Google-Sheets view (optional)", expanded=False):
+                st.dataframe(
+                    _sheet_friendly(df_pass),
+                    use_container_width=True,
+                    height=min(560, 80 + 28 * len(df_pass))
+                )
         else:
             st.caption("No results yet. Press **RUN** to scan.")
-    else:
-        st.caption("No results yet. Press **RUN** to scan.")
-
+            
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
@@ -298,6 +328,7 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
 
 
