@@ -3,7 +3,7 @@
 #
 #  1. Imports & Safe third-party glue
 #  2. App constants (paths, titles, etc.)
-#  3. Streamlit page config + global CSS
+# 3. Streamlit page config + global CSS
 #  4. Small formatting helpers
 #  5. WHY BUY explanation builder (plain English)
 #  6. CSV helpers (latest pass file, outcomes)
@@ -35,17 +35,46 @@ st.set_page_config(page_title="Swing Options Scanner", layout="wide")
 st.markdown(
     """
     <style>
+    /* --- Buttons / general --- */
     div.stButton > button:first-child {
-        background-color: red;
-        color:white;
-        font-weight: bold;
+        background-color: red !important;
+        color: white !important;
+        font-weight: 700 !important;
     }
-    .whybuy {font-size: 16px; line-height: 1.5;}
-    .debugbox {background:#222; color:#eee; padding:10px; border-radius:8px;}
+
+    /* --- WHY BUY text block --- */
+    .whybuy { font-size: 16px; line-height: 1.55; }
+
+    /* --- Debugger layout (HTML) --- */
+    .dbg-wrap { max-width: 1100px; margin-top: 8px; }
+    .dbg-title { font-size: 28px; font-weight: 800; letter-spacing: .2px; margin: 4px 0 12px; }
+    .dbg-badge {
+        display:inline-block; padding: 4px 10px; margin-left: 10px;
+        border-radius: 999px; font-size: 13px; font-weight: 700;
+        vertical-align: middle;
+    }
+    .dbg-badge.fail { background:#ffe6e6; color:#b00020; border:1px solid #ffb3b3; }
+    .dbg-badge.pass { background:#e7f6ec; color:#0a7a35; border:1px solid #bfe6cc; }
+    .dbg-subtle { color:#666; font-size: 14px; margin-bottom: 10px; }
+    .dbg-snapshot {
+        background:#f7f7f9; border-left:4px solid #c7c7d1;
+        padding:10px 12px; margin: 14px 0 10px; font-size:15px;
+    }
+    .dbg-snap-kv { display:inline-block; margin-right: 14px; }
+    .dbg-snap-kv .k { color:#666; }
+    .dbg-snap-kv .v { font-weight:700; color:#111; }
+    .dbg-json details { margin-top: 10px; }
+    .dbg-json summary { cursor: pointer; font-weight: 700; }
+    .dbg-json pre {
+        background:#111; color:#f2f2f2; padding:12px; border-radius:8px;
+        overflow:auto; font-size:13px; line-height:1.45;
+    }
+    .em { font-style: italic; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 # ============================================================
 # 4. Small formatting helpers
@@ -494,13 +523,14 @@ def render_scanner_tab():
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["Scanner", "History & Outcomes", "Debugger"])
 
-# Scanner tab (includes red RUN button and results)
+# ── Scanner tab (red RUN button + results) ──────────────────
 with tab1:
     render_scanner_tab()
 
-# History & Outcomes tab (rendered ONCE)
+# ── History & Outcomes tab (rendered once) ──────────────────
 with tab2:
     st.header("History & Outcomes")
+
     lastf = latest_pass_file()
     if lastf:
         st.success(f"Last run file: {lastf}")
@@ -508,19 +538,82 @@ with tab2:
             st.dataframe(pd.read_csv(lastf), use_container_width=True)
         except Exception:
             st.info("Pass file exists but could not be read.")
+
     dfh = load_outcomes()
     outcomes_summary(dfh)
 
-# Debugger tab
+# ── Debugger tab (styled HTML narrative) ─────────────────────
 with tab3:
+    import json
+
     st.header("Debugger")
     dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
+
     if dbg_ticker:
         title, details = diagnose_ticker(dbg_ticker.strip().upper())
-        st.subheader(title)
-        # 👉 show the plain-English narrative
-        expl = details.get("explanation_md", "")
-        if expl:
-            st.markdown(expl, unsafe_allow_html=True)
-        # raw numbers snapshot
-        st.json({k: v for k, v in details.items() if k != "explanation_md"})
+
+        # PASS/FAIL badge
+        is_fail = "FAIL" in (title or "").upper()
+        badge = '<span class="dbg-badge fail">FAIL</span>' if is_fail else '<span class="dbg-badge pass">PASS</span>'
+
+        # Extract fields (robust)
+        def g(d, k, default="—"):
+            try:
+                v = d.get(k, default)
+                return default if v is None else v
+            except Exception:
+                return default
+
+        entry          = g(details, "entry")
+        prev_close     = g(details, "prev_close")
+        today_vol      = g(details, "today_vol")
+        src            = g(details, "src", {})
+        session        = g(src, "session", "—") if isinstance(src, dict) else "—"
+        entry_src      = g(src, "entry_src", "—") if isinstance(src, dict) else "—"
+        vol_src        = g(src, "vol_src", "—") if isinstance(src, dict) else "—"
+        entry_ts       = g(details, "entry_ts")
+        resistance     = g(details, "resistance")
+        tp             = g(details, "tp")
+        relvol_timeadj = g(details, "relvol_time_adj")
+        daily_atr      = g(details, "daily_atr")
+        daily_cap      = g(details, "daily_cap")
+
+        # Plain-English narrative from diagnose_ticker
+        narrative_html = details.get("explanation_md", "")
+
+        # Compose HTML
+        html_top = f"""
+        <div class="dbg-wrap">
+          <div class="dbg-title">{title} {badge}</div>
+          <div class="dbg-subtle">{narrative_html}</div>
+        """
+
+        html_snapshot = f"""
+          <div class="dbg-snapshot">
+            <span class="dbg-snap-kv"><span class="k">Session:</span> <span class="v">{session}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Entry src:</span> <span class="v">{entry_src}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Vol src:</span> <span class="v">{vol_src}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Entry:</span> <span class="v">{entry}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Prev Close:</span> <span class="v">{prev_close}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Today Vol:</span> <span class="v">{today_vol}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Resistance:</span> <span class="v">{resistance}</span></span>
+            <span class="dbg-snap-kv"><span class="k">TP:</span> <span class="v">{tp}</span></span>
+            <span class="dbg-snap-kv"><span class="k">RelVol(Adj):</span> <span class="v">{relvol_timeadj}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Daily ATR:</span> <span class="v">{daily_atr}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Daily Cap:</span> <span class="v">{daily_cap}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Timestamp:</span> <span class="v">{entry_ts}</span></span>
+          </div>
+        """
+
+        pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"}, indent=2, default=str)
+        html_json = f"""
+          <div class="dbg-json">
+            <details>
+              <summary>Show raw JSON</summary>
+              <pre>{pretty}</pre>
+            </details>
+          </div>
+        </div>
+        """
+
+        st.markdown(html_top + html_snapshot + html_json, unsafe_allow_html=True)
