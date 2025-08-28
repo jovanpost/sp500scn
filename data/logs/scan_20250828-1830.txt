@@ -1,0 +1,5 @@
+UTC start: 2025-08-28T18:30:54.792652+00:00
+universe=sp500
+with_options=True
+also_save_scan=False
+pass_rows=0 (nothing to save)
