@@ -1,0 +1,8 @@
+[INFO] Running scan: universe=sp500 with_options=True
+[OK] Wrote data/history/pass_20250828-1752.csv (0 rows)
+[OK] Wrote data/history/outcomes.csv (0 rows)
+------------------------------------------------------------
+[SUMMARY] Finished at 2025-08-28T17:52:33.313969+00:00
+[SUMMARY] pass file : data/history/pass_20250828-1752.csv
+[SUMMARY] outcomes  : data/history/outcomes.csv
+------------------------------------------------------------
