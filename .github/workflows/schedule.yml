@@ -38,6 +38,67 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r scripts/requirements.txt
 
+- name: Business-day / holiday gate (US Markets, NY time)
+        id: bizgate
+        shell: bash
+        run: |
+          set -e
+          export TZ=America/New_York
+          TODAY=$(date +%Y-%m-%d)
+          DOW=$(date +%u)  # 1..7 (Mon..Sun)
+
+          # Skip weekends
+          if [ "$DOW" -gt 5 ]; then
+            echo "Weekend in New York – skipping."
+            echo "run=no" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # US market holidays (full-day) for 2025–2026
+          HOLIDAYS=(
+            2025-01-01 2025-01-20 2025-02-17 2025-04-18 2025-05-26 2025-06-19 2025-07-04 2025-09-01 2025-11-27 2025-12-25
+            2026-01-01 2026-01-19 2026-02-16 2026-04-03 2026-05-25 2026-06-19 2026-07-03 2026-09-07 2026-11-26 2026-12-25
+          )
+          for H in "${HOLIDAYS[@]}"; do
+            if [ "$TODAY" = "$H" ]; then
+              echo "US market holiday ($H) – skipping."
+              echo "run=no" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          done
+
+          echo "run=yes" >> $GITHUB_OUTPUT
+
+      - name: First intraday wins (allow nightly)
+        id: onceday
+        if: steps.bizgate.outputs.run == 'yes'
+        shell: bash
+        run: |
+          set -e
+          export TZ=America/New_York
+          HOUR=$(date +%H)             # 00–23 in ET
+          TODAY=$(date +%Y-%m-%d)
+
+          # Only one of the three intraday slots (10–12 ET)
+          if [ "$HOUR" -ge 10 ] && [ "$HOUR" -le 12 ]; then
+            if ls data/history/pass_${TODAY//-/}*.csv >/dev/null 2>&1; then
+              echo "Intraday scan already ran for $TODAY – skipping this slot."
+              echo "skip=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+          - name: Run screener and write history files
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        env:
+          PYTHONPATH: .:./scripts
+        run: |
+          set -e
+          mkdir -p data/history data/logs
+          python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
+
       - name: Run screener and write history files
         env:
           # Make local modules importable (swing_options_screener, etc.)
