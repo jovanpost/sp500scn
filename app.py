@@ -67,7 +67,6 @@ def _bold(s):
 
 def _mk_bullet(s):
     return f"<li style='margin: 0.15rem 0'>{s}</li>"
-
 def build_why_buy_html(row: dict) -> str:
     tkr = _safe(row.get("Ticker",""))
     price = _usd(row.get("Price"))
@@ -77,10 +76,11 @@ def build_why_buy_html(row: dict) -> str:
     rr_tp = _safe(row.get("RR_to_TP",""))
     change_pct = _pct(row.get("Change%"))
     relvol = _relvol_human(row.get("RelVol(TimeAdj63d)"))
-    tp_reward$ = row.get("TPReward$", None)
-    tp_reward_pct = row.get("TPReward%", None)
-    tp_reward = _usd(tp_reward$)
-    tp_reward_pct_s = _pct(tp_reward_pct)
+
+    tp_reward_val = row.get("TPReward$", None)
+    tp_reward_pct_val = row.get("TPReward%", None)
+    tp_reward = _usd(tp_reward_val)
+    tp_reward_pct_s = _pct(tp_reward_pct_val)
 
     daily_atr = _usd(row.get("DailyATR", None), nd=4 if isinstance(row.get("DailyATR"), float) and row.get("DailyATR")<1 else 2)
     daily_cap = _usd(row.get("DailyCap"))
@@ -93,8 +93,6 @@ def build_why_buy_html(row: dict) -> str:
     entry_src = _safe(row.get("EntrySrc",""))
     vol_src = _safe(row.get("VolSrc",""))
 
-    # Header sentence in plain English
-    # “XYZ is a buy … because … R:R …”
     header = (
         f"{_bold(tkr)} looks attractive here: it last traded near {_bold(price)}. "
         f"We’re aiming for a take-profit around {_bold(tp)} (halfway to the recent high at {_bold(res)}), "
@@ -102,18 +100,13 @@ def build_why_buy_html(row: dict) -> str:
         f"and {_bold(str(rr_tp))}:1 to the take-profit."
     )
 
-    # Why it’s feasible — bullets
     bullets = []
-
-    # Up on day & RelVol
     bullets.append(
         _mk_bullet(
             f"Momentum & liquidity: price is {_bold(change_pct)} on the day and "
             f"relative volume is {_bold(relvol)} vs the last 63 days (time-adjusted)."
         )
     )
-
-    # TP distance and ATR
     bullets.append(
         _mk_bullet(
             f"Distance to TP: about {_bold(tp_reward)} ({_bold(tp_reward_pct_s)}). "
@@ -121,23 +114,17 @@ def build_why_buy_html(row: dict) -> str:
             f"of typical movement over ~21 trading days."
         )
     )
-
-    # History realism
     bullets.append(
         _mk_bullet(
             f"1-month history check: {_bold(str(hist_cnt))} instances in the last year where a 21-trading-day move "
             f"met or exceeded the required % to TP. Examples: {_bold(hist_ex)}."
         )
     )
-
-    # Structure / support
     bullets.append(
         _mk_bullet(
             f"Support: using {_bold(support_type)} around {_bold(support_price)} for risk management."
         )
     )
-
-    # Session / data source note
     bullets.append(
         _mk_bullet(
             f"Data basis: session {_bold(session)}, price source {_bold(entry_src)}, volume source {_bold(vol_src)}."
@@ -145,8 +132,8 @@ def build_why_buy_html(row: dict) -> str:
     )
 
     bullets_html = "<ul style='padding-left: 1.1rem; margin-top: 0.35rem'>" + "".join(bullets) + "</ul>"
-
     return f"<div style='line-height:1.35'>{header}{bullets_html}</div>"
+
 
 def build_google_sheet_psv(df: pd.DataFrame) -> str:
     # Mirror the PSV (pipe-separated) table with all columns we emit from run_scan
@@ -322,3 +309,4 @@ with st.expander("🛠️ Debug a ticker (plain English + numbers)"):
 
 # Footer / timestamp
 st.caption(f"Rendered at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
