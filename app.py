@@ -86,19 +86,21 @@ def build_why_buy_html(row: dict) -> str:
     vol_src = _safe(row.get("VolSrc",""))
 
     header = (
-        f"{_bold(tkr)} is a buy because it last traded near {_bold(price)} "
-        f"with a target around {_bold(tp)} (halfway to the recent high at {_bold(res)}). "
-        f"This gives about {_bold(rr_res)}:1 reward-to-risk to the high and {_bold(rr_tp)}:1 to the target."
+        f"{_bold(tkr)} looks attractive here: it last traded near {_bold(price)}. "
+        f"We’re aiming for a take-profit around {_bold(tp)} (halfway to the recent high at {_bold(res)}). "
+        f"That sets reward-to-risk at roughly {_bold(rr_res)}:1 to the recent high and {_bold(rr_tp)}:1 to the take-profit."
     )
+
     bullets = [
-        f"- The stock is up {_bold(change_pct)} today with relative volume {_bold(relvol)} vs its 63-day average.",
-        f"- The move to target is about {_bold(tp_reward)} ({_bold(tp_reward_pct)}). "
-        f"Daily ATR is {_bold(daily_atr)}, so a typical month (~21 trading days) allows {_bold(daily_cap)} of movement.",
-        f"- In the past year, there were {_bold(hist_cnt)} instances where the 21-day move beat this requirement. Examples: {hist_ex}.",
-        f"- Support is {_bold(support_type)} at {_bold(support_price)}.",
-        f"- Session={session}, EntrySrc={entry_src}, VolSrc={vol_src}."
+        f"- Momentum & liquidity: up {_bold(change_pct)} today with relative volume {_bold(relvol)} (time-adjusted vs 63-day average).",
+        f"- Distance to target: {_bold(tp_reward)} ({_bold(tp_reward_pct)}). Daily ATR ≈ {_bold(daily_atr)}, "
+        f"so a typical month (~21 trading days) allows about {_bold(daily_cap)} of movement.",
+        f"- History check: {_bold(hist_cnt)} instances in the past year where a 21-day move met/exceeded this target. Examples: {hist_ex}.",
+        f"- Support: {_bold(support_type)} near {_bold(support_price)}.",
+        f"- Data basis: Session={session} • EntrySrc={entry_src} • VolSrc={vol_src}."
     ]
-    return "<div class='whybuy'>" + "<br>".join(bullets) + "</div>"
+
+    return "<div class='whybuy'>" + header + "<br>" + "<br>".join(bullets) + "</div>"
 
 # ============================================================
 # 6. CSV helpers (latest pass file, outcomes)
@@ -173,6 +175,7 @@ def diagnose_ticker(ticker, **kwargs):
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,17 +183,21 @@ def _safe_run_scan() -> dict:
     """Call sos.run_scan with backward-compatible signatures."""
     import pandas as _pd
     try:
+        # Newer signature
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
         try:
+            # Older alt signature
             out = sos.run_scan(universe="sp500", with_options=True)
         except TypeError:
+            # Oldest: no universe argument
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
     if isinstance(out, dict):
-        df_pass = out.get("pass")
-        df_scan = out.get("scan")
+        # Preferred keys if provided by the library
+        df_pass = out.get("pass_df") or out.get("pass") or out.get("pass_df_unadjusted")
+        df_scan = out.get("scan_df") or out.get("scan")
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
@@ -198,6 +205,11 @@ def _safe_run_scan() -> dict:
             df_scan = out[1]
     elif isinstance(out, _pd.DataFrame):
         df_pass = out
+
+    # Sort by current price ascending if available
+    if isinstance(df_pass, _pd.DataFrame) and "Price" in df_pass.columns:
+        df_pass = df_pass.sort_values(["Price", "Ticker"], ascending=[True, True]).reset_index(drop=True)
+
     return {"pass": df_pass, "scan": df_scan}
 
 
@@ -208,7 +220,10 @@ def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
         "Change%","RelVol(TimeAdj63d)","Resistance","TP",
         "RR_to_Res","RR_to_TP","SupportType","SupportPrice",
         "Risk$","TPReward$","TPReward%","ResReward$","ResReward%",
-        "DailyATR","DailyCap","Hist21d_PassCount"
+        "DailyATR","DailyCap","Hist21d_PassCount","Hist21d_Max%","Hist21d_Examples",
+        "OptExpiry","BuyK","SellK","Width","DebitMid","DebitCons",
+        "MaxProfitMid","MaxProfitCons","RR_Spread_Mid","RR_Spread_Cons","BreakevenMid","PricingNote",
+        "Session","EntrySrc","VolSrc"
     ]
     cols = [c for c in prefer if c in df.columns]
     return df.loc[:, cols].copy() if cols else df.copy()
@@ -229,21 +244,8 @@ def _render_why_buy_block(df: pd.DataFrame):
 def render_scanner_tab():
     st.markdown("#### Scanner")
 
-    # Red RUN button (custom CSS)
-    st.markdown(
-        """
-        <style>
-        div.stButton > button:first-child {
-            background-color: red !important;
-            color: white !important;
-            font-weight: bold !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    run_clicked = st.button("RUN")
+    # Primary (theme-colored) RUN button
+    run_clicked = st.button("RUN", type="primary")
 
     if run_clicked:
         with st.spinner("Scanning…"):
@@ -273,7 +275,7 @@ def render_scanner_tab():
             st.caption("No results yet. Press **RUN** to scan.")
     else:
         st.caption("No results yet. Press **RUN** to scan.")
-        
+
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
@@ -296,6 +298,7 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
 
 
