@@ -157,17 +157,219 @@ def outcomes_summary(dfh: pd.DataFrame):
 # ============================================================
 # 8. Debugger (plain-English reasons with numbers)
 # ============================================================
-def diagnose_ticker(ticker, **kwargs):
-    df = sos._get_history(ticker)
-    entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, ticker) if df is not None else (None, None, None, {}, None)
-    row, reason = sos.evaluate_ticker(ticker, **kwargs)
-    if reason is None:
-        return f"{ticker} PASSED ✅", row
-    return f"{ticker} FAILED ❌ because {reason}", {
-        "entry": entry, "prev_close": prev_close, "today_vol": today_vol,
-        "src": src, "entry_ts": entry_ts
-    }
+def _fmt_ts_et(ts):
+    try:
+        # pretty print if it's a tz-aware datetime; otherwise show str
+        return ts.strftime("%Y-%m-%d %H:%M:%S %Z") if hasattr(ts, "strftime") else str(ts)
+    except Exception:
+        return str(ts)
 
+def _num(x, nd=4):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+def _finite(x):
+    from math import isfinite
+    try:
+        return isfinite(float(x))
+    except Exception:
+        return False
+
+def _mk_reason_expl(reason: str, ctx: dict) -> str:
+    """Turn engine reason codes into friendly, numeric explanations."""
+    lines = []
+    code = (reason or "").strip()
+
+    # frequently-hit context values
+    chg = ctx.get("change_pct")
+    rel = ctx.get("relvol")
+    rel_min = ctx.get("relvol_min")
+    entry = ctx.get("entry")
+    prev_close = ctx.get("prev_close")
+    res = ctx.get("resistance")
+    tp = ctx.get("tp")
+    daily_atr = ctx.get("daily_atr")
+    daily_cap = ctx.get("daily_cap")
+    req_tp_pct = ctx.get("tp_req_pct")
+
+    def pct(x):
+        try: return f"{float(x):.2f}%"
+        except: return str(x)
+
+    def usd(x, nd=2):
+        try: return f"${float(x):.{nd}f}"
+        except: return str(x)
+
+    if code == "relvol_low_timeadj":
+        lines.append(
+            f"Relative volume is too low: current RelVol (time-adjusted) is "
+            f"**{rel:.2f}×**, but the minimum is **{rel_min:.2f}×**."
+        )
+    elif code == "not_up_on_day":
+        lines.append(
+            f"Price isn’t up on the day: change is **{pct(chg)}** from "
+            f"yesterday’s close {usd(prev_close)} to entry {usd(entry)}."
+        )
+    elif code == "no_upside_to_resistance":
+        lines.append(
+            f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}."
+        )
+    elif code == "atr_capacity_short_vs_tp":
+        lines.append(
+            "ATR capacity is too small to reasonably reach the target in a month: "
+            f"need ≈ **{pct(req_tp_pct)}** to target (≈ {usd(tp)}), but Daily ATR is "
+            f"{usd(daily_atr, nd=4)}, implying about **{usd(daily_cap)}** over ~21 trading days."
+        )
+    elif code == "history_21d_zero_pass":
+        lines.append(
+            "History check failed: in the last year there were **0** cases where a 21-trading-day move "
+            f"matched or exceeded the required **{pct(req_tp_pct)}**."
+        )
+    elif code in {"no_valid_support", "non_positive_risk"}:
+        lines.append(
+            "Couldn’t find a valid support below price to place a stop (risk would be non-positive)."
+        )
+    elif code == "rr_to_res_below_min":
+        lines.append(
+            "Reward-to-risk to the recent high is below the minimum (needs ≥ 2:1)."
+        )
+    elif code in {"insufficient_rows", "insufficient_past_for_21d"}:
+        lines.append("Not enough price history to evaluate this ticker robustly.")
+    elif code == "bad_entry_prevclose":
+        lines.append("Intraday quote/previous close unavailable or inconsistent.")
+    else:
+        lines.append(f"Engine rejected the setup: **{code}**.")
+
+    # Add a compact numeric snapshot for context
+    snap = []
+    if _finite(entry) and _finite(prev_close):
+        snap.append(f"Entry {usd(entry)} vs prev close {usd(prev_close)} → day change {pct(chg)}.")
+    if _finite(res) and _finite(tp):
+        snap.append(f"Resistance {usd(res)}, TP {usd(tp)}.")
+    if _finite(rel):
+        snap.append(f"RelVol (time-adjusted): {rel:.2f}× (min {rel_min:.2f}×).")
+    if _finite(daily_atr):
+        snap.append(f"Daily ATR {usd(daily_atr, nd=4)} ⇒ ~{usd(daily_cap)} / 21 trading days.")
+
+    if snap:
+        lines.append("")
+        lines.append("**Snapshot:** " + " ".join(snap))
+
+    return "<br>".join(lines)
+
+def diagnose_ticker(ticker: str,
+                    res_days=None,
+                    rel_vol_min=None,
+                    relvol_median=False,
+                    rr_min=None,
+                    stop_mode="safest"):
+    """
+    Returns:
+      title (str), details (dict with numbers), and 'explanation_md' (str) for plain-English UI.
+    """
+    # Pull defaults from the engine when not supplied
+    res_days = res_days if res_days is not None else getattr(sos, "RES_LOOKBACK_DEFAULT", 21)
+    rel_vol_min = rel_vol_min if rel_vol_min is not None else getattr(sos, "REL_VOL_MIN_DEFAULT", 1.10)
+    rr_min = rr_min if rr_min is not None else getattr(sos, "RR_MIN_DEFAULT", 2.0)
+
+    df = sos._get_history(ticker)
+    entry = prev_close = today_vol = None
+    src = {}
+    entry_ts = None
+
+    if df is not None:
+        entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, ticker)
+
+    row, reason = sos.evaluate_ticker(
+        ticker,
+        res_days=res_days,
+        rel_vol_min=rel_vol_min,
+        use_relvol_median=relvol_median,
+        rr_min=rr_min,
+        prefer_stop=stop_mode
+    )
+
+    # If it passed, build a quick friendly summary too
+    if reason is None and isinstance(row, dict):
+        # quick narrative for passes
+        narrative = (
+            f"**{ticker} PASSED** ✔️ — price is up **{row.get('Change%', 0):.2f}%** today, "
+            f"time-adjusted RelVol **{row.get('RelVol(TimeAdj63d)', 0):.2f}×**. "
+            f"Target {row.get('TP')} vs price {row.get('Price')}, "
+            f"Daily ATR ≈ {row.get('DailyATR')} (~{row.get('DailyCap')} per month). "
+            f"R:R to high ≈ **{row.get('RR_to_Res')}**:1; to TP ≈ **{row.get('RR_to_TP')}**:1."
+        )
+        details = {
+            "entry": entry,
+            "prev_close": prev_close,
+            "today_vol": today_vol,
+            "src": src,
+            "entry_ts": _fmt_ts_et(entry_ts),
+            "explanation_md": narrative
+        }
+        return f"{ticker} PASSED ✅", details
+
+    # Build context for a friendly failure explanation
+    from math import isfinite
+    ctx = {}
+    ctx["entry"] = _num(entry)
+    ctx["prev_close"] = _num(prev_close)
+    ctx["change_pct"] = ((ctx["entry"] - ctx["prev_close"]) / ctx["prev_close"] * 100.0) if (_finite(ctx["entry"]) and _finite(ctx["prev_close"]) and ctx["prev_close"] != 0) else None
+
+    # relvol (time adjusted)
+    relvol_val = None
+    try:
+        if df is not None and _finite(today_vol):
+            relvol_val = sos.compute_relvol_time_adjusted(df, today_vol, use_median=relvol_median)
+    except Exception:
+        relvol_val = None
+    ctx["relvol"] = relvol_val
+    ctx["relvol_min"] = rel_vol_min
+
+    # resistance & TP from current entry (for context only)
+    try:
+        if df is not None and len(df) >= max(22, res_days + 1) and _finite(ctx["entry"]):
+            rolling_high = df["High"].rolling(window=res_days, min_periods=res_days).max()
+            res = float(rolling_high.shift(1).iloc[-1])
+            ctx["resistance"] = res
+            if isfinite(res) and res > ctx["entry"]:
+                ctx["tp"] = ctx["entry"] + 0.5 * (res - ctx["entry"])
+                if isfinite(ctx["tp"]):
+                    ctx["tp_req_pct"] = (ctx["tp"] - ctx["entry"]) / ctx["entry"] * 100.0
+    except Exception:
+        pass
+
+    # ATR & monthly capacity
+    try:
+        if df is not None:
+            da = sos._atr_from_ohlc(df, 14)
+            ctx["daily_atr"] = da
+            if _finite(da):
+                ctx["daily_cap"] = da * 21.0
+    except Exception:
+        pass
+
+    # Compose narrative
+    title = f"{ticker} FAILED ❌ — {reason}"
+    narrative = _mk_reason_expl(reason, ctx)
+
+    details = {
+        "entry": entry,
+        "prev_close": prev_close,
+        "today_vol": today_vol,
+        "src": src,
+        "entry_ts": _fmt_ts_et(entry_ts),
+        "relvol_time_adj": float(relvol_val) if _finite(relvol_val) else None,
+        "resistance": ctx.get("resistance"),
+        "tp": ctx.get("tp"),
+        "daily_atr": ctx.get("daily_atr"),
+        "daily_cap": ctx.get("daily_cap"),
+        "explanation_md": narrative
+    }
+    return title, details
+                        
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,11 +511,16 @@ with tab2:
     dfh = load_outcomes()
     outcomes_summary(dfh)
 
-# Debugger tab (rendered ONCE; unique widget key to be extra safe)
+# Debugger tab
 with tab3:
     st.header("Debugger")
     dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
     if dbg_ticker:
-        msg, details = diagnose_ticker(dbg_ticker.strip().upper())
-        st.subheader(msg)
-        st.json(details)
+        title, details = diagnose_ticker(dbg_ticker.strip().upper())
+        st.subheader(title)
+        # 👉 show the plain-English narrative
+        expl = details.get("explanation_md", "")
+        if expl:
+            st.markdown(expl, unsafe_allow_html=True)
+        # raw numbers snapshot
+        st.json({k: v for k, v in details.items() if k != "explanation_md"})
