@@ -12,6 +12,14 @@ from pathlib import Path
 import sys
 import pandas as pd
 
+import sys
+import os
+
+# Add repo root to Python path so swing_options_screener.py can be found
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+import swing_options_screener as sos
+
 # --- Local imports (repo files) ---
 try:
     import swing_options_screener as sos
