@@ -602,15 +602,18 @@ with tab3:
 # ============================================================
 # 10. UI – Tabs
 # ============================================================
-# Create the three tabs once, then render each tab's content.
-tab1, tab2, tab3 = st.tabs(["Scanner", "History & Outcomes", "Debugger"])
+
+# Create tabs once with unique variable names
+tab_scanner, tab_history, tab_debug = st.tabs(
+    ["Scanner", "History & Outcomes", "Debugger"]
+)
 
 # ── TAB 1: Scanner (red RUN button, results table, WHY BUY, Sheets view)
-with tab1:
+with tab_scanner:
     render_scanner_tab()
 
 # ── TAB 2: History & Outcomes
-with tab2:
+with tab_history:
     st.header("History & Outcomes")
     lastf = latest_pass_file()
     if lastf:
@@ -622,11 +625,10 @@ with tab2:
     dfh = load_outcomes()
     outcomes_summary(dfh)
 
-# ── TAB 3: Debugger (plain-English + numbers in styled HTML)
-with tab3:
+# ── TAB 3: Debugger (plain-English + numbers; styled HTML)
+with tab_debug:
     import json, html as _html
 
-    # Light CSS for the debugger section
     st.markdown("""
     <style>
       .dbg-wrap { margin-top: 0.5rem; }
@@ -649,12 +651,9 @@ with tab3:
 
     if dbg_ticker:
         title, details = diagnose_ticker(dbg_ticker.strip().upper())
-
-        # PASS/FAIL badge
         is_fail = "FAIL" in (title or "").upper()
         badge = '<span class="dbg-badge fail">FAIL</span>' if is_fail else '<span class="dbg-badge pass">PASS</span>'
 
-        # Safe getters (avoid KeyErrors / None)
         def g(d, k, default="—"):
             try:
                 v = d.get(k, default)
@@ -676,10 +675,8 @@ with tab3:
         daily_atr      = g(details, "daily_atr")
         daily_cap      = g(details, "daily_cap")
 
-        # Narrative from diagnose_ticker (already Markdown/HTML)
         narrative_html = details.get("explanation_md", "")
 
-        # Build three HTML blocks and render separately (prevents code-block glitches)
         html_top = f"""
         <div class="dbg-wrap">
           <div class="dbg-title">{title} {badge}</div>
@@ -703,7 +700,7 @@ with tab3:
           </div>
         """
 
-        # Pretty JSON (HTML-escaped) in a collapsible
+        import json, html as _html
         pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"},
                             indent=2, default=str)
         html_json = f"""
