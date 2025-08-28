@@ -173,21 +173,130 @@ def diagnose_ticker(ticker, **kwargs):
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
 
-# ============================================================
+# ─────────────────────────────────────────────────────────────────────────────
 # 10. TAB – Scanner (table → WHY BUY → Sheets export)
-# ============================================================
-with tab1:
-    st.header("Swing Options Scanner")
-    if st.button("RUN SCAN"):
-        out = sos.run_scan(universe="sp500", with_options=True)
-        df = out["pass_df"]
-        if df.empty:
-            st.warning("No PASS tickers found.")
+# ─────────────────────────────────────────────────────────────────────────────
+def _safe_run_scan() -> dict:
+    """
+    Call sos.run_scan with backward-compatible signatures.
+    Returns a dict: {"pass": DataFrame or None, "scan": DataFrame or None}
+    """
+    import pandas as _pd
+
+    try:
+        out = sos.run_scan(market="sp500", with_options=True)
+    except TypeError:
+        try:
+            out = sos.run_scan(universe="sp500", with_options=True)
+        except TypeError:
+            out = sos.run_scan(with_options=True)
+
+    df_pass, df_scan = None, None
+    if isinstance(out, dict):
+        df_pass = out.get("pass")
+        df_scan = out.get("scan")
+    elif isinstance(out, (list, tuple)):
+        if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
+            df_pass = out[0]
+        if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
+            df_scan = out[1]
+    elif isinstance(out, _pd.DataFrame):
+        df_pass = out
+
+    return {"pass": df_pass, "scan": df_scan}
+
+
+def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Produce a tidy, sheet-friendly subset without altering your main table.
+    Only picks columns that exist; order is nice for spreadsheets.
+    """
+    prefer = [
+        "Ticker", "EvalDate", "Price", "EntryTimeET",
+        "Change%", "RelVol(TimeAdj63d)", "Resistance", "TP",
+        "RR_to_Res", "RR_to_TP", "SupportType", "SupportPrice",
+        "Risk$", "TPReward$", "TPReward%", "ResReward$", "ResReward%",
+        "DailyATR", "DailyCap", "Hist21d_PassCount"
+    ]
+    cols = [c for c in prefer if c in df.columns]
+    return df.loc[:, cols].copy() if cols else df.copy()
+
+
+def _render_why_buy_block(df: pd.DataFrame):
+    """
+    Render one expander per row with your plain-English WHY BUY text.
+    (Relies on your build_why_buy_html(row) helper from Section 5.)
+    """
+    if df is None or df.empty:
+        return
+    st.markdown("### WHY BUY details")
+    for _, row in df.iterrows():
+        tkr = str(row.get("Ticker", "")).strip() or "—"
+        with st.expander(f"WHY BUY — {tkr}", expanded=False):
+            html = build_why_buy_html(row)  # uses your existing helper
+            st.markdown(html, unsafe_allow_html=True)
+
+
+def render_scanner_tab():
+    st.markdown("#### Scanner")
+
+    # RUN (red) — table is shown first after a run
+    run_col1, run_col2 = st.columns([1, 4])
+    with run_col1:
+        run_clicked = st.button("RUN", type="primary", use_container_width=True)
+    with run_col2:
+        st.caption("Runs the screener against the S&P 500 universe and shows fresh results below.")
+
+    if run_clicked:
+        with st.spinner("Scanning…"):
+            out = _safe_run_scan()
+        df_pass: pd.DataFrame | None = out.get("pass")
+
+        # cache the last successful result in session for the tab until page refresh
+        st.session_state["last_pass"] = df_pass
+
+        if df_pass is None or df_pass.empty:
+            st.warning("No tickers passed the filters.")
         else:
-            st.dataframe(df, use_container_width=True)
-            for _, r in df.iterrows():
-                with st.expander(f"WHY BUY {r['Ticker']}"):
-                    st.markdown(build_why_buy_html(r), unsafe_allow_html=True)
+            st.success(f"Found {len(df_pass)} passing tickers.")
+            st.dataframe(
+                df_pass,
+                use_container_width=True,
+                height=min(560, 80 + 28 * len(df_pass)),
+            )
+
+            # WHY BUY (one expander per row)
+            _render_why_buy_block(df_pass)
+
+            # Google Sheet formatting (collapsed by default)
+            with st.expander("Google-Sheet style view (optional)", expanded=False):
+                st.dataframe(
+                    _sheet_friendly(df_pass),
+                    use_container_width=True,
+                    height=min(560, 80 + 28 * len(df_pass)),
+                )
+
+    # If nothing was just run, show the last result from session (if any)
+    elif "last_pass" in st.session_state and isinstance(st.session_state["last_pass"], pd.DataFrame):
+        df_pass: pd.DataFrame = st.session_state["last_pass"]
+        if not df_pass.empty:
+            st.info(f"Showing last run in this session • {len(df_pass)} tickers")
+            st.dataframe(
+                df_pass,
+                use_container_width=True,
+                height=min(560, 80 + 28 * len(df_pass)),
+            )
+            _render_why_buy_block(df_pass)
+            with st.expander("Google-Sheet style view (optional)", expanded=False):
+                st.dataframe(
+                    _sheet_friendly(df_pass),
+                    use_container_width=True,
+                    height=min(560, 80 + 28 * len(df_pass)),
+                )
+        else:
+            st.caption("No results yet. Press **RUN** to scan.")
+    else:
+        st.caption("No results yet. Press **RUN** to scan.")
 
 # ============================================================
 # 11. TAB – History & Outcomes
@@ -211,4 +320,5 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
