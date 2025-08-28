@@ -598,3 +598,124 @@ with tab3:
         st.markdown(html_top, unsafe_allow_html=True)
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
+
+# ============================================================
+# 10. UI – Tabs
+# ============================================================
+# Create the three tabs once, then render each tab's content.
+tab1, tab2, tab3 = st.tabs(["Scanner", "History & Outcomes", "Debugger"])
+
+# ── TAB 1: Scanner (red RUN button, results table, WHY BUY, Sheets view)
+with tab1:
+    render_scanner_tab()
+
+# ── TAB 2: History & Outcomes
+with tab2:
+    st.header("History & Outcomes")
+    lastf = latest_pass_file()
+    if lastf:
+        st.success(f"Last run file: {lastf}")
+        try:
+            st.dataframe(pd.read_csv(lastf), use_container_width=True)
+        except Exception:
+            st.info("Pass file exists but could not be read.")
+    dfh = load_outcomes()
+    outcomes_summary(dfh)
+
+# ── TAB 3: Debugger (plain-English + numbers in styled HTML)
+with tab3:
+    import json, html as _html
+
+    # Light CSS for the debugger section
+    st.markdown("""
+    <style>
+      .dbg-wrap { margin-top: 0.5rem; }
+      .dbg-title { font-weight: 700; font-size: 1.05rem; margin-bottom: .25rem; }
+      .dbg-badge { padding: 2px 6px; border-radius: 6px; font-size: .8rem; margin-left: .4rem; }
+      .dbg-badge.pass { background: #0f5132; color: #fff; }
+      .dbg-badge.fail { background: #842029; color: #fff; }
+      .dbg-subtle { margin-bottom: .5rem; line-height: 1.4; }
+      .dbg-snapshot { background: #111; color: #eee; padding: 10px; border-radius: 8px; font-size: .9rem; }
+      .dbg-snap-kv { display: inline-block; margin-right: 14px; margin-top: 4px; }
+      .dbg-snap-kv .k { color: #bbb; }
+      .dbg-snap-kv .v { color: #fff; font-weight: 600; }
+      .dbg-json details { margin-top: .5rem; }
+      .dbg-json pre { background: #0b0b0b; color: #e6e6e6; padding: 10px; border-radius: 8px; overflow-x: auto; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.header("Debugger")
+    dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
+
+    if dbg_ticker:
+        title, details = diagnose_ticker(dbg_ticker.strip().upper())
+
+        # PASS/FAIL badge
+        is_fail = "FAIL" in (title or "").upper()
+        badge = '<span class="dbg-badge fail">FAIL</span>' if is_fail else '<span class="dbg-badge pass">PASS</span>'
+
+        # Safe getters (avoid KeyErrors / None)
+        def g(d, k, default="—"):
+            try:
+                v = d.get(k, default)
+                return default if v is None else v
+            except Exception:
+                return default
+
+        entry          = g(details, "entry")
+        prev_close     = g(details, "prev_close")
+        today_vol      = g(details, "today_vol")
+        src            = g(details, "src", {})
+        session        = g(src, "session", "—") if isinstance(src, dict) else "—"
+        entry_src      = g(src, "entry_src", "—") if isinstance(src, dict) else "—"
+        vol_src        = g(src, "vol_src", "—") if isinstance(src, dict) else "—"
+        entry_ts       = g(details, "entry_ts")
+        resistance     = g(details, "resistance")
+        tp             = g(details, "tp")
+        relvol_timeadj = g(details, "relvol_time_adj")
+        daily_atr      = g(details, "daily_atr")
+        daily_cap      = g(details, "daily_cap")
+
+        # Narrative from diagnose_ticker (already Markdown/HTML)
+        narrative_html = details.get("explanation_md", "")
+
+        # Build three HTML blocks and render separately (prevents code-block glitches)
+        html_top = f"""
+        <div class="dbg-wrap">
+          <div class="dbg-title">{title} {badge}</div>
+          <div class="dbg-subtle">{narrative_html}</div>
+        """
+
+        html_snapshot = f"""
+          <div class="dbg-snapshot">
+            <span class="dbg-snap-kv"><span class="k">Session:</span> <span class="v">{session}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Entry src:</span> <span class="v">{entry_src}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Vol src:</span> <span class="v">{vol_src}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Entry:</span> <span class="v">{entry}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Prev Close:</span> <span class="v">{prev_close}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Today Vol:</span> <span class="v">{today_vol}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Resistance:</span> <span class="v">{resistance}</span></span>
+            <span class="dbg-snap-kv"><span class="k">TP:</span> <span class="v">{tp}</span></span>
+            <span class="dbg-snap-kv"><span class="k">RelVol(Adj):</span> <span class="v">{relvol_timeadj}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Daily ATR:</span> <span class="v">{daily_atr}</span></span>
+            <span class="dbg-snap-kv"><span class="k">Daily Cap:</span> <span class="v">{daily_cap}</span></span><br/>
+            <span class="dbg-snap-kv"><span class="k">Timestamp:</span> <span class="v">{entry_ts}</span></span>
+          </div>
+        """
+
+        # Pretty JSON (HTML-escaped) in a collapsible
+        pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"},
+                            indent=2, default=str)
+        html_json = f"""
+          <div class="dbg-json">
+            <details>
+              <summary>Show raw JSON</summary>
+              <pre>{_html.escape(pretty)}</pre>
+            </details>
+          </div>
+        </div>
+        """
+
+        st.markdown(html_top, unsafe_allow_html=True)
+        st.markdown(html_snapshot, unsafe_allow_html=True)
+        st.markdown(html_json, unsafe_allow_html=True)
