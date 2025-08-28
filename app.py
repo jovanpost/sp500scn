@@ -9,10 +9,8 @@
 #  6. CSV helpers (latest pass file, outcomes)
 #  7. Outcomes counters (robust to minimal/extended schemas)
 #  8. Debugger (plain-English reasons with numbers)
-#  9. TAB – Scanner (table → WHY BUY → Sheets export)
+# 9. TAB – Scanner (table → WHY BUY → Sheets export)
 #  10. UI – Tabs
-# 11. TAB – History & Outcomes
-# 12. TAB – Debugger (plain English + numbers)
 # ============================================================
 
 # ============================================================
@@ -170,7 +168,6 @@ def diagnose_ticker(ticker, **kwargs):
         "src": src, "entry_ts": entry_ts
     }
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,6 +175,8 @@ def _safe_run_scan() -> dict:
     """Call sos.run_scan with backward-compatible signatures and normalize outputs
     without using boolean truthiness on DataFrames."""
     import pandas as _pd
+
+    # Try different parameter names used across your versions
     try:
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
@@ -187,16 +186,34 @@ def _safe_run_scan() -> dict:
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
+
     if isinstance(out, dict):
-        df_pass = out.get("pass") or out.get("pass_df") or out.get("pass_df_unadjusted")
-        df_scan = out.get("scan") or out.get("scan_df")
+        p = out.get("pass", None)
+        if isinstance(p, _pd.DataFrame):
+            df_pass = p
+        p2 = out.get("pass_df", None)
+        if df_pass is None and isinstance(p2, _pd.DataFrame):
+            df_pass = p2
+        p3 = out.get("pass_df_unadjusted", None)
+        if df_pass is None and isinstance(p3, _pd.DataFrame):
+            df_pass = p3
+
+        s = out.get("scan", None)
+        if isinstance(s, _pd.DataFrame):
+            df_scan = s
+        s2 = out.get("scan_df", None)
+        if df_scan is None and isinstance(s2, _pd.DataFrame):
+            df_scan = s2
+
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
         if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
             df_scan = out[1]
+
     elif isinstance(out, _pd.DataFrame):
         df_pass = out
+
     return {"pass": df_pass, "scan": df_scan}
 
 
@@ -228,7 +245,7 @@ def _render_why_buy_block(df: pd.DataFrame):
 def render_scanner_tab():
     st.markdown("#### Scanner")
 
-    # Red RUN button (custom CSS)
+    # Red RUN button (custom CSS inside this tab to avoid global collisions)
     st.markdown(
         """
         <style>
@@ -242,12 +259,12 @@ def render_scanner_tab():
         unsafe_allow_html=True,
     )
 
-    run_clicked = st.button("RUN")
+    run_clicked = st.button("RUN", key="run_scan_btn")
 
     if run_clicked:
         with st.spinner("Scanning…"):
             out = _safe_run_scan()
-        df_pass: pd.DataFrame | None = out.get("pass")
+        df_pass: pd.DataFrame | None = out.get("pass", None)
 
         st.session_state["last_pass"] = df_pass
 
@@ -260,76 +277,43 @@ def render_scanner_tab():
             with st.expander("Google-Sheet style view (optional)", expanded=False):
                 st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
 
-    elif "last_pass" in st.session_state and isinstance(st.session_state["last_pass"], pd.DataFrame):
+    elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
-        if not df_pass.empty:
-            st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-            st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
-            _render_why_buy_block(df_pass)
-            with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
-        else:
-            st.caption("No results yet. Press **RUN** to scan.")
+        st.info(f"Showing last run in this session • {len(df_pass)} tickers")
+        st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
+        _render_why_buy_block(df_pass)
+        with st.expander("Google-Sheet style view (optional)", expanded=False):
+            st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
     else:
         st.caption("No results yet. Press **RUN** to scan.")
 
 # ============================================================
 # 10. UI – Tabs
 # ============================================================
-tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
+tab1, tab2, tab3 = st.tabs(["Scanner", "History & Outcomes", "Debugger"])
 
-# Call the scanner tab renderer so the red RUN button shows up
+# Scanner tab (includes red RUN button and results)
 with tab1:
     render_scanner_tab()
 
-# History & Outcomes tab
+# History & Outcomes tab (rendered ONCE)
 with tab2:
     st.header("History & Outcomes")
     lastf = latest_pass_file()
     if lastf:
         st.success(f"Last run file: {lastf}")
-        st.dataframe(pd.read_csv(lastf), use_container_width=True)
+        try:
+            st.dataframe(pd.read_csv(lastf), use_container_width=True)
+        except Exception:
+            st.info("Pass file exists but could not be read.")
     dfh = load_outcomes()
     outcomes_summary(dfh)
 
-# Debugger tab
+# Debugger tab (rendered ONCE; unique widget key to be extra safe)
 with tab3:
     st.header("Debugger")
-    dbg_ticker = st.text_input("Enter ticker to debug")
+    dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
     if dbg_ticker:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
-
-
-# ============================================================
-# 11. TAB – History & Outcomes
-# ============================================================
-with tab2:
-    st.header("History & Outcomes")
-    lastf = latest_pass_file()
-    if lastf:
-        st.success(f"Last run file: {lastf}")
-        st.dataframe(pd.read_csv(lastf), use_container_width=True)
-    dfh = load_outcomes()
-    outcomes_summary(dfh)
-
-# ============================================================
-# 12. TAB – Debugger (plain English + numbers)
-# ============================================================
-with tab3:
-    st.header("Debugger")
-    dbg_ticker = st.text_input("Enter ticker to debug")
-    if dbg_ticker:
-        msg, details = diagnose_ticker(dbg_ticker.strip().upper())
-        st.subheader(msg)
-        st.json(details)
-
-
-
-
-
-
-
-
-
