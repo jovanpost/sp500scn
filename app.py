@@ -517,34 +517,9 @@ def render_scanner_tab():
             st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
     else:
         st.caption("No results yet. Press **RUN** to scan.")
-
-# ============================================================
-# 10. UI – Tabs
-# ============================================================
-tab1, tab2, tab3 = st.tabs(["Scanner", "History & Outcomes", "Debugger"])
-
-# ── Scanner tab (red RUN button + results) ──────────────────
-with tab1:
-    render_scanner_tab()
-
-# ── History & Outcomes tab (rendered once) ──────────────────
-with tab2:
-    st.header("History & Outcomes")
-
-    lastf = latest_pass_file()
-    if lastf:
-        st.success(f"Last run file: {lastf}")
-        try:
-            st.dataframe(pd.read_csv(lastf), use_container_width=True)
-        except Exception:
-            st.info("Pass file exists but could not be read.")
-
-    dfh = load_outcomes()
-    outcomes_summary(dfh)
-
 # ── Debugger tab (styled HTML narrative) ─────────────────────
 with tab3:
-    import json
+    import json, html as _html
 
     st.header("Debugger")
     dbg_ticker = st.text_input("Enter ticker to debug", key="dbg_ticker_input")
@@ -556,7 +531,7 @@ with tab3:
         is_fail = "FAIL" in (title or "").upper()
         badge = '<span class="dbg-badge fail">FAIL</span>' if is_fail else '<span class="dbg-badge pass">PASS</span>'
 
-        # Extract fields (robust)
+        # Safe getters
         def g(d, k, default="—"):
             try:
                 v = d.get(k, default)
@@ -578,16 +553,17 @@ with tab3:
         daily_atr      = g(details, "daily_atr")
         daily_cap      = g(details, "daily_cap")
 
-        # Plain-English narrative from diagnose_ticker
+        # Narrative from diagnose_ticker (already HTML/Markdown)
         narrative_html = details.get("explanation_md", "")
 
-        # Compose HTML
+        # Top/title block
         html_top = f"""
         <div class="dbg-wrap">
           <div class="dbg-title">{title} {badge}</div>
           <div class="dbg-subtle">{narrative_html}</div>
         """
 
+        # Snapshot block
         html_snapshot = f"""
           <div class="dbg-snapshot">
             <span class="dbg-snap-kv"><span class="k">Session:</span> <span class="v">{session}</span></span>
@@ -605,15 +581,20 @@ with tab3:
           </div>
         """
 
-        pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"}, indent=2, default=str)
+        # Pretty JSON (HTML-escaped) in a collapsible
+        pretty = json.dumps({k: v for k, v in details.items() if k != "explanation_md"},
+                            indent=2, default=str)
         html_json = f"""
           <div class="dbg-json">
             <details>
               <summary>Show raw JSON</summary>
-              <pre>{pretty}</pre>
+              <pre>{_html.escape(pretty)}</pre>
             </details>
           </div>
         </div>
         """
 
-        st.markdown(html_top + html_snapshot + html_json, unsafe_allow_html=True)
+        # Render as three separate HTML blocks to avoid Markdown code-block quirks
+        st.markdown(html_top, unsafe_allow_html=True)
+        st.markdown(html_snapshot, unsafe_allow_html=True)
+        st.markdown(html_json, unsafe_allow_html=True)
