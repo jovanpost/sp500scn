@@ -1,20 +1,25 @@
 name: Daily scan + TP check
 
 on:
-  workflow_dispatch: {}        # Run by hand
-  schedule:                    # (keeps your timers too)
-    # 10:30 / 11:30 / 12:30 ET  (cron is UTC)
+  # Manual run
+  workflow_dispatch:
+
+  # Scheduled runs (UTC)
+  schedule:
+    # 10:30 ET ≈ 14:30 UTC (EDT)
     - cron: "30 14 * * 1-5"
+    # 11:30 ET ≈ 15:30 UTC (EDT)
     - cron: "30 15 * * 1-5"
+    # 12:30 ET ≈ 16:30 UTC (EDT)
     - cron: "30 16 * * 1-5"
-    # Nightly ~ 23:30 UTC for TP-hit check
+    # Nightly hit check after close + buffer (~23:30 UTC)
     - cron: "30 23 * * 1-5"
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write       # allow commit to the repo
+    timeout-minutes: 30
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -26,15 +31,19 @@ jobs:
 
       - name: Install deps
         run: |
-          python -m pip install -U pip
+          python -m pip install --upgrade pip
           python -m pip install -r ./scripts/requirements.txt
 
       - name: Run screener and write history
-        run: |
-          python ./scripts/run_and_log.py --universe sp500 --with-options
         env:
-          TZ: America/New_York
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          # Run scan and write pass files + history/logs under ./data/
+          python ./scripts/run_and_log.py --universe sp500 --with-options
+          # Also run the TP hit checker to update hit logs
+          python ./scripts/check_hits.py
 
+      # Keep downloadable artifacts for each run
       - name: Upload artifacts (CSV + logs)
         uses: actions/upload-artifact@v4
         with:
@@ -42,16 +51,16 @@ jobs:
           path: |
             pass_tickers.csv
             pass_tickers_unadjusted.psv
-            data/history/**/*.psv
-            data/history/**/*.csv
-            data/logs/**/*.txt
+            data/history/**
+            data/logs/**
           if-no-files-found: warn
+          retention-days: 7
 
+      # Commit files back to the repo so Streamlit can read them
       - name: Commit history to repo
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "History update (auto)"
-          file_pattern: |
-            data/history/**/*.psv
-            data/history/**/*.csv
-            data/logs/**/*.txt
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A data/ pass_tickers.csv pass_tickers_unadjusted.psv
+          git commit -m "History update (auto)" || echo "Nothing to commit"
+          git push
