@@ -183,12 +183,15 @@ def outcomes_summary(dfh: pd.DataFrame):
 
     st.dataframe(df_show, use_container_width=True, height=min(600, 80 + 28 * len(df_show)))
     
+
 # ============================================================
 # 8. Debugger (plain-English reasons with numbers)
+#     • Adds Wikipedia-based company-name → ticker mapping
 # ============================================================
+import re, unicodedata
+
 def _fmt_ts_et(ts):
     try:
-        # pretty print if it's a tz-aware datetime; otherwise show str
         return ts.strftime("%Y-%m-%d %H:%M:%S %Z") if hasattr(ts, "strftime") else str(ts)
     except Exception:
         return str(ts)
@@ -206,12 +209,121 @@ def _finite(x):
     except Exception:
         return False
 
+# -------- Wikipedia / Universe helpers --------------------------------------
+_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+def _normalize_company_key(s: str) -> str:
+    """Turn 'NVIDIA Corporation, Inc. (Class A)' → 'nvidia' for dictionary keys."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode("ascii").lower()
+    s = re.sub(r"\b(corporation|corp\.?|inc\.?|company|co\.?|plc|ltd\.?|llc|class [ab]\b|holding[s]?|&|and)\b", " ", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _build_map_from_df(df: pd.DataFrame) -> dict:
+    cols = {c.lower(): c for c in df.columns}
+    sym_col = cols.get("symbol") or cols.get("ticker") or cols.get("symbol[s]")
+    name_col = cols.get("security") or cols.get("company") or cols.get("constituent")
+    if not sym_col or not name_col:
+        return {}
+    d = {}
+    for _, r in df[[sym_col, name_col]].dropna().iterrows():
+        sym = str(r[sym_col]).strip().upper()
+        name = str(r[name_col]).strip()
+        if not sym or not name:
+            continue
+        key = _normalize_company_key(name)
+        if key:
+            d[key] = sym
+        first = key.split(" ")[0] if key else ""
+        if first and first not in d:
+            d[first] = sym
+    return d
+
+def _load_sp500_name_map_cached() -> dict:
+    """
+    Returns cached {normalized_company_name: TICKER}.
+    Order:
+      1) sos.get_universe('sp500') if it returns a DataFrame with names
+      2) Wikipedia S&P-500 table via pandas.read_html
+    """
+    if "sp500_name_map" in st.session_state and isinstance(st.session_state["sp500_name_map"], dict):
+        return st.session_state["sp500_name_map"]
+
+    name_map = {}
+
+    # (1) Try engine universe if available
+    try:
+        if hasattr(sos, "get_universe"):
+            uni = sos.get_universe("sp500")
+            if isinstance(uni, pd.DataFrame):
+                name_map = _build_map_from_df(uni)
+    except Exception:
+        pass
+
+    # (2) Wikipedia fallback
+    if not name_map:
+        try:
+            tables = pd.read_html(_WIKI_URL)
+            for t in tables:
+                nm = _build_map_from_df(t)
+                if nm:
+                    name_map = nm
+                    break
+        except Exception:
+            name_map = {}
+
+    st.session_state["sp500_name_map"] = name_map
+    return name_map
+
+# Baseline aliases if wiki fails / not found
+_NAME_TO_TICKER_BASE = {
+    "nvidia": "NVDA",
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "amazon": "AMZN",
+    "meta": "META",
+    "facebook": "META",
+    "alphabet": "GOOGL",
+    "google": "GOOGL",
+    "tesla": "TSLA",
+    "netflix": "NFLX",
+    "walmart": "WMT",
+}
+
+def _normalize_symbol(user_text: str) -> str:
+    """
+    Accepts free text like 'NVIDIA' or 'Alphabet Inc Class A' and returns a best-guess ticker.
+    Priority:
+      1) already-a-ticker-looking string → uppercase
+      2) Wikipedia/company-name map
+      3) baseline aliases
+      4) cleaned uppercase fallback
+    """
+    if not user_text:
+        return ""
+    cleaned = "".join(ch for ch in user_text if ch.isalnum() or ch in (".", "-"))
+    if cleaned and cleaned.upper() == user_text.strip().upper():
+        return cleaned.upper()
+
+    name_map = _load_sp500_name_map_cached()
+    key = _normalize_company_key(user_text)
+    if key in name_map:
+        return name_map[key]
+    first = key.split(" ")[0] if key else ""
+    if first in name_map:
+        return name_map[first]
+    if key in _NAME_TO_TICKER_BASE:
+        return _NAME_TO_TICKER_BASE[key]
+    return cleaned.upper() if cleaned else str(user_text).strip().upper()
+
+# ---- Explanation builder (your existing logic) -------------------------------
 def _mk_reason_expl(reason: str, ctx: dict) -> str:
-    """Turn engine reason codes into friendly, numeric explanations."""
     lines = []
     code = (reason or "").strip()
 
-    # frequently-hit context values
     chg = ctx.get("change_pct")
     rel = ctx.get("relvol")
     rel_min = ctx.get("relvol_min")
@@ -232,46 +344,32 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
         except: return str(x)
 
     if code == "relvol_low_timeadj":
-        lines.append(
-            f"Relative volume is too low: current RelVol (time-adjusted) is "
-            f"**{rel:.2f}×**, but the minimum is **{rel_min:.2f}×**."
-        )
+        lines.append(f"Relative volume is too low: current RelVol (time-adjusted) is **{rel:.2f}×**, but the minimum is **{rel_min:.2f}×**.")
     elif code == "not_up_on_day":
-        lines.append(
-            f"Price isn’t up on the day: change is **{pct(chg)}** from "
-            f"yesterday’s close {usd(prev_close)} to entry {usd(entry)}."
-        )
+        lines.append(f"Price isn’t up on the day: change is **{pct(chg)}** from yesterday’s close {usd(prev_close)} to entry {usd(entry)}.")
     elif code == "no_upside_to_resistance":
-        lines.append(
-            f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}."
-        )
+        lines.append(f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}.")
     elif code == "atr_capacity_short_vs_tp":
-        lines.append(
-            "ATR capacity is too small to reasonably reach the target in a month: "
-            f"need ≈ **{pct(req_tp_pct)}** to target (≈ {usd(tp)}), but Daily ATR is "
-            f"{usd(daily_atr, nd=4)}, implying about **{usd(daily_cap)}** over ~21 trading days."
-        )
+        lines.append("ATR capacity is too small to reasonably reach the target in a month: "
+                     f"need ≈ **{pct(req_tp_pct)}** to target (≈ {usd(tp)}), but Daily ATR is {usd(daily_atr, nd=4)}, "
+                     f"implying about **{usd(daily_cap)}** over ~21 trading days.")
     elif code == "history_21d_zero_pass":
-        lines.append(
-            "History check failed: in the last year there were **0** cases where a 21-trading-day move "
-            f"matched or exceeded the required **{pct(req_tp_pct)}**."
-        )
+        lines.append("History check failed: in the last year there were **0** cases where a 21-trading-day move "
+                     f"matched or exceeded the required **{pct(req_tp_pct)}**.")
     elif code in {"no_valid_support", "non_positive_risk"}:
-        lines.append(
-            "Couldn’t find a valid support below price to place a stop (risk would be non-positive)."
-        )
+        lines.append("Couldn’t find a valid support below price to place a stop (risk would be non-positive).")
     elif code == "rr_to_res_below_min":
-        lines.append(
-            "Reward-to-risk to the recent high is below the minimum (needs ≥ 2:1)."
-        )
+        lines.append("Reward-to-risk to the recent high is below the minimum (needs ≥ 2:1).")
     elif code in {"insufficient_rows", "insufficient_past_for_21d"}:
         lines.append("Not enough price history to evaluate this ticker robustly.")
     elif code == "bad_entry_prevclose":
         lines.append("Intraday quote/previous close unavailable or inconsistent.")
+    elif code == "no_data":
+        lines.append("No price data returned for this input. Try the **ticker symbol** or a known S&P-500 company name "
+                     "(the Debugger maps names from Wikipedia to tickers).")
     else:
         lines.append(f"Engine rejected the setup: **{code}**.")
 
-    # Add a compact numeric snapshot for context
     snap = []
     if _finite(entry) and _finite(prev_close):
         snap.append(f"Entry {usd(entry)} vs prev close {usd(prev_close)} → day change {pct(chg)}.")
@@ -281,7 +379,6 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
         snap.append(f"RelVol (time-adjusted): {rel:.2f}× (min {rel_min:.2f}×).")
     if _finite(daily_atr):
         snap.append(f"Daily ATR {usd(daily_atr, nd=4)} ⇒ ~{usd(daily_cap)} / 21 trading days.")
-
     if snap:
         lines.append("")
         lines.append("**Snapshot:** " + " ".join(snap))
@@ -298,6 +395,9 @@ def diagnose_ticker(ticker: str,
     Returns:
       title (str), details (dict with numbers), and 'explanation_md' (str) for plain-English UI.
     """
+    # NEW: normalize free-text (company name) to ticker using Wikipedia map
+    ticker = _normalize_symbol(ticker)
+
     # Pull defaults from the engine when not supplied
     res_days = res_days if res_days is not None else getattr(sos, "RES_LOOKBACK_DEFAULT", 21)
     rel_vol_min = rel_vol_min if rel_vol_min is not None else getattr(sos, "REL_VOL_MIN_DEFAULT", 1.10)
@@ -305,8 +405,7 @@ def diagnose_ticker(ticker: str,
 
     df = sos._get_history(ticker)
     entry = prev_close = today_vol = None
-    src = {}
-    entry_ts = None
+    src, entry_ts = {}, None
 
     if df is not None:
         entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, ticker)
@@ -320,9 +419,7 @@ def diagnose_ticker(ticker: str,
         prefer_stop=stop_mode
     )
 
-    # If it passed, build a quick friendly summary too
     if reason is None and isinstance(row, dict):
-        # quick narrative for passes
         narrative = (
             f"**{ticker} PASSED** ✔️ — price is up **{row.get('Change%', 0):.2f}%** today, "
             f"time-adjusted RelVol **{row.get('RelVol(TimeAdj63d)', 0):.2f}×**. "
@@ -340,14 +437,12 @@ def diagnose_ticker(ticker: str,
         }
         return f"{ticker} PASSED ✅", details
 
-    # Build context for a friendly failure explanation
     from math import isfinite
     ctx = {}
     ctx["entry"] = _num(entry)
     ctx["prev_close"] = _num(prev_close)
     ctx["change_pct"] = ((ctx["entry"] - ctx["prev_close"]) / ctx["prev_close"] * 100.0) if (_finite(ctx["entry"]) and _finite(ctx["prev_close"]) and ctx["prev_close"] != 0) else None
 
-    # relvol (time adjusted)
     relvol_val = None
     try:
         if df is not None and _finite(today_vol):
@@ -357,7 +452,6 @@ def diagnose_ticker(ticker: str,
     ctx["relvol"] = relvol_val
     ctx["relvol_min"] = rel_vol_min
 
-    # resistance & TP from current entry (for context only)
     try:
         if df is not None and len(df) >= max(22, res_days + 1) and _finite(ctx["entry"]):
             rolling_high = df["High"].rolling(window=res_days, min_periods=res_days).max()
@@ -370,7 +464,6 @@ def diagnose_ticker(ticker: str,
     except Exception:
         pass
 
-    # ATR & monthly capacity
     try:
         if df is not None:
             da = sos._atr_from_ohlc(df, 14)
@@ -380,7 +473,6 @@ def diagnose_ticker(ticker: str,
     except Exception:
         pass
 
-    # Compose narrative
     title = f"{ticker} FAILED ❌ — {reason}"
     narrative = _mk_reason_expl(reason, ctx)
 
@@ -398,7 +490,7 @@ def diagnose_ticker(ticker: str,
         "explanation_md": narrative
     }
     return title, details
-                        
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,3 +726,4 @@ with tab_debug:
         st.markdown(html_top, unsafe_allow_html=True)
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
+
