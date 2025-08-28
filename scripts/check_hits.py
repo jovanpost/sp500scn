@@ -6,6 +6,16 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 
+# --- bootstrap: add repo root so we can import swing_options_screener.py ---
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[1]  # repo root
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+# --------------------------------------------------------------------------
+
+import swing_options_screener as sos
+
 
 HISTORY_DIR = os.path.join("data", "history")
 HITS_DIR = os.path.join("data", "hits")
