@@ -15,7 +15,7 @@ on:
           - check
   # UTC-only cron. You already picked these times.
   schedule:
-    - cron: "17 1 * * 1-5"   # 00:44 UTC (your quick test slot)
+    - cron: "30 14 * * 1-5"   # 10:30 ET (14:30 UTC)
     - cron: "30 15 * * 1-5"   # 11:30 ET (15:30 UTC)
     - cron: "30 16 * * 1-5"   # 12:30 ET (16:30 UTC)
     - cron: "30 23 * * 1-5"   # nightly hit check ~ after close (23:30 UTC)
