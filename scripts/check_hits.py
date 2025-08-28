@@ -1,96 +1,93 @@
-# scripts/check_hits.py
-import os
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+#!/usr/bin/env python3
+"""
+Update data/history/outcomes.csv:
+- For each PENDING row, fetch daily history since EvalDate.
+- If any day's HIGH >= TP -> mark HIT, record hit_time + hit_price.
+- If past OptExpiry and never hit -> mark MISS.
+"""
 
+import os, sys, csv
+from datetime import datetime, date, timezone
 import pandas as pd
+import numpy as np
 import yfinance as yf
 
-# --- bootstrap: add repo root so we can import swing_options_screener.py ---
-import sys
-from pathlib import Path
-ROOT = Path(__file__).resolve().parents[1]  # repo root
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-# --------------------------------------------------------------------------
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
+OUT_PATH = os.path.join(HIST_DIR, "outcomes.csv")
 
-import swing_options_screener as sos
+def _parse_date(s):
+    try:
+        return datetime.strptime(str(s), "%Y-%m-%d").date()
+    except Exception:
+        return None
 
+def main():
+    if not os.path.exists(OUT_PATH):
+        print("No outcomes.csv yet; nothing to check.")
+        return
 
-HISTORY_DIR = os.path.join("data", "history")
-HITS_DIR = os.path.join("data", "hits")
+    df = pd.read_csv(OUT_PATH)
+    if df.empty:
+        print("outcomes.csv empty; nothing to check.")
+        return
 
-os.makedirs(HITS_DIR, exist_ok=True)
+    today = datetime.now(timezone.utc).date()
 
+    # Work only on PENDING rows
+    pend_mask = (df.get("result_status","") == "PENDING")
+    df_p = df[pend_mask].copy()
+    if df_p.empty:
+        print("No pending rows; done.")
+        return
 
-def check_day(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-    if df.empty or "Ticker" not in df.columns:
-        return pd.DataFrame()
+    updates = []
+    for idx, r in df_p.iterrows():
+        tkr = str(r["Ticker"])
+        tp  = r.get("TP", np.nan)
+        tp  = float(tp) if pd.notna(tp) else np.nan
 
-    out_rows = []
-    for _, r in df.iterrows():
-        tkr = str(r.get("Ticker", "")).strip().upper()
-        tp = r.get("TP", None)
-        eval_date = r.get("EvalDate", "")
-        if not tkr or pd.isna(tp) or not eval_date:
+        d0  = _parse_date(r.get("EvalDate",""))
+        exp = _parse_date(r.get("OptExpiry",""))
+
+        if pd.isna(tp) or d0 is None:
             continue
 
         try:
-            # fetch from eval date to today, unadjusted daily
-            start = pd.to_datetime(eval_date) - timedelta(days=1)
-            hist = yf.Ticker(tkr).history(start=start.date(), auto_adjust=False, actions=False)
-            if hist is None or hist.empty:
-                hit = False
-            else:
-                # consider Highs on/after eval date
-                h = hist[hist.index.date >= pd.to_datetime(eval_date).date()]["High"]
-                hit = bool((h >= float(tp)).any())
+            hist = yf.Ticker(tkr).history(start=d0, end=today, auto_adjust=False)
         except Exception:
-            hit = False
+            hist = None
 
-        out_rows.append({
-            "Ticker": tkr,
-            "EvalDate": eval_date,
-            "TP": tp,
-            "Hit": bool(hit),
-        })
+        hit_time = ""
+        hit_price = ""
 
-    return pd.DataFrame(out_rows)
+        hit = False
+        if hist is not None and not hist.empty and "High" in hist.columns:
+            # if any High >= TP
+            highs = hist["High"].astype(float)
+            hit_idx = highs[highs >= tp]
+            if not hit_idx.empty:
+                hit = True
+                first = hit_idx.index[0]
+                hit_time = first.strftime("%Y-%m-%d")
+                hit_price = float(highs.loc[first])
 
+        if hit:
+            df.loc[df.index == idx, "result_status"] = "HIT"
+            df.loc[df.index == idx, "result_note"]   = "TP reached by daily high"
+            df.loc[df.index == idx, "hit_time"]      = hit_time
+            df.loc[df.index == idx, "hit_price"]     = hit_price
+        else:
+            # not hit; if past expiry -> MISS
+            if exp is not None and today > exp:
+                df.loc[df.index == idx, "result_status"] = "MISS"
+                df.loc[df.index == idx, "result_note"]   = "Expired without TP"
+                df.loc[df.index == idx, "hit_time"]      = ""
+                df.loc[df.index == idx, "hit_price"]     = ""
 
-def main():
-    idx_path = os.path.join(HISTORY_DIR, "index.csv")
-    if not os.path.exists(idx_path):
-        print("No history index yet.")
-        return
-
-    idx = pd.read_csv(idx_path)
-    all_rows = []
-    for _, row in idx.iterrows():
-        csv_rel = row.get("csv", "")
-        if not csv_rel:
-            continue
-        csv_path = os.path.join(os.getcwd(), csv_rel)
-        if os.path.exists(csv_path):
-            day_df = check_day(csv_path)
-            if not day_df.empty:
-                day_df["Day"] = row["date"]
-                all_rows.append(day_df)
-
-    if all_rows:
-        out = pd.concat(all_rows, ignore_index=True)
-        out.to_csv(os.path.join(HITS_DIR, "summary.csv"), index=False)
-
-        # Commit updates
-        os.system('git config user.name "github-actions"')
-        os.system('git config user.email "actions@github.com"')
-        os.system('git add -A')
-        os.system('git commit -m "[skip ci] Update TP hit summary" || echo "Nothing to commit"')
-        os.system('git push || echo "Nothing to push"')
-    else:
-        print("No hits evaluated (no rows).")
-
+    df.to_csv(OUT_PATH, index=False, quoting=csv.QUOTE_MINIMAL)
+    print("Updated outcomes.csv")
 
 if __name__ == "__main__":
     main()
+
