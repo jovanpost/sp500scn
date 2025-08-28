@@ -1,71 +1,91 @@
-name: Scheduled Scanner
+name: Daily scan + TP check
 
 on:
+  # Click “Run workflow” in the Actions tab to start immediately
+  workflow_dispatch:
+    inputs:
+      run_type:
+        description: "What to run"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - scan
+          - check
+  # UTC-only cron. You already picked these times.
   schedule:
-    # NOTE: GitHub Actions cron is UTC only (no DST). Adjust if needed.
-    # 10:30 ET ≈ 14:30 UTC (EDT), 11:30 ET ≈ 15:30 UTC, 12:30 ET ≈ 16:30 UTC
-    - cron: "55 00 * * 1-5"
-    - cron: "30 15 * * 1-5"
-    - cron: "30 16 * * 1-5"
-    # Nightly hit check ~ 23:30 UTC (after US close + buffer)
-    - cron: "30 23 * * 1-5"
-
-  workflow_dispatch: {}
+    - cron: "17 1 * * 1-5"   # 00:44 UTC (your quick test slot)
+    - cron: "30 15 * * 1-5"   # 11:30 ET (15:30 UTC)
+    - cron: "30 16 * * 1-5"   # 12:30 ET (16:30 UTC)
+    - cron: "30 23 * * 1-5"   # nightly hit check ~ after close (23:30 UTC)
 
 permissions:
-  contents: write  # allow committing history files
+  contents: write   # allow the job to commit files to the repo
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TZ: America/New_York   # for logs printed by our scripts
 
 jobs:
-  run-scan:
-    if: github.event.schedule == '30 14 * * 1-5' || github.event.schedule == '30 15 * * 1-5' || github.event.schedule == '30 16 * * 1-5' || github.event_name == 'workflow_dispatch'
+  scan:
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_type != 'check' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r scripts/requirements.txt
 
-      - name: Run scan and append to history
+      - name: Run screener and save results
         run: |
-          python run_and_log.py
+          python scripts/run_and_log.py --universe sp500 --with-options
 
-      - name: Commit results
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name  "github-actions"
-          git add history/*
-          git commit -m "scan: $(date -u +'%Y-%m-%d %H:%M:%S %Z')" || echo "No changes to commit"
-          git push
+      - name: Upload scan artifact (CSV)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pass-files
+          path: |
+            data/history/**
 
-  nightly-check:
-    if: github.event.schedule == '30 23 * * 1-5'
+  check:
+    needs: [scan]
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_type != 'scan' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r scripts/requirements.txt
 
-      - name: Check hits and update history
+      - name: Update TP-hit status
         run: |
-          python check_hits.py
+          python scripts/check_hits.py
 
-      - name: Commit results
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name  "github-actions"
-          git add history/*
-          git commit -m "nightly hit-check: $(date -u +'%Y-%m-%d %H:%M:%S %Z')" || echo "No changes to commit"
-          git push
+      - name: Upload hit-check artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hit-check
+          path: |
+            data/hits/**
+
