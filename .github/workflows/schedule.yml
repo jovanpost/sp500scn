@@ -38,7 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r scripts/requirements.txt
 
-- name: Business-day / holiday gate (US Markets, NY time)
+      - name: Business-day / holiday gate (US Markets, NY time)
         id: bizgate
         shell: bash
         run: |
@@ -90,16 +90,8 @@ jobs:
 
           echo "skip=false" >> $GITHUB_OUTPUT
 
-          - name: Run screener and write history files
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
-        env:
-          PYTHONPATH: .:./scripts
-        run: |
-          set -e
-          mkdir -p data/history data/logs
-          python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
-
       - name: Run screener and write history files
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
         env:
           # Make local modules importable (swing_options_screener, etc.)
           PYTHONPATH: .:./scripts
@@ -109,7 +101,6 @@ jobs:
           # Run the scan; script writes pass_*.csv + updates outcomes.csv
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
-      # ---------- FIXED COMMIT STEP ----------
       - name: Commit history updates (pass_*.csv, outcomes.csv, logs)
         run: |
           set -e
