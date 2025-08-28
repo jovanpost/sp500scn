@@ -175,6 +175,28 @@ def diagnose_ticker(ticker, **kwargs):
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["Scanner","History & Outcomes","Debugger"])
 
+# Call the scanner tab renderer so the red RUN button shows up
+with tab1:
+    render_scanner_tab()
+
+# History & Outcomes tab
+with tab2:
+    st.header("History & Outcomes")
+    lastf = latest_pass_file()
+    if lastf:
+        st.success(f"Last run file: {lastf}")
+        st.dataframe(pd.read_csv(lastf), use_container_width=True)
+    dfh = load_outcomes()
+    outcomes_summary(dfh)
+
+# Debugger tab
+with tab3:
+    st.header("Debugger")
+    dbg_ticker = st.text_input("Enter ticker to debug")
+    if dbg_ticker:
+        msg, details = diagnose_ticker(dbg_ticker.strip().upper())
+        st.subheader(msg)
+        st.json(details)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. TAB – Scanner (table → WHY BUY → Sheets export)
@@ -300,6 +322,7 @@ with tab3:
         msg, details = diagnose_ticker(dbg_ticker.strip().upper())
         st.subheader(msg)
         st.json(details)
+
 
 
 
