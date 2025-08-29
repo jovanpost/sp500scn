@@ -119,85 +119,227 @@ def write_csv(path: Path, df: pd.DataFrame) -> None:
 # --------------------------------------------------------------------
 # 4. Outcomes Upsert (non-destructive append/update)
 # --------------------------------------------------------------------
-OUTCOME_COLS = [
-    "Ticker",
-    "EvalDate",
-    "Price",
-    "EntryTimeET",
-    "Status",     # PENDING / SETTLED
-    "HitDateET",  # filled when settled as HIT/MISS date
-    "Expiry",     # options expiry (if available)
-    "BuyK",       # option buy strike (if available)
-    "SellK",      # option sell strike (if available)
-    "TP",         # target price
-    "Notes",
+import csv
+import math
+from datetime import timedelta
+import pandas as pd
+import yfinance as yf
+
+OUTCOLS = [
+    "Ticker","EvalDate","Price","EntryTimeET",
+    "Status","result_status","HitDateET",
+    "Expiry","BuyK","SellK","TP","Notes",
+    # optional bookkeeping
+    "run_date"
 ]
 
+def _read_csv(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=OUTCOLS)
+    try:
+        df = pd.read_csv(path)
+        if df.empty:
+            return pd.DataFrame(columns=OUTCOLS)
+        return df
+    except Exception:
+        return pd.DataFrame(columns=OUTCOLS)
 
-def _empty_outcomes_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=OUTCOME_COLS)
+def _write_csv(df: pd.DataFrame, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # ensure column order
+    for c in OUTCOLS:
+        if c not in df.columns:
+            df[c] = pd.NA
+    df = df[OUTCOLS]
+    df.to_csv(path, index=False, quoting=csv.QUOTE_MINIMAL)
 
+def _safe_float(x):
+    try:
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return None
+        return float(x)
+    except Exception:
+        return None
 
-def _extract_value(row: pd.Series, *names, default=""):
-    for n in names:
-        if n in row and pd.notna(row[n]):
-            return row[n]
-    return default
+def _first_nonempty(*vals):
+    for v in vals:
+        if v is not None and str(v).strip() != "":
+            return v
+    return None
 
+def _to_date_str(x):
+    # accept "YYYY-MM-DD", "YYYY-MM-DD HH:MM:SS ET", pandas Timestamp, etc.
+    if x is None:
+        return None
+    try:
+        if isinstance(x, pd.Timestamp):
+            return x.date().isoformat()
+        s = str(x)
+        if len(s) >= 10:
+            return s[:10]
+    except Exception:
+        pass
+    return None
 
-def upsert_outcomes_from_pass(df_pass: pd.DataFrame, path: Path) -> None:
+def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
+    # Try OptExpiry → Expiry → fallback 30 calendar days after EvalDate
+    raw = _first_nonempty(row.get("OptExpiry"), row.get("Expiry"))
+    if raw:
+        # normalize to YYYY-MM-DD
+        return _to_date_str(raw)
+    # fallback: +30 days after EvalDate
+    ev = _to_date_str(row.get("EvalDate"))
+    if ev:
+        try:
+            d = pd.Timestamp(ev) + pd.Timedelta(days=30)
+            return d.date().isoformat()
+        except Exception:
+            return ev  # last resort
+    return None
+
+def _target_from_row(row: pd.Series) -> float | None:
+    # Prefer second-leg strike (SellK) if present, else TP
+    sellk = _safe_float(row.get("SellK"))
+    tp    = _safe_float(row.get("TP"))
+    return sellk if sellk is not None else tp
+
+def upsert_outcomes_with_pass(df_pass: pd.DataFrame, outcomes_path: str) -> pd.DataFrame:
     """
-    Add one 'PENDING' row per pass (Ticker, EvalDate) if not already present.
-    Never overwrites existing non-empty rows.
+    Add new PENDING rows for today's pass results (idempotent on Ticker+EvalDate).
     """
-    base = read_csv_if_exists(path)
-    if base.empty:
-        base = _empty_outcomes_df()
+    out = _read_csv(outcomes_path)
+    if df_pass is None or df_pass.empty:
+        return out
 
-    # Build new rows
-    rows = []
+    # Build a unique key on (Ticker, EvalDate) so reruns don't duplicate
+    existing_keys = set()
+    if not out.empty:
+        for _, r in out.iterrows():
+            existing_keys.add( (str(r.get("Ticker","")).upper(), _to_date_str(r.get("EvalDate")) or "") )
+
+    rows_to_append = []
     for _, r in df_pass.iterrows():
-        tkr = _extract_value(r, "Ticker", "ticker", default="")
-        if not tkr:
+        tkr = str(r.get("Ticker","")).upper()
+        ev  = _to_date_str(r.get("EvalDate"))
+        if not tkr or not ev:
+            continue
+        key = (tkr, ev)
+        if key in existing_keys:
             continue
 
-        eval_date = _extract_value(r, "EvalDate", "eval_date", default=UTC_NOW.date().isoformat())
-        price = _extract_value(r, "Price", "price", default="")
-        entry_time = _extract_value(r, "EntryTimeET", "EntryET", default="")
-        expiry = _extract_value(r, "Expiry", "ExpDate", "OptionsExpiry", default="")
-        buyk = _extract_value(r, "BuyK", "BuyStrike", "Buy", default="")
-        sellk = _extract_value(r, "SellK", "SellStrike", "Sell", default="")
-        tp = _extract_value(r, "TP", "Target", default="")
+        entry_ts = r.get("EntryTimeET")
+        expiry   = _parse_expiry_from_passrow(r)
+        buyk     = _safe_float(r.get("BuyK"))
+        sellk    = _safe_float(r.get("SellK"))
+        tp       = _safe_float(r.get("TP"))
+        price    = _safe_float(r.get("Price"))
 
-        rows.append(
-            {
-                "Ticker": tkr,
-                "EvalDate": eval_date,
-                "Price": price,
-                "EntryTimeET": entry_time,
-                "Status": "PENDING",
-                "HitDateET": "",
-                "Expiry": expiry,
-                "BuyK": buyk,
-                "SellK": sellk,
-                "TP": tp,
-                "Notes": "",
-            }
-        )
+        rows_to_append.append({
+            "Ticker": tkr,
+            "EvalDate": ev,
+            "Price": price,
+            "EntryTimeET": entry_ts,
+            "Status": "PENDING",
+            "result_status": "PENDING",
+            "HitDateET": "",
+            "Expiry": expiry,
+            "BuyK": buyk,
+            "SellK": sellk,
+            "TP": tp,
+            "Notes": "",
+            "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d")
+        })
 
-    add_df = pd.DataFrame(rows, columns=OUTCOME_COLS)
-    if add_df.empty:
-        return
+    if rows_to_append:
+        out = pd.concat([out, pd.DataFrame(rows_to_append)], ignore_index=True)
 
-    # Non-destructive upsert on key (Ticker, EvalDate).
-    key_cols = ["Ticker", "EvalDate"]
-    if not base.empty:
-        merged = pd.concat([base, add_df], ignore_index=True)
-        merged = merged.drop_duplicates(subset=key_cols, keep="first")
-    else:
-        merged = add_df
+    _write_csv(out, outcomes_path)
+    return out
 
-    write_csv(path, merged)
+def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str | None:
+    """
+    Return first date (YYYY-MM-DD) where High >= threshold, from start_date to now.
+    Uses yfinance daily data to keep it simple & stable.
+    """
+    try:
+        if not ticker or threshold is None:
+            return None
+        df = yf.download(ticker, start=start_date, progress=False, auto_adjust=False, interval="1d")
+        if df is None or df.empty or "High" not in df.columns:
+            return None
+        # Find the first index where High >= threshold
+        meet = df["High"] >= float(threshold)
+        if meet.any():
+            first_idx = meet.idxmax()  # first True
+            if isinstance(first_idx, pd.Timestamp):
+                return first_idx.date().isoformat()
+            return _to_date_str(first_idx)
+    except Exception:
+        return None
+    return None
+
+def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
+    """
+    For every PENDING row:
+      - If price ever reached >= SellK (or TP if SellK missing), mark HIT.
+      - Else if Expiry < today, mark EXPIRED_NO_HIT.
+      - Else keep PENDING.
+    Also keeps both Status and result_status in sync.
+    """
+    out = _read_csv(outcomes_path)
+    if out.empty:
+        return out
+
+    today = pd.Timestamp.utcnow().date()
+    changed = False
+
+    for i, r in out.iterrows():
+        status = str(r.get("result_status") or r.get("Status") or "").upper()
+        if status == "SETTLED":
+            continue
+
+        tkr = str(r.get("Ticker","")).upper()
+        ev  = _to_date_str(r.get("EvalDate"))
+        expiry = _to_date_str(r.get("Expiry"))
+        target = _first_nonempty(_safe_float(r.get("SellK")), _safe_float(r.get("TP")))
+
+        # If we still don't have an expiry, fallback to +30d
+        if not expiry and ev:
+            try:
+                expiry = (pd.Timestamp(ev) + pd.Timedelta(days=30)).date().isoformat()
+            except Exception:
+                expiry = ev
+
+        # If we have a target and eval date, check for hit
+        hit_date = None
+        if tkr and ev and (target is not None):
+            hit_date = _first_hit_date_since(tkr, ev, target)
+
+        if hit_date:
+            out.at[i, "HitDateET"] = f"{hit_date} 16:00:00 ET"
+            out.at[i, "Notes"] = "HIT_BY_SELLK" if pd.notna(r.get("SellK")) else "HIT_BY_TP"
+            out.at[i, "Status"] = "SETTLED"
+            out.at[i, "result_status"] = "SETTLED"
+            changed = True
+            continue
+
+        # No hit — check expiry
+        if expiry:
+            try:
+                exp_d = pd.Timestamp(expiry).date()
+                if today > exp_d:
+                    out.at[i, "Status"] = "SETTLED"
+                    out.at[i, "result_status"] = "SETTLED"
+                    out.at[i, "Notes"] = "EXPIRED_NO_HIT"
+                    changed = True
+            except Exception:
+                # if expiry unparsable, leave pending
+                pass
+
+    if changed:
+        _write_csv(out, outcomes_path)
+    return out
+
 
 
 # --------------------------------------------------------------------
@@ -265,7 +407,6 @@ def run_screener(universe: str, with_options: bool, save_scan: bool):
 
     return df_pass, df_scan
 
-
 # --------------------------------------------------------------------
 # 6. Main (glue: run, save pass file, write logs, upsert outcomes)
 # --------------------------------------------------------------------
@@ -273,46 +414,45 @@ def main():
     args = parse_args()
     ensure_dirs()
 
-    ts = STAMP
-    log_lines = [
-        f"UTC start: {UTC_NOW.isoformat()}",
-        f"universe={args.universe}",
-        f"with_options={args.with_options}",
-        f"also_save_scan={args.also_save_scan}",
-    ]
-
+    # 1) run the screener
     try:
-        df_pass, df_scan = run_screener(
-            universe=args.universe,
-            with_options=args.with_options,
-            save_scan=args.also_save_scan,
-        )
-    except Exception as e:
-        msg = f"[FATAL] Screener failed: {e}"
-        print(msg, file=sys.stderr)
-        log_lines.append(msg)
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOG_PATH, "w") as f:
-            f.write("\n".join(log_lines) + "\n")
-        return
+        res = sos.run_scan(universe=args.universe, with_options=args.with_options)
+    except TypeError:
+        # older signature
+        res = sos.run_scan(market=args.universe, with_options=args.with_options)
 
-    # Save pass results
+    # Normalize outputs
+    df_pass = None
+    if isinstance(res, dict):
+        df_pass = res.get("pass") or res.get("pass_df") or res.get("pass_df_unadjusted")
+    elif isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], pd.DataFrame):
+        df_pass = res[0]
+    elif isinstance(res, pd.DataFrame):
+        df_pass = res
+
+    # 2) save pass file (if any)
     if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
-        write_csv(PASS_PATH, df_pass)
-        upsert_outcomes_from_pass(df_pass, OUTCOMES_FILE)
-        log_lines.append(f"pass_rows={len(df_pass)} -> {PASS_PATH.name}")
+        df_pass.to_csv(PASS_PATH, index=False)
+        print(f"[OK] wrote pass file: {PASS_PATH}")
     else:
-        log_lines.append("pass_rows=0 (nothing to save)")
+        print("[INFO] no pass tickers this run (nothing written)")
 
-    # Save scan results (optional)
-    if args.also_save_scan and isinstance(df_scan, pd.DataFrame) and not df_scan.empty:
-        write_csv(SCAN_PATH, df_scan)
-        log_lines.append(f"scan_rows={len(df_scan)} -> {SCAN_PATH.name}")
+    # 3) append/update outcomes with today’s passes
+    out_df = upsert_outcomes_with_pass(df_pass if isinstance(df_pass, pd.DataFrame) else pd.DataFrame(), OUTCOMES_FILE)
 
-    # Write log
-    with open(LOG_PATH, "w") as f:
-        f.write("\n".join(log_lines) + "\n")
+    # 4) settle any pending rows (hit/expired) every time we run — harmless during day
+    out_df = settle_pending_outcomes(OUTCOMES_FILE)
 
+    # 5) write simple log file
+    with open(LOG_PATH, "w", encoding="utf-8") as f:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        n = 0 if df_pass is None else len(df_pass)
+        f.write(f"[{ts}] universe={args.universe} passes={n}\n")
+        if n:
+            for t in df_pass.get("Ticker", []):
+                f.write(f" - {t}\n")
+    print(f"[OK] log: {LOG_PATH}")
 
 if __name__ == "__main__":
     main()
+    
