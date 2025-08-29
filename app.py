@@ -616,23 +616,11 @@ tab_scanner, tab_history, tab_debug = st.tabs(
 with tab_scanner:
     render_scanner_tab()
 
-# ── TAB 2: History & Outcomes
-with tab_history:
-    st.header("History & Outcomes")
-    lastf = latest_pass_file()
-    if lastf:
-        st.success(f"Last run file: {lastf}")
-        try:
-            st.dataframe(pd.read_csv(lastf), use_container_width=True)
-        except Exception:
-            st.info("Pass file exists but could not be read.")
-    dfh = load_outcomes()
-    outcomes_summary(dfh)
-
 # ── TAB 3: Debugger (plain-English + numbers; styled HTML)
 with tab_debug:
     import json, html as _html
 
+    # Debugger-specific CSS (kept local to this tab)
     st.markdown("""
     <style>
       .dbg-wrap { margin-top: 0.5rem; }
@@ -719,96 +707,88 @@ with tab_debug:
         st.markdown(html_top, unsafe_allow_html=True)
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
+        
 
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
 with tab_history:
-    import pandas as _pd
+    # ----- Block 1: Latest pass (most recent run) -----
+    st.subheader("Latest recommendations (most recent run)")
 
-    st.header("History & Outcomes")
-
-    # ---------- A) Always show the most recent pass file (latest recommendations) ----------
-    def _latest_pass_file():
-        import glob, os
-        files = sorted(glob.glob(os.path.join(PASS_DIR, "*.csv")))
-        return files[-1] if files else None
-
-    lastf = _latest_pass_file()
+    lastf = latest_pass_file()
     if lastf:
-        st.subheader("Latest scan (most recent pass file)")
-        st.caption(lastf)
+        st.caption(f"Source file: `{lastf}`")
         try:
-            df_last = _pd.read_csv(lastf)
-            st.dataframe(
-                df_last,
-                use_container_width=True,
-                height=min(560, 80 + 28 * len(df_last)),
-            )
+            df_last = pd.read_csv(lastf)
+            if not df_last.empty:
+                st.dataframe(
+                    df_last,
+                    use_container_width=True,
+                    height=min(560, 80 + 28 * len(df_last))
+                )
+            else:
+                st.info("Latest pass file is empty.")
         except Exception as e:
-            st.info(f"Pass file exists but could not be read: {e}")
+            st.warning(f"Could not read the latest pass file: {e}")
     else:
-        st.info("No pass files yet. Run the scanner to generate one.")
+        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
 
     st.markdown("---")
 
-    # ---------- B) Outcomes (sorted by option expiry: oldest → newest; blanks last) ----------
-    def _load_outcomes():
-        if os.path.exists(OUT_FILE):
-            try:
-                return _pd.read_csv(OUT_FILE)
-            except Exception:
-                return _pd.DataFrame()
-        return _pd.DataFrame()
+    # ----- Block 2: Outcomes (sorted by expiry, oldest → newest) -----
+    st.subheader("Outcomes (sorted by option expiry)")
 
-    def _parse_expiry_col(df: _pd.DataFrame) -> _pd.Series:
-        """Return a datetime series from any of these:
-           - 'Expiry' already a date string (YYYY-MM-DD)
-           - or missing; keep NaT
-        """
-        if "Expiry" in df.columns:
-            return _pd.to_datetime(df["Expiry"], errors="coerce", utc=False)
-        # No expiry column → all NaT
-        return _pd.to_datetime(_pd.Series([_pd.NaT] * len(df)), errors="coerce")
-
-    dfh = _load_outcomes()
+    dfh = load_outcomes()
     if dfh is None or dfh.empty:
-        st.subheader("History & Outcomes")
         st.info("No outcomes yet.")
     else:
-        # Compute quick counters (robust to minimal schema)
-        n = len(dfh)
-        s_status = dfh["Status"].astype(str) if "Status" in dfh.columns else _pd.Series(["PENDING"] * n)
-        settled_mask = s_status.str.upper().eq("SETTLED")
-        pending_mask = ~settled_mask
-        hits = int(dfh.get("Hit", _pd.Series([False]*n)).astype(bool)[settled_mask].sum()) if "Hit" in dfh.columns else 0
+        # Ensure expected columns exist
+        needed = ["Ticker","EvalDate","EntryTimeET","Status","HitDateET","Expiry","BuyK","SellK","TP","Notes"]
+        dfh = dfh.copy()
+        for c in needed:
+            if c not in dfh.columns:
+                dfh[c] = pd.NA
+
+        # Parse dates safely
+        for dcol in ["EvalDate","EntryTimeET","HitDateET","Expiry"]:
+            dfh[dcol] = pd.to_datetime(dfh[dcol], errors="coerce")
+
+        # Days-to-expiry and sort by Expiry ascending (NaT goes last)
+        today = pd.Timestamp.utcnow().normalize()
+        dfh["DTE"] = (dfh["Expiry"] - today).dt.days
+
+        # Normalize status just for counts
+        s = dfh["Status"].astype(str).str.upper()
+        dfh["Status"] = s
+
+        settled_mask = dfh["Status"].eq("SETTLED")
+        pending = int(dfh["Status"].eq("PENDING").sum())
+
+        # Derive hits/misses from Status or Notes (if you encode them there)
+        hit_mask  = dfh["Status"].eq("HIT")  | dfh["Notes"].astype(str).str.contains(r"\bhit\b",  case=False, na=False)
+        miss_mask = dfh["Status"].eq("MISS") | dfh["Notes"].astype(str).str.contains(r"\bmiss\b", case=False, na=False)
+
         settled = int(settled_mask.sum())
-        pending = int(pending_mask.sum())
-        misses = settled - hits
+        hits    = int((settled_mask & hit_mask).sum())
+        misses  = int((settled_mask & miss_mask).sum())
+
         st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
 
-        # Sort by Expiry (oldest → newest), keeping blanks (NaT) at the bottom
-        exp_series = _parse_expiry_col(dfh)
-        dfh = dfh.copy()
-        dfh["_Expiry_dt"] = exp_series
-        # Stable sort: (has_expiry asc, expiry asc) so NaT (False) -> True ordering pushes NaT last
-        dfh["_has_expiry"] = dfh["_Expiry_dt"].notna()
-        dfh_sorted = dfh.sort_values(by=["_has_expiry", "_Expiry_dt"], ascending=[False, True]).drop(columns=["_has_expiry"])
-
-        # Nice column order if present
-        preferred = [
-            "Ticker","EvalDate","Price","EntryTimeET","Status","HitDateET",
-            "Expiry","BuyK","SellK","TP","Notes"
+        show_cols = [
+            "Ticker","EvalDate","EntryTimeET","Expiry","DTE",
+            "BuyK","SellK","TP","Status","HitDateET","Notes"
         ]
-        cols = [c for c in preferred if c in dfh_sorted.columns] + [c for c in dfh_sorted.columns if c not in preferred and not c.startswith("_")]
-        df_show = dfh_sorted.loc[:, cols]
+        show_cols = [c for c in show_cols if c in dfh.columns]
 
-        st.subheader("Outcomes (sorted by option expiry)")
-        st.dataframe(
-            df_show,
-            use_container_width=True,
-            height=min(600, 80 + 28 * len(df_show)),
+        df_show = dfh.sort_values(
+            by=["Expiry","Ticker"] if "Ticker" in dfh.columns else ["Expiry"],
+            ascending=[True, True] if "Ticker" in dfh.columns else [True],
+            na_position="last"
         )
-        
 
-
+        st.dataframe(
+            df_show[show_cols],
+            use_container_width=True,
+            height=min(600, 80 + 28 * len(df_show))
+        )
