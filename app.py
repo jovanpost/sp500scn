@@ -707,22 +707,23 @@ with tab_history:
             ev = pd.to_datetime(dfh.loc[mask_na, "EvalDate"], errors="coerce")
             dfh.loc[mask_na, "Expiry"] = ev + pd.Timedelta(days=30)
 
-        # Compute DTE (days to expiry) with UTC 'today'
-        today = pd.Timestamp.utcnow().normalize()
-        dfh["DTE"] = (dfh["Expiry"].dt.normalize() - today).dt.days
+# Compute DTE (days to expiry) robustly (strip any timezone first)
+exp = pd.to_datetime(dfh["Expiry"], errors="coerce")
+try:
+    # if exp is tz-aware, drop tz; if already naive, this is a no-op
+    exp = exp.dt.tz_localize(None)
+except Exception:
+    pass
+exp = exp.dt.normalize()
 
-        # Sort by Expiry asc, unknown (NaT) last; tiebreakers by EvalDate desc then Ticker
-        dfh_sorted = dfh.sort_values(
-            by=["Expiry", "EvalDate", "Ticker"],
-            ascending=[True, False, True],
-            na_position="last"
-        )
+today_naive = pd.Timestamp.utcnow()
+try:
+    today_naive = today_naive.tz_localize(None)
+except Exception:
+    pass
+today_naive = today_naive.normalize()
 
-        st.dataframe(
-            dfh_sorted,
-            use_container_width=True,
-            height=min(600, 80 + 28 * len(dfh_sorted))
-        )
+dfh["DTE"] = (exp - today_naive).dt.days
 
 # ── TAB 3: Debugger (plain-English + numbers; styled HTML)
 with tab_debug:
@@ -902,6 +903,7 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
 
 
 
