@@ -764,7 +764,6 @@ with tab_debug:
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
         
-
 # ============================================================
 # 11. TAB – History & Outcomes
 # ============================================================
@@ -790,56 +789,59 @@ with tab_history:
     else:
         dfh = dfh.copy()
 
-        # Normalize column names that might vary
-        status_col = "Status" if "Status" in dfh.columns else ("result_status" if "result_status" in dfh.columns else None)
-        hit_col    = "hit" if "hit" in dfh.columns else None
-
-        # Parse Expiry to pandas datetimes, allow blanks
+        # Normalize columns we rely on
         if "Expiry" not in dfh.columns:
-            dfh["Expiry"] = pd.NaT
-        dfh["Expiry"] = pd.to_datetime(dfh["Expiry"], errors="coerce")
+            dfh["Expiry"] = pd.NA
+        if "EvalDate" not in dfh.columns:
+            dfh["EvalDate"] = pd.NA
+        if "Notes" not in dfh.columns:
+            dfh["Notes"] = pd.NA
 
-        # Compute DTE safely using a pandas Timestamp (avoid date/datetime mix)
-        today_ts = pd.Timestamp.today().normalize()
-        dfh["DTE"] = (dfh["Expiry"] - today_ts).dt.days
+        # Status column preference
+        status_col = "result_status" if "result_status" in dfh.columns else ("Status" if "Status" in dfh.columns else None)
 
-        # Sort by expiry (NaT at the end), then by EvalDate descending for ties
-        # Use a sortable key where NaT -> far future
-        exp_key = dfh["Expiry"].fillna(pd.Timestamp.max)
-        if "EvalDate" in dfh.columns:
-            # Ensure EvalDate is sortable
-            dfh["EvalDate"] = pd.to_datetime(dfh["EvalDate"], errors="coerce")
-            dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
-                ["_expkey", "EvalDate"], ascending=[True, False]
-            ).drop(columns=["_expkey"])
-        else:
-            dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
-                ["_expkey"], ascending=[True]
-            ).drop(columns=["_expkey"])
+        # Parse dates robustly
+        dfh["Expiry_parsed"] = pd.to_datetime(dfh["Expiry"], errors="coerce", utc=False)
+        dfh["EvalDate_parsed"] = pd.to_datetime(dfh["EvalDate"], errors="coerce", utc=False)
 
-        # Quick counters (settled/pending/hits/misses)
-        n = len(dfh_sorted)
+        # Backfill missing Expiry (display-only) as EvalDate + 30 days
+        needs_exp = dfh["Expiry_parsed"].isna() & dfh["EvalDate_parsed"].notna()
+        if needs_exp.any():
+            dfh.loc[needs_exp, "Expiry_parsed"] = dfh.loc[needs_exp, "EvalDate_parsed"] + pd.Timedelta(days=30)
+
+        # Compute DTE from parsed expiry (safe for NaT)
+        today = pd.Timestamp.utcnow().normalize()
+        dfh["DTE"] = (dfh["Expiry_parsed"].dt.normalize() - today).dt.days
+
+        # Sort: earliest expiry first, then most recent EvalDate for ties (NaT at end)
+        exp_key = dfh["Expiry_parsed"].fillna(pd.Timestamp.max)
+        dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
+            ["_expkey", "EvalDate_parsed"], ascending=[True, False]
+        ).drop(columns=["_expkey"])
+
+        # --- Summary counts ---
+        # Prefer explicit notes; fall back to status
+        notes_up = dfh_sorted["Notes"].astype(str).str.upper()
+        hits = int(notes_up.isin(["HIT_BY_SELLK", "HIT_BY_TP"]).sum())
+        misses = int((notes_up == "EXPIRED_NO_HIT").sum())
+
         if status_col:
-            s_status = dfh_sorted[status_col].astype(str)
+            s_up = dfh_sorted[status_col].astype(str).str.upper()
+            settled = int((s_up == "SETTLED").sum())
+            pending = int((s_up != "SETTLED").sum())
         else:
-            s_status = pd.Series(["PENDING"] * n, index=dfh_sorted.index, dtype="string")
-
-        settled_mask = s_status.str.upper().eq("SETTLED")
-        pending_mask = ~settled_mask
-        settled = int(settled_mask.sum())
-        pending = int(pending_mask.sum())
-        if hit_col:
-            hits = int((settled_mask & dfh_sorted[hit_col].astype(bool)).sum())
-        else:
-            hits = 0
-        misses = settled - hits
+            # If no status column, infer pending as "not hit/miss"
+            settled = hits + misses
+            pending = int(len(dfh_sorted) - settled)
 
         st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
 
-        # Tidy display: format Expiry as date string, keep DTE
+        # Display: use original Expiry when present, otherwise show backfilled date
         df_disp = dfh_sorted.copy()
-        df_disp["Expiry"] = df_disp["Expiry"].dt.strftime("%Y-%m-%d")
-        # Choose sensible column order if present
+        show_parsed = df_disp["Expiry"].isna() | (df_disp["Expiry"].astype(str).str.strip() == "")
+        df_disp.loc[show_parsed, "Expiry"] = df_disp.loc[show_parsed, "Expiry_parsed"].dt.date.astype(str)
+
+        # Column order (only include those that exist)
         preferred = [
             "Ticker","EvalDate","Price","EntryTimeET",
             status_col if status_col else "Status",
@@ -850,11 +852,3 @@ with tab_history:
             df_disp = df_disp[cols]
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
-        
-
-
-
-
-
-
-
