@@ -189,7 +189,6 @@ def outcomes_summary(dfh: pd.DataFrame):
 # ============================================================
 def _fmt_ts_et(ts):
     try:
-        # pretty print if it's a tz-aware datetime; otherwise show str
         return ts.strftime("%Y-%m-%d %H:%M:%S %Z") if hasattr(ts, "strftime") else str(ts)
     except Exception:
         return str(ts)
@@ -207,108 +206,62 @@ def _finite(x):
     except Exception:
         return False
 
-# --- NEW: name → ticker normalization (aliases + simple heuristics) ---
+# --- Aliases for common company names → tickers ---
 _ALIAS_MAP = {
-    # Mega/obvious
-    "NVIDIA": "NVDA",
-    "NVIDIA CORPORATION": "NVDA",
-    "TESLA": "TSLA",
-    "TESLA INC": "TSLA",
-    "APPLE": "AAPL",
-    "APPLE INC": "AAPL",
-    "MICROSOFT": "MSFT",
-    "MICROSOFT CORPORATION": "MSFT",
-    "ALPHABET": "GOOGL",      # default to GOOGL
-    "GOOGLE": "GOOGL",
-    "META": "META",
-    "META PLATFORMS": "META",
-    "AMAZON": "AMZN",
-    "AMAZON.COM": "AMZN",
-    "NETFLIX": "NFLX",
-    "WALMART": "WMT",
-    "WALMART INC": "WMT",
-    "JPMORGAN": "JPM",
-    "JPMORGAN CHASE": "JPM",
-    "BERKSHIRE": "BRK.B",     # class B is the S&P member
-    "BERKSHIRE HATHAWAY": "BRK.B",
-    "UNITEDHEALTH": "UNH",
-    "UNITEDHEALTH GROUP": "UNH",
-
-    # A few other common ones
-    "COCA COLA": "KO",
-    "COCA-COLA": "KO",
-    "PEPSICO": "PEP",
-    "ADOBE": "ADBE",
-    "INTEL": "INTC",
-    "AMD": "AMD",
-    "BROADCOM": "AVGO",
-    "SALESFORCE": "CRM",
-    "SERVICE NOW": "NOW",
-    "SERVICENOW": "NOW",
-    "CROWDSTRIKE": "CRWD",
-    "MCDONALDS": "MCD",
-    "MCDONALD'S": "MCD",
-    "COSTCO": "COST",
-    "HOME DEPOT": "HD",
-    "PROCTER & GAMBLE": "PG",
-    "PROCTER AND GAMBLE": "PG",
-    "ELI LILLY": "LLY",
-    "ABBVIE": "ABBV",
-    "EXXON": "XOM",
-    "EXXONMOBIL": "XOM",
-    "CHEVRON": "CVX",
+    "NVIDIA": "NVDA", "NVIDIA CORPORATION": "NVDA",
+    "TESLA": "TSLA", "TESLA INC": "TSLA",
+    "APPLE": "AAPL", "APPLE INC": "AAPL",
+    "MICROSOFT": "MSFT", "MICROSOFT CORPORATION": "MSFT",
+    "ALPHABET": "GOOGL", "GOOGLE": "GOOGL",
+    "META": "META", "META PLATFORMS": "META",
+    "AMAZON": "AMZN", "AMAZONCOM": "AMZN", "AMAZON.COM": "AMZN",
+    "NETFLIX": "NFLX", "WALMART": "WMT", "WALMART INC": "WMT",
+    "JPMORGAN": "JPM", "JPMORGAN CHASE": "JPM",
+    "BERKSHIRE": "BRK.B", "BERKSHIRE HATHAWAY": "BRK.B",
+    "UNITEDHEALTH": "UNH", "UNITEDHEALTH GROUP": "UNH",
+    "COCA COLA": "KO", "COCA-COLA": "KO",
+    "PEPSICO": "PEP", "ADOBE": "ADBE", "INTEL": "INTC",
+    "AMD": "AMD", "BROADCOM": "AVGO", "SALESFORCE": "CRM",
+    "SERVICENOW": "NOW", "SERVICE NOW": "NOW",
+    "CROWDSTRIKE": "CRWD", "MCDONALDS": "MCD", "MCDONALD'S": "MCD",
+    "COSTCO": "COST", "HOME DEPOT": "HD",
+    "PROCTER & GAMBLE": "PG", "PROCTER AND GAMBLE": "PG",
+    "ELI LILLY": "LLY", "ABBVIE": "ABBV",
+    "EXXON": "XOM", "EXXONMOBIL": "XOM", "CHEVRON": "CVX",
 }
 
-# Accept things like "BRK B", "BRKB" → "BRK.B"
 def _normalize_brk(s: str) -> str | None:
-    s2 = s.replace(" ", "").replace("-", "").replace("_", "")
-    if s2 in {"BRKB", "BRK.B"}:
-        return "BRK.B"
-    if s2 in {"BRKA", "BRK.A"}:
-        return "BRK.A"
-    if s.upper().strip() in {"BRK B", "BRK-B", "BRK_B"}:
-        return "BRK.B"
-    if s.upper().strip() in {"BRK A", "BRK-A", "BRK_A"}:
-        return "BRK.A"
+    s2 = s.replace(" ", "").replace("-", "").replace("_", "").upper()
+    if s2 in {"BRKB", "BRK.B"}: return "BRK.B"
+    if s2 in {"BRKA", "BRK.A"}: return "BRK.A"
+    sU = s.upper().strip()
+    if sU in {"BRK B", "BRK-B", "BRK_B"}: return "BRK.B"
+    if sU in {"BRK A", "BRK-A", "BRK_A"}: return "BRK.A"
     return None
 
 def _normalize_symbol(inp: str) -> str | None:
-    """
-    Best-effort mapping:
-      - If it looks like a ticker, return as upper.
-      - Else try alias map (company names).
-      - Else gentle heuristics (remove commas/Inc./Corp).
-    """
-    if not inp:
-        return None
-
+    """Best-effort mapping: ticker-looking → upper; else try aliases; else heuristics."""
+    if not inp: return None
     s = str(inp).strip()
-    if not s:
-        return None
+    if not s: return None
 
-    # Already looks like a ticker (letters, dots, maybe numbers)
+    # Looks like a ticker already?
     if 1 <= len(s) <= 6 and all(c.isalnum() or c == "." for c in s):
-        # Special-case Berkshire variants
         brk = _normalize_brk(s)
         return brk if brk else s.upper()
 
-    # Try direct alias map (by cleaned company name)
-    name_key = s.upper().replace(",", "").replace(".", "")
-    name_key = name_key.replace(" INC", "").replace(" CORPORATION", "").replace(" COMPANY", "")
-    name_key = name_key.replace(" CLASS A", "").replace(" CLASS B", "")
-    name_key = " ".join(name_key.split())  # squeeze spaces
+    # Company name path
+    key = s.upper()
+    key = key.replace(",", "").replace(".", "")
+    for kill in (" INC", " CORPORATION", " COMPANY", " HOLDINGS", " PLC", " LTD"):
+        key = key.replace(kill, "")
+    key = key.replace(" CLASS A", "").replace(" CLASS B", "")
+    key = " ".join(key.split())
 
-    if name_key in _ALIAS_MAP:
-        return _ALIAS_MAP[name_key]
+    if key in _ALIAS_MAP:
+        return _ALIAS_MAP[key]
 
-    # Final simple heuristics: strip words like "INC", "CORP"
-    for kill in (" INC", " CORP", " CORPORATION", " COMPANY", " HOLDINGS", " PLC", " LTD"):
-        name_key = name_key.replace(kill, "")
-    name_key = " ".join(name_key.split())
-    if name_key in _ALIAS_MAP:
-        return _ALIAS_MAP[name_key]
-
-    # Give up → hand back original upper (engine may still handle it)
+    # Last chance Berkshire normalization
     brk = _normalize_brk(s)
     return brk if brk else s.upper()
 
@@ -317,7 +270,6 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
     lines = []
     code = (reason or "").strip()
 
-    # frequently-hit context values
     chg = ctx.get("change_pct")
     rel = ctx.get("relvol")
     rel_min = ctx.get("relvol_min")
@@ -332,15 +284,14 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
     def pct(x):
         try: return f"{float(x):.2f}%"
         except: return str(x)
-
     def usd(x, nd=2):
         try: return f"${float(x):.{nd}f}"
         except: return str(x)
 
     if code == "relvol_low_timeadj":
         lines.append(
-            f"Relative volume is too low: current RelVol (time-adjusted) is "
-            f"**{rel:.2f}×**, but the minimum is **{rel_min:.2f}×**."
+            f"Relative volume is too low: current RelVol (time-adjusted) is **{rel:.2f}×**, "
+            f"but the minimum is **{rel_min:.2f}×**."
         )
     elif code == "not_up_on_day":
         lines.append(
@@ -348,9 +299,7 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
             f"yesterday’s close {usd(prev_close)} to entry {usd(entry)}."
         )
     elif code == "no_upside_to_resistance":
-        lines.append(
-            f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}."
-        )
+        lines.append(f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}.")
     elif code == "atr_capacity_short_vs_tp":
         lines.append(
             "ATR capacity is too small to reasonably reach the target in a month: "
@@ -363,13 +312,9 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
             f"matched or exceeded the required **{pct(req_tp_pct)}**."
         )
     elif code in {"no_valid_support", "non_positive_risk"}:
-        lines.append(
-            "Couldn’t find a valid support below price to place a stop (risk would be non-positive)."
-        )
+        lines.append("Couldn’t find a valid support below price to place a stop (risk would be non-positive).")
     elif code == "rr_to_res_below_min":
-        lines.append(
-            "Reward-to-risk to the recent high is below the minimum (needs ≥ 2:1)."
-        )
+        lines.append("Reward-to-risk to the recent high is below the minimum (needs ≥ 2:1).")
     elif code in {"insufficient_rows", "insufficient_past_for_21d"}:
         lines.append("Not enough price history to evaluate this ticker robustly.")
     elif code == "bad_entry_prevclose":
@@ -379,7 +324,6 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
     else:
         lines.append(f"Engine rejected the setup: **{code}**.")
 
-    # Add a compact numeric snapshot for context
     snap = []
     if _finite(entry) and _finite(prev_close):
         snap.append(f"Entry {usd(entry)} vs prev close {usd(prev_close)} → day change {pct(chg)}.")
@@ -389,12 +333,34 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
         snap.append(f"RelVol (time-adjusted): {rel:.2f}× (min {rel_min:.2f}×).")
     if _finite(daily_atr):
         snap.append(f"Daily ATR {usd(daily_atr, nd=4)} ⇒ ~{usd(daily_cap)} / 21 trading days.")
-
     if snap:
         lines.append("")
         lines.append("**Snapshot:** " + " ".join(snap))
-
     return "<br>".join(lines)
+
+def _yf_fetch_daily(symbol: str):
+    """Fallback: pull ~6 months daily bars via yfinance and shape like engine OHLCV."""
+    try:
+        import yfinance as yf
+        df = yf.download(symbol, period="6mo", interval="1d", auto_adjust=False, progress=False)
+        if df is None or df.empty:
+            return None
+        # Ensure expected column names
+        cols = {c.lower(): c for c in df.columns}
+        for need in ["Open","High","Low","Close","Volume"]:
+            if need not in df.columns:
+                # try case-insensitive rescue
+                for k,v in cols.items():
+                    if k == need.lower():
+                        break
+                else:
+                    return None
+        df = df[["Open","High","Low","Close","Volume"]].dropna()
+        if df.empty:
+            return None
+        return df
+    except Exception:
+        return None
 
 def diagnose_ticker(ticker: str,
                     res_days=None,
@@ -411,22 +377,40 @@ def diagnose_ticker(ticker: str,
     rel_vol_min = rel_vol_min if rel_vol_min is not None else getattr(sos, "REL_VOL_MIN_DEFAULT", 1.10)
     rr_min = rr_min if rr_min is not None else getattr(sos, "RR_MIN_DEFAULT", 2.0)
 
-    # 🔴 Normalize user input first (company name → ticker)
     original = (ticker or "").strip()
     symbol = _normalize_symbol(original)
 
+    # Try engine history first
     df = sos._get_history(symbol) if symbol else None
+
+    # Fallback to yfinance if engine returned nothing
+    if df is None and symbol:
+        df = _yf_fetch_daily(symbol)
+
     entry = prev_close = today_vol = None
     src = {}
     entry_ts = None
 
     if df is not None:
-        entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, symbol)
+        try:
+            entry, prev_close, today_vol, src, entry_ts = sos.get_entry_prevclose_todayvol(df, symbol)
+        except Exception:
+            # Light fallback if engine helper not usable
+            try:
+                # entry = last close; prev_close = previous day's close; volume = last row Volume
+                entry = float(df["Close"].iloc[-1])
+                prev_close = float(df["Close"].iloc[-2]) if len(df) > 1 else None
+                today_vol = float(df["Volume"].iloc[-1])
+                src = {"session": "UNKNOWN", "entry_src": "fallback", "vol_src": "fallback"}
+                entry_ts = df.index[-1].to_pydatetime() if hasattr(df.index, "to_pydatetime") else None
+            except Exception:
+                df = None  # force no_data path below
 
-    # If still no data, return an immediate friendly error with alias hint
+    # Still nothing? Explain cleanly.
     if df is None:
         title = f"{original if original else '—'} FAILED ❌ — no_data"
-        narrative = "No price data returned for this input. Try the **ticker symbol** or a known S&P-500 company name (the Debugger maps names like ‘NVIDIA’ → ‘NVDA’, ‘Tesla’ → ‘TSLA’)."
+        narrative = ("No price data returned for this input. Try the **ticker symbol** or a known S&P-500 "
+                     "company name (the Debugger maps names like ‘NVIDIA’ → ‘NVDA’, ‘Tesla’ → ‘TSLA’).")
         details = {
             "entry": None,
             "prev_close": None,
@@ -442,6 +426,7 @@ def diagnose_ticker(ticker: str,
         }
         return title, details
 
+    # Evaluate via engine
     row, reason = sos.evaluate_ticker(
         symbol,
         res_days=res_days,
@@ -451,7 +436,7 @@ def diagnose_ticker(ticker: str,
         prefer_stop=stop_mode
     )
 
-    # If it passed, build a quick friendly summary too
+    # Passed → short friendly summary
     if reason is None and isinstance(row, dict):
         narrative = (
             f"**{symbol} PASSED** ✔️ — price is up **{row.get('Change%', 0):.2f}%** today, "
@@ -470,14 +455,14 @@ def diagnose_ticker(ticker: str,
         }
         return f"{symbol} PASSED ✅", details
 
-    # Build context for a friendly failure explanation
+    # Failure context for readable explanation
     from math import isfinite
     ctx = {}
     ctx["entry"] = _num(entry)
     ctx["prev_close"] = _num(prev_close)
     ctx["change_pct"] = ((ctx["entry"] - ctx["prev_close"]) / ctx["prev_close"] * 100.0) if (_finite(ctx["entry"]) and _finite(ctx["prev_close"]) and ctx["prev_close"] != 0) else None
 
-    # relvol (time adjusted)
+    # RelVol (time-adjusted) using engine if possible
     relvol_val = None
     try:
         if df is not None and _finite(today_vol):
@@ -487,7 +472,7 @@ def diagnose_ticker(ticker: str,
     ctx["relvol"] = relvol_val
     ctx["relvol_min"] = rel_vol_min
 
-    # resistance & TP from current entry (for context only)
+    # Resistance & TP (context only)
     try:
         if df is not None and len(df) >= max(22, res_days + 1) and _finite(ctx["entry"]):
             rolling_high = df["High"].rolling(window=res_days, min_periods=res_days).max()
@@ -510,10 +495,8 @@ def diagnose_ticker(ticker: str,
     except Exception:
         pass
 
-    # Compose narrative
     title = f"{symbol} FAILED ❌ — {reason}"
     narrative = _mk_reason_expl(reason, ctx)
-
     details = {
         "entry": entry,
         "prev_close": prev_close,
@@ -528,6 +511,7 @@ def diagnose_ticker(ticker: str,
         "explanation_md": narrative
     }
     return title, details
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -765,5 +749,6 @@ with tab_debug:
         st.markdown(html_top, unsafe_allow_html=True)
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
+
 
 
