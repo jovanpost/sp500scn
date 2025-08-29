@@ -366,113 +366,116 @@ def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
 # --------------------------------------------------------------------
 # 5. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-def _candidate_tickers_from_universe(universe_key: str):
-    """Try to turn a universe key into a list of tickers (if helpers exist)."""
-    if spuni is None:
-        return None
-    try:
-        if hasattr(spuni, "get_universe"):
-            return spuni.get_universe(universe_key)
-        if hasattr(spuni, "UNIVERSES"):
-            return spuni.UNIVERSES.get(universe_key)
-    except Exception:
-        pass
-    return None
+from typing import Tuple, Optional
+import pandas as pd
+import swing_options_screener as sos
 
-
-def _extract_df(out, *keys) -> pd.DataFrame:
-    """If screener returns dict, try multiple keys; if DF, return it; else empty DF."""
-    if isinstance(out, pd.DataFrame):
-        return out
-    if isinstance(out, dict):
-        for k in keys:
-            v = out.get(k)
-            if isinstance(v, pd.DataFrame):
-                return v
-    return pd.DataFrame()
-
-
-def run_screener(universe: str, with_options: bool, save_scan: bool):
+def _safe_engine_run_scan() -> dict:
     """
-    Calls sos.run_scan defensively:
-      - only passes kwargs that the function actually supports (introspection)
-      - if it returns dict, tries common keys to pull pass/scan dataframes
+    Call sos.run_scan() across historical signature variants and normalize
+    the result to a dict with keys: {'pass': DataFrame|None, 'scan': DataFrame|None}
     """
-    fn = getattr(sos, "run_scan", None)
-    if fn is None:
-        raise RuntimeError("swing_options_screener.run_scan not found")
+    import pandas as _pd
 
-    sig = inspect.signature(fn)
-    params = sig.parameters.keys()
-
-    kwargs = {}
-    if "with_options" in params:
-        kwargs["with_options"] = bool(with_options)
-
-    # only pass tickers if the function supports it
-    if "tickers" in params:
-        tickers = _candidate_tickers_from_universe(universe)
-        if tickers:
-            kwargs["tickers"] = tickers
-
-    # Optional "return_scan_df" style flags (support several common names)
-    for flag in ("return_scan_df", "return_full_scan", "return_scan"):
-        if flag in params:
-            kwargs[flag] = bool(save_scan)
-
-    out = fn(**kwargs)
-
-    # Try to extract dataframes
-    df_pass = _extract_df(out, "pass", "passes", "df_pass", "pass_df", "passes_df")
-    df_scan = _extract_df(out, "scan", "df_scan", "scan_df", "full_scan")
-
-    return df_pass, df_scan
-
-# --------------------------------------------------------------------
-# 6. Main (glue: run, save pass file, write logs, upsert+settle outcomes)
-# --------------------------------------------------------------------
-def main():
-    args = parse_args()
-    ensure_dirs()
-
-    # 1) run the screener
+    # Try different parameter names used across versions of your engine
     try:
-        res = sos.run_scan(universe=args.universe, with_options=args.with_options)
+        out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
-        res = sos.run_scan(market=args.universe, with_options=args.with_options)
+        try:
+            out = sos.run_scan(universe="sp500", with_options=True)
+        except TypeError:
+            out = sos.run_scan(with_options=True)
 
-    # Normalize outputs
-    df_pass = None
-    if isinstance(res, dict):
-        df_pass = res.get("pass") or res.get("pass_df") or res.get("pass_df_unadjusted")
-    elif isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], pd.DataFrame):
-        df_pass = res[0]
-    elif isinstance(res, pd.DataFrame):
-        df_pass = res
+    df_pass, df_scan = None, None
 
-    # 2) save pass file
-    if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
-        df_pass.to_csv(PASS_PATH, index=False)
-        print(f"[OK] wrote pass file: {PASS_PATH}")
-    else:
-        print("[INFO] no pass tickers this run (nothing written)")
+    if isinstance(out, dict):
+        cand = out.get("pass", None)
+        if isinstance(cand, _pd.DataFrame):
+            df_pass = cand
+        cand = out.get("pass_df", None)
+        if df_pass is None and isinstance(cand, _pd.DataFrame):
+            df_pass = cand
+        cand = out.get("pass_df_unadjusted", None)
+        if df_pass is None and isinstance(cand, _pd.DataFrame):
+            df_pass = cand
 
-    # 3) upsert + backfill outcomes
-    upsert_and_backfill_outcomes(df_pass if isinstance(df_pass, pd.DataFrame) else pd.DataFrame(), OUTCOMES_FILE)
+        cand = out.get("scan", None)
+        if isinstance(cand, _pd.DataFrame):
+            df_scan = cand
+        cand = out.get("scan_df", None)
+        if df_scan is None and isinstance(cand, _pd.DataFrame):
+            df_scan = cand
 
-    # 4) settle any pending rows
-    settle_pending_outcomes(OUTCOMES_FILE)
+    elif isinstance(out, (list, tuple)):
+        if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
+            df_pass = out[0]
+        if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
+            df_scan = out[1]
 
-    # 5) log
-    with open(LOG_PATH, "w", encoding="utf-8") as f:
-        ts = UTC_NOW.strftime("%Y-%m-%d %H:%M:%SZ")
-        n = 0 if df_pass is None else len(df_pass)
-        f.write(f"[{ts}] universe={args.universe} passes={n}\n")
-        if n:
-            for t in df_pass.get("Ticker", []):
-                f.write(f" - {t}\n")
-    print(f"[OK] log: {LOG_PATH}")
+    elif isinstance(out, _pd.DataFrame):
+        # Some versions just return the passing table
+        df_pass = out
+
+    return {"pass": df_pass, "scan": df_scan}
+
+# --------------------------------------------------------------------
+# 6. Main (glue: run, save pass file, write logs, upsert outcomes)
+# --------------------------------------------------------------------
+import sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+HIST_DIR = Path("data/history")
+LOG_DIR  = Path("data/logs")
+OUT_PATH = HIST_DIR / "outcomes.csv"
+
+def _utc_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+
+def main() -> int:
+    HIST_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        res = _safe_engine_run_scan()
+        df_pass: Optional[pd.DataFrame] = res.get("pass")
+        # df_scan = res.get("scan")  # currently unused here
+
+        wrote_pass = False
+        if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
+            # filename with UTC timestamp
+            pass_name = f"pass_{_utc_ts()}.csv"
+            pass_path = HIST_DIR / pass_name
+            df_pass.to_csv(pass_path, index=False)
+            print(f"[run_and_log] wrote {pass_path}")
+            wrote_pass = True
+
+            # Update outcomes.csv (insert new, backfill, settle)
+            try:
+                # Import the upsert/settle helpers from this same file
+                from run_and_log import upsert_and_backfill_outcomes, settle_pending_outcomes  # type: ignore  # noqa: E402
+            except Exception:
+                # When running as a script, the functions are already in this module
+                pass
+
+            upsert_and_backfill_outcomes(df_pass, str(OUT_PATH))
+            settle_pending_outcomes(str(OUT_PATH))
+        else:
+            print("[run_and_log] scan returned no passing tickers.")
+
+        # Always succeed if we reached here without exceptions
+        # (having 0 passes is not a failure)
+        return 0
+
+    except Exception as e:
+        # Make failures visible to GitHub Actions
+        print(f"[run_and_log] FATAL: {e}", file=sys.stderr)
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+
+
+
 
