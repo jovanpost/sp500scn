@@ -11,6 +11,7 @@
 #  8. Debugger (plain-English reasons with numbers)
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 #  10. UI – Tabs
+# 11. TAB – History & Outcomes
 # ============================================================
 
 # ============================================================
@@ -512,17 +513,11 @@ def diagnose_ticker(ticker: str,
     }
     return title, details
 
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_run_scan() -> dict:
-    """Call sos.run_scan with backward-compatible signatures and normalize outputs
-    without using boolean truthiness on DataFrames."""
     import pandas as _pd
-
-    # Try different parameter names used across your versions
     try:
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
@@ -532,39 +527,19 @@ def _safe_run_scan() -> dict:
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
-
     if isinstance(out, dict):
-        p = out.get("pass", None)
-        if isinstance(p, _pd.DataFrame):
-            df_pass = p
-        p2 = out.get("pass_df", None)
-        if df_pass is None and isinstance(p2, _pd.DataFrame):
-            df_pass = p2
-        p3 = out.get("pass_df_unadjusted", None)
-        if df_pass is None and isinstance(p3, _pd.DataFrame):
-            df_pass = p3
-
-        s = out.get("scan", None)
-        if isinstance(s, _pd.DataFrame):
-            df_scan = s
-        s2 = out.get("scan_df", None)
-        if df_scan is None and isinstance(s2, _pd.DataFrame):
-            df_scan = s2
-
+        df_pass = out.get("pass") or out.get("pass_df") or out.get("pass_df_unadjusted")
+        df_scan = out.get("scan") or out.get("scan_df")
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
         if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
             df_scan = out[1]
-
     elif isinstance(out, _pd.DataFrame):
         df_pass = out
-
     return {"pass": df_pass, "scan": df_scan}
 
-
 def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
-    """Produce a sheet-friendly subset (subset of columns)."""
     prefer = [
         "Ticker","EvalDate","Price","EntryTimeET",
         "Change%","RelVol(TimeAdj63d)","Resistance","TP",
@@ -575,9 +550,7 @@ def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in prefer if c in df.columns]
     return df.loc[:, cols].copy() if cols else df.copy()
 
-
 def _render_why_buy_block(df: pd.DataFrame):
-    """Render WHY BUY expanders per ticker."""
     if df is None or df.empty:
         return
     st.markdown("### WHY BUY details")
@@ -587,11 +560,8 @@ def _render_why_buy_block(df: pd.DataFrame):
             html = build_why_buy_html(row)
             st.markdown(html, unsafe_allow_html=True)
 
-
 def render_scanner_tab():
     st.markdown("#### Scanner")
-
-    # Red RUN button (scoped CSS)
     st.markdown(
         """
         <style>
@@ -604,34 +574,34 @@ def render_scanner_tab():
         """,
         unsafe_allow_html=True,
     )
-
     run_clicked = st.button("RUN", key="run_scan_btn")
 
     if run_clicked:
         with st.spinner("Scanning…"):
             out = _safe_run_scan()
         df_pass: pd.DataFrame | None = out.get("pass", None)
-
         st.session_state["last_pass"] = df_pass
 
-        if df_pass is None or df_pass.empty:
-            st.warning("No tickers passed the filters.")
-        else:
-            st.success(f"Found {len(df_pass)} passing tickers.")
-            st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
-            _render_why_buy_block(df_pass)
-            with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
+    # Always show something: session cache → latest file on disk
+    df_pass = st.session_state.get("last_pass")
+    if not isinstance(df_pass, pd.DataFrame):
+        lp = latest_pass_file()
+        if lp:
+            try:
+                df_pass = pd.read_csv(lp)
+            except Exception:
+                df_pass = None
 
-    elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
-        df_pass: pd.DataFrame = st.session_state["last_pass"]
-        st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
-        _render_why_buy_block(df_pass)
-        with st.expander("Google-Sheet style view (optional)", expanded=False):
-            st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
-    else:
+    if df_pass is None or df_pass.empty:
         st.caption("No results yet. Press **RUN** to scan.")
+        return
+
+    st.success(f"Showing {len(df_pass)} passing tickers (latest run).")
+    st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
+    _render_why_buy_block(df_pass)
+    with st.expander("Google-Sheet style view (optional)", expanded=False):
+        st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
+        
 
 # ============================================================
 # 10. UI – Tabs
@@ -750,5 +720,95 @@ with tab_debug:
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
 
+# ============================================================
+# 11. TAB – History & Outcomes
+# ============================================================
+with tab_history:
+    import pandas as _pd
+
+    st.header("History & Outcomes")
+
+    # ---------- A) Always show the most recent pass file (latest recommendations) ----------
+    def _latest_pass_file():
+        import glob, os
+        files = sorted(glob.glob(os.path.join(PASS_DIR, "*.csv")))
+        return files[-1] if files else None
+
+    lastf = _latest_pass_file()
+    if lastf:
+        st.subheader("Latest scan (most recent pass file)")
+        st.caption(lastf)
+        try:
+            df_last = _pd.read_csv(lastf)
+            st.dataframe(
+                df_last,
+                use_container_width=True,
+                height=min(560, 80 + 28 * len(df_last)),
+            )
+        except Exception as e:
+            st.info(f"Pass file exists but could not be read: {e}")
+    else:
+        st.info("No pass files yet. Run the scanner to generate one.")
+
+    st.markdown("---")
+
+    # ---------- B) Outcomes (sorted by option expiry: oldest → newest; blanks last) ----------
+    def _load_outcomes():
+        if os.path.exists(OUT_FILE):
+            try:
+                return _pd.read_csv(OUT_FILE)
+            except Exception:
+                return _pd.DataFrame()
+        return _pd.DataFrame()
+
+    def _parse_expiry_col(df: _pd.DataFrame) -> _pd.Series:
+        """Return a datetime series from any of these:
+           - 'Expiry' already a date string (YYYY-MM-DD)
+           - or missing; keep NaT
+        """
+        if "Expiry" in df.columns:
+            return _pd.to_datetime(df["Expiry"], errors="coerce", utc=False)
+        # No expiry column → all NaT
+        return _pd.to_datetime(_pd.Series([_pd.NaT] * len(df)), errors="coerce")
+
+    dfh = _load_outcomes()
+    if dfh is None or dfh.empty:
+        st.subheader("History & Outcomes")
+        st.info("No outcomes yet.")
+    else:
+        # Compute quick counters (robust to minimal schema)
+        n = len(dfh)
+        s_status = dfh["Status"].astype(str) if "Status" in dfh.columns else _pd.Series(["PENDING"] * n)
+        settled_mask = s_status.str.upper().eq("SETTLED")
+        pending_mask = ~settled_mask
+        hits = int(dfh.get("Hit", _pd.Series([False]*n)).astype(bool)[settled_mask].sum()) if "Hit" in dfh.columns else 0
+        settled = int(settled_mask.sum())
+        pending = int(pending_mask.sum())
+        misses = settled - hits
+        st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
+
+        # Sort by Expiry (oldest → newest), keeping blanks (NaT) at the bottom
+        exp_series = _parse_expiry_col(dfh)
+        dfh = dfh.copy()
+        dfh["_Expiry_dt"] = exp_series
+        # Stable sort: (has_expiry asc, expiry asc) so NaT (False) -> True ordering pushes NaT last
+        dfh["_has_expiry"] = dfh["_Expiry_dt"].notna()
+        dfh_sorted = dfh.sort_values(by=["_has_expiry", "_Expiry_dt"], ascending=[False, True]).drop(columns=["_has_expiry"])
+
+        # Nice column order if present
+        preferred = [
+            "Ticker","EvalDate","Price","EntryTimeET","Status","HitDateET",
+            "Expiry","BuyK","SellK","TP","Notes"
+        ]
+        cols = [c for c in preferred if c in dfh_sorted.columns] + [c for c in dfh_sorted.columns if c not in preferred and not c.startswith("_")]
+        df_show = dfh_sorted.loc[:, cols]
+
+        st.subheader("Outcomes (sorted by option expiry)")
+        st.dataframe(
+            df_show,
+            use_container_width=True,
+            height=min(600, 80 + 28 * len(df_show)),
+        )
+        
 
 
