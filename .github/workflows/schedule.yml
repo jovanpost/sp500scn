@@ -4,11 +4,11 @@ on:
   workflow_dispatch: {}
   schedule:
     # 10:30 / 11:30 / 12:30 ET (Mon–Fri). During EDT (UTC-4) these are ~14:30/15:30/16:30 UTC.
-    - cron: "30 14 * * 1-5"
-    - cron: "30 15 * * 1-5"
-    - cron: "30 16 * * 1-5"
+    - cron: "10 14 * * 1-5"
+    - cron: "10 15 * * 1-5"
+    - cron: "10 16 * * 1-5"
     # Nightly outcome check after US close (~23:30 UTC)
-    - cron: "30 23 * * 1-5"
+    - cron: "10 23 * * 1-5"
 
 permissions:
   contents: write
