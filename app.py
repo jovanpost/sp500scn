@@ -28,7 +28,12 @@ PASS_DIR = "data/pass_logs"
 HIST_DIR = "data/history"
 OUT_FILE = os.path.join(HIST_DIR, "outcomes.csv")
 
-st.set_page_config(page_title="Swing Options Scanner", layout="wide")
+st.set_page_config(
+    page_title="Edge500",     # Title shown in browser tab
+    page_icon="logo.png",     # Favicon (logo.png in repo root)
+    layout="wide"
+)
+
 
 # ============================================================
 # 3. Streamlit page config + global CSS
@@ -854,6 +859,7 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
 
 
 
