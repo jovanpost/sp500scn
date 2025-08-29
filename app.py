@@ -649,6 +649,7 @@ def render_scanner_tab():
     else:
         st.caption("No results yet. Press **RUN** to scan.")
 
+
 # ============================================================
 # 10. UI – Tabs
 # ============================================================
@@ -668,62 +669,9 @@ tab_scanner, tab_history, tab_debug = st.tabs(
 with tab_scanner:
     render_scanner_tab()
 
-# ── TAB 2: History & Outcomes (no duplicates)
+# ── TAB 2: History & Outcomes  (single call — avoids duplicates)
 with tab_history:
-    # ---- Latest pass (most recent run) ----
-    st.subheader("Latest recommendations (most recent run)")
-    lastf = latest_pass_file()
-    if lastf and os.path.exists(lastf):
-        try:
-            dfl = pd.read_csv(lastf)
-            st.dataframe(dfl, use_container_width=True)
-        except Exception:
-            st.info("Latest pass file exists but could not be read.")
-    else:
-        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
-
-    st.divider()
-
-    # ---- Outcomes by expiry (oldest → newest, unknown last) ----
-    st.subheader("Outcomes (sorted by option expiry)")
-    dfh = load_outcomes()
-    if dfh is None or dfh.empty:
-        st.caption("Settled: 0 • Hits: 0 • Misses: 0 • Pending: 0")
-    else:
-        dfh = dfh.copy()
-
-        # Robust status fields
-        s_status = dfh.get("result_status", dfh.get("Status", pd.Series(index=dfh.index))).astype(str)
-        settled_mask = s_status.str.upper().eq("SETTLED")
-        pending_mask = ~settled_mask
-
-        hits = 0  # (optional: track hits if you later add a 'hit' column)
-        st.caption(f"Settled: {int(settled_mask.sum())} • Hits: {hits} • Misses: {int(settled_mask.sum()) - hits} • Pending: {int(pending_mask.sum())}")
-
-        # Parse Expiry safely; backfill from EvalDate+30 when missing
-        dfh["Expiry"] = pd.to_datetime(dfh.get("Expiry"), errors="coerce")
-        mask_na = dfh["Expiry"].isna()
-        if mask_na.any():
-            ev = pd.to_datetime(dfh.loc[mask_na, "EvalDate"], errors="coerce")
-            dfh.loc[mask_na, "Expiry"] = ev + pd.Timedelta(days=30)
-
-# Compute DTE (days to expiry) robustly (strip any timezone first)
-exp = pd.to_datetime(dfh["Expiry"], errors="coerce")
-try:
-    # if exp is tz-aware, drop tz; if already naive, this is a no-op
-    exp = exp.dt.tz_localize(None)
-except Exception:
-    pass
-exp = exp.dt.normalize()
-
-today_naive = pd.Timestamp.utcnow()
-try:
-    today_naive = today_naive.tz_localize(None)
-except Exception:
-    pass
-today_naive = today_naive.normalize()
-
-dfh["DTE"] = (exp - today_naive).dt.days
+    render_history_and_outcomes_tab()
 
 # ── TAB 3: Debugger (plain-English + numbers; styled HTML)
 with tab_debug:
@@ -903,6 +851,7 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
 
 
 
