@@ -134,13 +134,17 @@ def build_why_buy_html(row: dict) -> str:
 # 6. CSV helpers (latest pass file, outcomes)
 # ============================================================
 def latest_pass_file():
-    files = sorted(glob.glob(os.path.join(PASS_DIR, "*.csv")))
-    return files[-1] if files else None
+    """Return the newest pass_*.csv from either pass_logs/ or history/."""
+    candidates = []
+    for d in [PASS_DIR, HIST_DIR]:
+        candidates.extend(glob.glob(os.path.join(d, "pass_*.csv")))
+    return sorted(candidates)[-1] if candidates else None
 
 def load_outcomes():
     if os.path.exists(OUT_FILE):
         return pd.read_csv(OUT_FILE)
     return pd.DataFrame()
+    
 
 # ============================================================
 # 7. Outcomes counters (robust to minimal/extended schemas)
@@ -713,82 +717,85 @@ with tab_debug:
 # 11. TAB – History & Outcomes
 # ============================================================
 with tab_history:
-    # ----- Block 1: Latest pass (most recent run) -----
+    # --- Latest recommendations (most recent run) ---
     st.subheader("Latest recommendations (most recent run)")
-
     lastf = latest_pass_file()
     if lastf:
-        st.caption(f"Source file: `{lastf}`")
         try:
             df_last = pd.read_csv(lastf)
-            if not df_last.empty:
-                st.dataframe(
-                    df_last,
-                    use_container_width=True,
-                    height=min(560, 80 + 28 * len(df_last))
-                )
-            else:
-                st.info("Latest pass file is empty.")
+            st.dataframe(df_last, use_container_width=True)
         except Exception as e:
-            st.warning(f"Could not read the latest pass file: {e}")
+            st.warning(f"Could not read latest pass file: {e}")
     else:
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
 
-    st.markdown("---")
-
-    # ----- Block 2: Outcomes (sorted by expiry, oldest → newest) -----
+    # --- Outcomes, sorted by option expiry (oldest → newest) ---
     st.subheader("Outcomes (sorted by option expiry)")
 
     dfh = load_outcomes()
     if dfh is None or dfh.empty:
         st.info("No outcomes yet.")
     else:
-        # Ensure expected columns exist
-        needed = ["Ticker","EvalDate","EntryTimeET","Status","HitDateET","Expiry","BuyK","SellK","TP","Notes"]
         dfh = dfh.copy()
-        for c in needed:
-            if c not in dfh.columns:
-                dfh[c] = pd.NA
 
-        # Parse dates safely
-        for dcol in ["EvalDate","EntryTimeET","HitDateET","Expiry"]:
-            dfh[dcol] = pd.to_datetime(dfh[dcol], errors="coerce")
+        # Normalize column names that might vary
+        status_col = "Status" if "Status" in dfh.columns else ("result_status" if "result_status" in dfh.columns else None)
+        hit_col    = "hit" if "hit" in dfh.columns else None
 
-        # Days-to-expiry and sort by Expiry ascending (NaT goes last)
-        today = pd.Timestamp.utcnow().normalize()
-        dfh["DTE"] = (dfh["Expiry"] - today).dt.days
+        # Parse Expiry to pandas datetimes, allow blanks
+        if "Expiry" not in dfh.columns:
+            dfh["Expiry"] = pd.NaT
+        dfh["Expiry"] = pd.to_datetime(dfh["Expiry"], errors="coerce")
 
-        # Normalize status just for counts
-        s = dfh["Status"].astype(str).str.upper()
-        dfh["Status"] = s
+        # Compute DTE safely using a pandas Timestamp (avoid date/datetime mix)
+        today_ts = pd.Timestamp.today().normalize()
+        dfh["DTE"] = (dfh["Expiry"] - today_ts).dt.days
 
-        settled_mask = dfh["Status"].eq("SETTLED")
-        pending = int(dfh["Status"].eq("PENDING").sum())
+        # Sort by expiry (NaT at the end), then by EvalDate descending for ties
+        # Use a sortable key where NaT -> far future
+        exp_key = dfh["Expiry"].fillna(pd.Timestamp.max)
+        if "EvalDate" in dfh.columns:
+            # Ensure EvalDate is sortable
+            dfh["EvalDate"] = pd.to_datetime(dfh["EvalDate"], errors="coerce")
+            dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
+                ["_expkey", "EvalDate"], ascending=[True, False]
+            ).drop(columns=["_expkey"])
+        else:
+            dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
+                ["_expkey"], ascending=[True]
+            ).drop(columns=["_expkey"])
 
-        # Derive hits/misses from Status or Notes (if you encode them there)
-        hit_mask  = dfh["Status"].eq("HIT")  | dfh["Notes"].astype(str).str.contains(r"\bhit\b",  case=False, na=False)
-        miss_mask = dfh["Status"].eq("MISS") | dfh["Notes"].astype(str).str.contains(r"\bmiss\b", case=False, na=False)
+        # Quick counters (settled/pending/hits/misses)
+        n = len(dfh_sorted)
+        if status_col:
+            s_status = dfh_sorted[status_col].astype(str)
+        else:
+            s_status = pd.Series(["PENDING"] * n, index=dfh_sorted.index, dtype="string")
 
+        settled_mask = s_status.str.upper().eq("SETTLED")
+        pending_mask = ~settled_mask
         settled = int(settled_mask.sum())
-        hits    = int((settled_mask & hit_mask).sum())
-        misses  = int((settled_mask & miss_mask).sum())
+        pending = int(pending_mask.sum())
+        if hit_col:
+            hits = int((settled_mask & dfh_sorted[hit_col].astype(bool)).sum())
+        else:
+            hits = 0
+        misses = settled - hits
 
         st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
 
-        show_cols = [
-            "Ticker","EvalDate","EntryTimeET","Expiry","DTE",
-            "BuyK","SellK","TP","Status","HitDateET","Notes"
+        # Tidy display: format Expiry as date string, keep DTE
+        df_disp = dfh_sorted.copy()
+        df_disp["Expiry"] = df_disp["Expiry"].dt.strftime("%Y-%m-%d")
+        # Choose sensible column order if present
+        preferred = [
+            "Ticker","EvalDate","Price","EntryTimeET",
+            status_col if status_col else "Status",
+            "HitDateET","Expiry","DTE","BuyK","SellK","TP","Notes"
         ]
-        show_cols = [c for c in show_cols if c in dfh.columns]
+        cols = [c for c in preferred if c in df_disp.columns]
+        if cols:
+            df_disp = df_disp[cols]
 
-        df_show = dfh.sort_values(
-            by=["Expiry","Ticker"] if "Ticker" in dfh.columns else ["Expiry"],
-            ascending=[True, True] if "Ticker" in dfh.columns else [True],
-            na_position="last"
-        )
-
-        st.dataframe(
-            df_show[show_cols],
-            use_container_width=True,
-            height=min(600, 80 + 28 * len(df_show))
-        )
+        st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
+        
