@@ -115,6 +115,7 @@ def write_csv(path: Path, df: pd.DataFrame) -> None:
     except Exception as e:
         print(f"[ERROR] Failed writing {path}: {e}", file=sys.stderr)
 
+
 # --------------------------------------------------------------------
 # 4. Outcomes Upsert (non-destructive append/update + backfill)
 # --------------------------------------------------------------------
@@ -131,6 +132,8 @@ OUTCOLS = [
     "Expiry","BuyK","SellK","TP","Notes",
     "run_date"
 ]
+
+# ---------- small utils ----------
 
 def _read_csv(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
@@ -153,7 +156,10 @@ def _write_csv(df: pd.DataFrame, path: str) -> None:
 
 def _safe_float(x):
     try:
-        if x is None or (isinstance(x, float) and math.isnan(x)):
+        if x is None:
+            return None
+        # handle pandas NA/NaN
+        if isinstance(x, float) and math.isnan(x):
             return None
         return float(x)
     except Exception:
@@ -166,6 +172,7 @@ def _first_nonempty(*vals):
     return None
 
 def _to_date_str(x):
+    """Return YYYY-MM-DD or None."""
     if x is None:
         return None
     try:
@@ -179,6 +186,9 @@ def _to_date_str(x):
     return None
 
 def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
+    """
+    Prefer OptExpiry/Expiry in the pass row; else fall back to EvalDate + 30d.
+    """
     raw = _first_nonempty(row.get("OptExpiry"), row.get("Expiry"))
     if raw:
         return _to_date_str(raw)
@@ -191,14 +201,19 @@ def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
             return ev
     return None
 
+# ---------- upsert/backfill ----------
+
 def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> pd.DataFrame:
     """
     - Insert new PENDING rows for today's passes (Ticker+EvalDate key).
     - Backfill missing Expiry/BuyK/SellK/TP/Price on existing *PENDING* rows.
     """
-    out = _read_csv(outcomes_path)
+    out = _read_csv(outcomes_path).copy()
+
     if df_pass is None:
         df_pass = pd.DataFrame()
+    else:
+        df_pass = df_pass.copy()
 
     # Build quick lookup keyed by (Ticker, EvalDate)
     key = lambda t, ev: (str(t).upper(), _to_date_str(ev) or "")
@@ -213,7 +228,7 @@ def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> p
 
     rows_to_append = []
 
-    # 1) Insert new
+    # 1) Insert new (only if not already present)
     for k, r in pass_map.items():
         if k in existing_keys:
             continue
@@ -231,7 +246,7 @@ def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> p
             "SellK": _safe_float(r.get("SellK")),
             "TP": _safe_float(r.get("TP")),
             "Notes": "",
-            "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d")
+            "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
         })
 
     if rows_to_append:
@@ -253,7 +268,7 @@ def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> p
                     except Exception:
                         pass
                 continue
-            # backfill fields only if missing
+            # backfill only if missing
             if not _to_date_str(r.get("Expiry")):
                 out.at[i, "Expiry"] = _parse_expiry_from_passrow(pr)
             if pd.isna(r.get("BuyK")) or r.get("BuyK") == "":
@@ -265,8 +280,19 @@ def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> p
             if pd.isna(r.get("Price")) or r.get("Price") == "":
                 out.at[i, "Price"] = _safe_float(pr.get("Price"))
 
+    # De-dupe defensively (keep latest run_date if duplicates slipped in)
+    if not out.empty:
+        out["run_date"] = out["run_date"].fillna("")
+        out = (
+            out.sort_values(["Ticker","EvalDate","run_date"])
+               .drop_duplicates(subset=["Ticker","EvalDate"], keep="last")
+               .reset_index(drop=True)
+        )
+
     _write_csv(out, outcomes_path)
     return out
+
+# ---------- settlement (hits/expiry) ----------
 
 def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str | None:
     try:
@@ -286,7 +312,7 @@ def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str
     return None
 
 def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
-    out = _read_csv(outcomes_path)
+    out = _read_csv(outcomes_path).copy()
     if out.empty:
         return out
 
@@ -335,8 +361,7 @@ def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
     if changed:
         _write_csv(out, outcomes_path)
     return out
-
-
+    
 
 # --------------------------------------------------------------------
 # 5. Screener Runner (invoke library, gather DataFrames)
