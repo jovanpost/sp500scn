@@ -71,6 +71,13 @@ st.markdown(
         overflow:auto; font-size:13px; line-height:1.45;
     }
     .em { font-style: italic; }
+
+    /* --- Logo header --- */
+    .app-logo {
+        display: flex;
+        justify-content: center;
+        margin: 0.5rem 0 1rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -641,20 +648,10 @@ def render_scanner_tab():
 # 10. UI – Tabs
 # ============================================================
 
-# ---- Brand header (logo + title) ----
-# Uses the local file in repo root: ./logo.png
-hcol1, hcol2 = st.columns([1, 6])
-with hcol1:
-    # Tweak width if you want it larger/smaller
-    st.image("logo.png", caption=None, width=96)
-with hcol2:
-    st.markdown(
-        "<div style='line-height:1.1; margin-top:6px;'>"
-        "<div style='font-size:28px; font-weight:800;'>Edge500</div>"
-        "<div style='color:#777; font-size:14px;'>S&amp;P 500 swing options scanner</div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
+# ---- Brand header (logo only) ----
+st.markdown('<div class="app-logo">', unsafe_allow_html=True)
+st.image("logo.png", width=140)
+st.markdown('</div>', unsafe_allow_html=True)
 st.divider()
 
 # Create tabs once with unique variable names
@@ -857,5 +854,6 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
 
 
