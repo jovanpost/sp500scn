@@ -650,6 +650,91 @@ def render_scanner_tab():
         st.caption("No results yet. Press **RUN** to scan.")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. TAB – History & Outcomes (renderer function used by Section 10)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_history_and_outcomes_tab():
+    st.subheader("Latest recommendations (most recent run)")
+
+    lastf = latest_pass_file()
+    if lastf:
+        try:
+            df_last = pd.read_csv(lastf)
+            st.dataframe(df_last, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Could not read latest pass file: {e}")
+    else:
+        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
+
+    st.subheader("Outcomes (sorted by option expiry)")
+
+    dfh = load_outcomes()
+    if dfh is None or dfh.empty:
+        st.info("No outcomes yet.")
+        return
+
+    dfh = dfh.copy()
+
+    # Ensure expected columns exist
+    for c in ["Expiry", "EvalDate", "Notes"]:
+        if c not in dfh.columns:
+            dfh[c] = pd.NA
+
+    # Prefer result_status, then Status
+    status_col = "result_status" if "result_status" in dfh.columns else ("Status" if "Status" in dfh.columns else None)
+
+    # Parse dates
+    dfh["Expiry_parsed"]   = pd.to_datetime(dfh["Expiry"],   errors="coerce", utc=False)
+    dfh["EvalDate_parsed"] = pd.to_datetime(dfh["EvalDate"], errors="coerce", utc=False)
+
+    # Backfill missing expiry from EvalDate + 30d (display-only)
+    need_exp = dfh["Expiry_parsed"].isna() & dfh["EvalDate_parsed"].notna()
+    if need_exp.any():
+        dfh.loc[need_exp, "Expiry_parsed"] = dfh.loc[need_exp, "EvalDate_parsed"] + pd.Timedelta(days=30)
+
+    # DTE calculation
+    today = pd.Timestamp.utcnow().normalize()
+    dfh["DTE"] = (dfh["Expiry_parsed"].dt.normalize() - today).dt.days
+
+    # Sort: earliest expiry first; for ties, most recent EvalDate first; NaT at end
+    exp_key = dfh["Expiry_parsed"].fillna(pd.Timestamp.max)
+    dfh_sorted = dfh.assign(_expkey=exp_key).sort_values(
+        ["_expkey", "EvalDate_parsed"], ascending=[True, False]
+    ).drop(columns=["_expkey"])
+
+    # Summary counts
+    notes_up = dfh_sorted["Notes"].astype(str).str.upper()
+    hits   = int(notes_up.isin(["HIT_BY_SELLK", "HIT_BY_TP"]).sum())
+    misses = int((notes_up == "EXPIRED_NO_HIT").sum())
+
+    if status_col:
+        s_up    = dfh_sorted[status_col].astype(str).str.upper()
+        settled = int((s_up == "SETTLED").sum())
+        pending = int((s_up != "SETTLED").sum())
+    else:
+        settled = hits + misses
+        pending = int(len(dfh_sorted) - settled)
+
+    st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
+
+    # Use parsed expiry when original is blank, format to YYYY-MM-DD for display
+    df_disp = dfh_sorted.copy()
+    use_parsed_mask = df_disp["Expiry"].isna() | (df_disp["Expiry"].astype(str).str.strip() == "")
+    df_disp.loc[use_parsed_mask, "Expiry"] = df_disp.loc[use_parsed_mask, "Expiry_parsed"].dt.strftime("%Y-%m-%d")
+
+    # Column order
+    preferred = [
+        "Ticker","EvalDate","Price","EntryTimeET",
+        status_col if status_col else "Status",
+        "HitDateET","Expiry","DTE","BuyK","SellK","TP","Notes"
+    ]
+    cols = [c for c in preferred if c in df_disp.columns]
+    if cols:
+        df_disp = df_disp[cols]
+
+    st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
+    
+
 # ============================================================
 # 10. UI – Tabs
 # ============================================================
@@ -852,3 +937,4 @@ with tab_history:
             df_disp = df_disp[cols]
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
+
