@@ -115,21 +115,20 @@ def write_csv(path: Path, df: pd.DataFrame) -> None:
     except Exception as e:
         print(f"[ERROR] Failed writing {path}: {e}", file=sys.stderr)
 
-
 # --------------------------------------------------------------------
-# 4. Outcomes Upsert (non-destructive append/update)
+# 4. Outcomes Upsert (non-destructive append/update + backfill)
 # --------------------------------------------------------------------
 import csv
 import math
-from datetime import timedelta
+from datetime import timezone
 import pandas as pd
 import yfinance as yf
+import os
 
 OUTCOLS = [
     "Ticker","EvalDate","Price","EntryTimeET",
     "Status","result_status","HitDateET",
     "Expiry","BuyK","SellK","TP","Notes",
-    # optional bookkeeping
     "run_date"
 ]
 
@@ -146,7 +145,6 @@ def _read_csv(path: str) -> pd.DataFrame:
 
 def _write_csv(df: pd.DataFrame, path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # ensure column order
     for c in OUTCOLS:
         if c not in df.columns:
             df[c] = pd.NA
@@ -168,7 +166,6 @@ def _first_nonempty(*vals):
     return None
 
 def _to_date_str(x):
-    # accept "YYYY-MM-DD", "YYYY-MM-DD HH:MM:SS ET", pandas Timestamp, etc.
     if x is None:
         return None
     try:
@@ -182,70 +179,57 @@ def _to_date_str(x):
     return None
 
 def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
-    # Try OptExpiry → Expiry → fallback 30 calendar days after EvalDate
     raw = _first_nonempty(row.get("OptExpiry"), row.get("Expiry"))
     if raw:
-        # normalize to YYYY-MM-DD
         return _to_date_str(raw)
-    # fallback: +30 days after EvalDate
     ev = _to_date_str(row.get("EvalDate"))
     if ev:
         try:
             d = pd.Timestamp(ev) + pd.Timedelta(days=30)
             return d.date().isoformat()
         except Exception:
-            return ev  # last resort
+            return ev
     return None
 
-def _target_from_row(row: pd.Series) -> float | None:
-    # Prefer second-leg strike (SellK) if present, else TP
-    sellk = _safe_float(row.get("SellK"))
-    tp    = _safe_float(row.get("TP"))
-    return sellk if sellk is not None else tp
-
-def upsert_outcomes_with_pass(df_pass: pd.DataFrame, outcomes_path: str) -> pd.DataFrame:
+def upsert_and_backfill_outcomes(df_pass: pd.DataFrame, outcomes_path: str) -> pd.DataFrame:
     """
-    Add new PENDING rows for today's pass results (idempotent on Ticker+EvalDate).
+    - Insert new PENDING rows for today's passes (Ticker+EvalDate key).
+    - Backfill missing Expiry/BuyK/SellK/TP/Price on existing *PENDING* rows.
     """
     out = _read_csv(outcomes_path)
-    if df_pass is None or df_pass.empty:
-        return out
+    if df_pass is None:
+        df_pass = pd.DataFrame()
 
-    # Build a unique key on (Ticker, EvalDate) so reruns don't duplicate
+    # Build quick lookup keyed by (Ticker, EvalDate)
+    key = lambda t, ev: (str(t).upper(), _to_date_str(ev) or "")
+    pass_map = {}
+    for _, r in df_pass.iterrows():
+        pass_map[key(r.get("Ticker"), r.get("EvalDate"))] = r
+
     existing_keys = set()
     if not out.empty:
         for _, r in out.iterrows():
-            existing_keys.add( (str(r.get("Ticker","")).upper(), _to_date_str(r.get("EvalDate")) or "") )
+            existing_keys.add(key(r.get("Ticker"), r.get("EvalDate")))
 
     rows_to_append = []
-    for _, r in df_pass.iterrows():
-        tkr = str(r.get("Ticker","")).upper()
-        ev  = _to_date_str(r.get("EvalDate"))
-        if not tkr or not ev:
-            continue
-        key = (tkr, ev)
-        if key in existing_keys:
-            continue
 
-        entry_ts = r.get("EntryTimeET")
-        expiry   = _parse_expiry_from_passrow(r)
-        buyk     = _safe_float(r.get("BuyK"))
-        sellk    = _safe_float(r.get("SellK"))
-        tp       = _safe_float(r.get("TP"))
-        price    = _safe_float(r.get("Price"))
-
+    # 1) Insert new
+    for k, r in pass_map.items():
+        if k in existing_keys:
+            continue
+        tkr, ev = k
         rows_to_append.append({
             "Ticker": tkr,
             "EvalDate": ev,
-            "Price": price,
-            "EntryTimeET": entry_ts,
+            "Price": _safe_float(r.get("Price")),
+            "EntryTimeET": r.get("EntryTimeET"),
             "Status": "PENDING",
             "result_status": "PENDING",
             "HitDateET": "",
-            "Expiry": expiry,
-            "BuyK": buyk,
-            "SellK": sellk,
-            "TP": tp,
+            "Expiry": _parse_expiry_from_passrow(r),
+            "BuyK": _safe_float(r.get("BuyK")),
+            "SellK": _safe_float(r.get("SellK")),
+            "TP": _safe_float(r.get("TP")),
             "Notes": "",
             "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d")
         })
@@ -253,24 +237,47 @@ def upsert_outcomes_with_pass(df_pass: pd.DataFrame, outcomes_path: str) -> pd.D
     if rows_to_append:
         out = pd.concat([out, pd.DataFrame(rows_to_append)], ignore_index=True)
 
+    # 2) Backfill existing PENDING with missing Expiry/strikes/TP/Price
+    if not out.empty:
+        for i, r in out.iterrows():
+            if str(r.get("result_status") or r.get("Status") or "").upper() == "SETTLED":
+                continue
+            k = key(r.get("Ticker"), r.get("EvalDate"))
+            pr = pass_map.get(k)
+            if pr is None:
+                # fallback: if expiry missing, set to EvalDate+30
+                if not _to_date_str(r.get("Expiry")) and _to_date_str(r.get("EvalDate")):
+                    try:
+                        exp = (pd.Timestamp(_to_date_str(r.get("EvalDate"))) + pd.Timedelta(days=30)).date().isoformat()
+                        out.at[i, "Expiry"] = exp
+                    except Exception:
+                        pass
+                continue
+            # backfill fields only if missing
+            if not _to_date_str(r.get("Expiry")):
+                out.at[i, "Expiry"] = _parse_expiry_from_passrow(pr)
+            if pd.isna(r.get("BuyK")) or r.get("BuyK") == "":
+                out.at[i, "BuyK"] = _safe_float(pr.get("BuyK"))
+            if pd.isna(r.get("SellK")) or r.get("SellK") == "":
+                out.at[i, "SellK"] = _safe_float(pr.get("SellK"))
+            if pd.isna(r.get("TP")) or r.get("TP") == "":
+                out.at[i, "TP"] = _safe_float(pr.get("TP"))
+            if pd.isna(r.get("Price")) or r.get("Price") == "":
+                out.at[i, "Price"] = _safe_float(pr.get("Price"))
+
     _write_csv(out, outcomes_path)
     return out
 
 def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str | None:
-    """
-    Return first date (YYYY-MM-DD) where High >= threshold, from start_date to now.
-    Uses yfinance daily data to keep it simple & stable.
-    """
     try:
         if not ticker or threshold is None:
             return None
         df = yf.download(ticker, start=start_date, progress=False, auto_adjust=False, interval="1d")
         if df is None or df.empty or "High" not in df.columns:
             return None
-        # Find the first index where High >= threshold
         meet = df["High"] >= float(threshold)
         if meet.any():
-            first_idx = meet.idxmax()  # first True
+            first_idx = meet.idxmax()
             if isinstance(first_idx, pd.Timestamp):
                 return first_idx.date().isoformat()
             return _to_date_str(first_idx)
@@ -279,13 +286,6 @@ def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str
     return None
 
 def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
-    """
-    For every PENDING row:
-      - If price ever reached >= SellK (or TP if SellK missing), mark HIT.
-      - Else if Expiry < today, mark EXPIRED_NO_HIT.
-      - Else keep PENDING.
-    Also keeps both Status and result_status in sync.
-    """
     out = _read_csv(outcomes_path)
     if out.empty:
         return out
@@ -303,14 +303,12 @@ def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
         expiry = _to_date_str(r.get("Expiry"))
         target = _first_nonempty(_safe_float(r.get("SellK")), _safe_float(r.get("TP")))
 
-        # If we still don't have an expiry, fallback to +30d
         if not expiry and ev:
             try:
                 expiry = (pd.Timestamp(ev) + pd.Timedelta(days=30)).date().isoformat()
             except Exception:
                 expiry = ev
 
-        # If we have a target and eval date, check for hit
         hit_date = None
         if tkr and ev and (target is not None):
             hit_date = _first_hit_date_since(tkr, ev, target)
@@ -323,7 +321,6 @@ def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
             changed = True
             continue
 
-        # No hit — check expiry
         if expiry:
             try:
                 exp_d = pd.Timestamp(expiry).date()
@@ -333,7 +330,6 @@ def settle_pending_outcomes(outcomes_path: str) -> pd.DataFrame:
                     out.at[i, "Notes"] = "EXPIRED_NO_HIT"
                     changed = True
             except Exception:
-                # if expiry unparsable, leave pending
                 pass
 
     if changed:
@@ -408,7 +404,7 @@ def run_screener(universe: str, with_options: bool, save_scan: bool):
     return df_pass, df_scan
 
 # --------------------------------------------------------------------
-# 6. Main (glue: run, save pass file, write logs, upsert outcomes)
+# 6. Main (glue: run, save pass file, write logs, upsert+settle outcomes)
 # --------------------------------------------------------------------
 def main():
     args = parse_args()
@@ -418,7 +414,6 @@ def main():
     try:
         res = sos.run_scan(universe=args.universe, with_options=args.with_options)
     except TypeError:
-        # older signature
         res = sos.run_scan(market=args.universe, with_options=args.with_options)
 
     # Normalize outputs
@@ -430,22 +425,22 @@ def main():
     elif isinstance(res, pd.DataFrame):
         df_pass = res
 
-    # 2) save pass file (if any)
+    # 2) save pass file
     if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
         df_pass.to_csv(PASS_PATH, index=False)
         print(f"[OK] wrote pass file: {PASS_PATH}")
     else:
         print("[INFO] no pass tickers this run (nothing written)")
 
-    # 3) append/update outcomes with today’s passes
-    out_df = upsert_outcomes_with_pass(df_pass if isinstance(df_pass, pd.DataFrame) else pd.DataFrame(), OUTCOMES_FILE)
+    # 3) upsert + backfill outcomes
+    upsert_and_backfill_outcomes(df_pass if isinstance(df_pass, pd.DataFrame) else pd.DataFrame(), OUTCOMES_FILE)
 
-    # 4) settle any pending rows (hit/expired) every time we run — harmless during day
-    out_df = settle_pending_outcomes(OUTCOMES_FILE)
+    # 4) settle any pending rows
+    settle_pending_outcomes(OUTCOMES_FILE)
 
-    # 5) write simple log file
+    # 5) log
     with open(LOG_PATH, "w", encoding="utf-8") as f:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        ts = UTC_NOW.strftime("%Y-%m-%d %H:%M:%SZ")
         n = 0 if df_pass is None else len(df_pass)
         f.write(f"[{ts}] universe={args.universe} passes={n}\n")
         if n:
@@ -455,4 +450,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
