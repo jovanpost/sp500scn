@@ -521,7 +521,11 @@ def diagnose_ticker(ticker: str,
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_run_scan() -> dict:
+    """Call sos.run_scan with backward-compatible signatures and normalize outputs
+    without using boolean truthiness on DataFrames."""
     import pandas as _pd
+
+    # Try different parameter names used across your versions
     try:
         out = sos.run_scan(market="sp500", with_options=True)
     except TypeError:
@@ -531,19 +535,40 @@ def _safe_run_scan() -> dict:
             out = sos.run_scan(with_options=True)
 
     df_pass, df_scan = None, None
+
     if isinstance(out, dict):
-        df_pass = out.get("pass") or out.get("pass_df") or out.get("pass_df_unadjusted")
-        df_scan = out.get("scan") or out.get("scan_df")
+        cand = out.get("pass", None)
+        if isinstance(cand, _pd.DataFrame):
+            df_pass = cand
+        cand = out.get("pass_df", None)
+        if df_pass is None and isinstance(cand, _pd.DataFrame):
+            df_pass = cand
+        cand = out.get("pass_df_unadjusted", None)
+        if df_pass is None and isinstance(cand, _pd.DataFrame):
+            df_pass = cand
+
+        cand = out.get("scan", None)
+        if isinstance(cand, _pd.DataFrame):
+            df_scan = cand
+        cand = out.get("scan_df", None)
+        if df_scan is None and isinstance(cand, _pd.DataFrame):
+            df_scan = cand
+
     elif isinstance(out, (list, tuple)):
         if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
             df_pass = out[0]
         if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
             df_scan = out[1]
+
     elif isinstance(out, _pd.DataFrame):
+        # Some versions just return the passing table
         df_pass = out
+
     return {"pass": df_pass, "scan": df_scan}
 
+
 def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
+    """Produce a sheet-friendly subset (subset of columns)."""
     prefer = [
         "Ticker","EvalDate","Price","EntryTimeET",
         "Change%","RelVol(TimeAdj63d)","Resistance","TP",
@@ -554,7 +579,9 @@ def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in prefer if c in df.columns]
     return df.loc[:, cols].copy() if cols else df.copy()
 
+
 def _render_why_buy_block(df: pd.DataFrame):
+    """Render WHY BUY expanders per ticker."""
     if df is None or df.empty:
         return
     st.markdown("### WHY BUY details")
@@ -564,8 +591,11 @@ def _render_why_buy_block(df: pd.DataFrame):
             html = build_why_buy_html(row)
             st.markdown(html, unsafe_allow_html=True)
 
+
 def render_scanner_tab():
     st.markdown("#### Scanner")
+
+    # Red RUN button (custom CSS inside this tab to avoid global collisions)
     st.markdown(
         """
         <style>
@@ -578,34 +608,35 @@ def render_scanner_tab():
         """,
         unsafe_allow_html=True,
     )
+
     run_clicked = st.button("RUN", key="run_scan_btn")
 
     if run_clicked:
         with st.spinner("Scanning…"):
             out = _safe_run_scan()
         df_pass: pd.DataFrame | None = out.get("pass", None)
+
         st.session_state["last_pass"] = df_pass
 
-    # Always show something: session cache → latest file on disk
-    df_pass = st.session_state.get("last_pass")
-    if not isinstance(df_pass, pd.DataFrame):
-        lp = latest_pass_file()
-        if lp:
-            try:
-                df_pass = pd.read_csv(lp)
-            except Exception:
-                df_pass = None
+        if df_pass is None or df_pass.empty:
+            st.warning("No tickers passed the filters.")
+        else:
+            st.success(f"Found {len(df_pass)} passing tickers (latest run).")
+            st.dataframe(df_pass, use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+            _render_why_buy_block(df_pass)
+            with st.expander("Google-Sheet style view (optional)", expanded=False):
+                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
 
-    if df_pass is None or df_pass.empty:
+    elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
+        df_pass: pd.DataFrame = st.session_state["last_pass"]
+        st.info(f"Showing last run in this session • {len(df_pass)} tickers")
+        st.dataframe(df_pass, use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+        _render_why_buy_block(df_pass)
+        with st.expander("Google-Sheet style view (optional)", expanded=False):
+            st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+    else:
         st.caption("No results yet. Press **RUN** to scan.")
-        return
 
-    st.success(f"Showing {len(df_pass)} passing tickers (latest run).")
-    st.dataframe(df_pass, use_container_width=True, height=min(560, 80+28*len(df_pass)))
-    _render_why_buy_block(df_pass)
-    with st.expander("Google-Sheet style view (optional)", expanded=False):
-        st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80+28*len(df_pass)))
-        
 
 # ============================================================
 # 10. UI – Tabs
@@ -799,3 +830,4 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
