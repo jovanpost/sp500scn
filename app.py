@@ -637,10 +637,25 @@ def render_scanner_tab():
     else:
         st.caption("No results yet. Press **RUN** to scan.")
 
-
 # ============================================================
 # 10. UI – Tabs
 # ============================================================
+
+# ---- Brand header (logo + title) ----
+# Uses the local file in repo root: ./logo.png
+hcol1, hcol2 = st.columns([1, 6])
+with hcol1:
+    # Tweak width if you want it larger/smaller
+    st.image("logo.png", caption=None, width=96)
+with hcol2:
+    st.markdown(
+        "<div style='line-height:1.1; margin-top:6px;'>"
+        "<div style='font-size:28px; font-weight:800;'>Edge500</div>"
+        "<div style='color:#777; font-size:14px;'>S&amp;P 500 swing options scanner</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+st.divider()
 
 # Create tabs once with unique variable names
 tab_scanner, tab_history, tab_debug = st.tabs(
@@ -651,11 +666,23 @@ tab_scanner, tab_history, tab_debug = st.tabs(
 with tab_scanner:
     render_scanner_tab()
 
+# ── TAB 2: History & Outcomes
+with tab_history:
+    st.header("History & Outcomes")
+    lastf = latest_pass_file()
+    if lastf:
+        st.success(f"Last run file: {lastf}")
+        try:
+            st.dataframe(pd.read_csv(lastf), use_container_width=True)
+        except Exception:
+            st.info("Pass file exists but could not be read.")
+    dfh = load_outcomes()
+    outcomes_summary(dfh)
+
 # ── TAB 3: Debugger (plain-English + numbers; styled HTML)
 with tab_debug:
     import json, html as _html
 
-    # Debugger-specific CSS (kept local to this tab)
     st.markdown("""
     <style>
       .dbg-wrap { margin-top: 0.5rem; }
@@ -830,4 +857,5 @@ with tab_history:
 
         st.dataframe(df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp)))
         
+
 
