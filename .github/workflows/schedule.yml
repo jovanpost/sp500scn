@@ -1,19 +1,37 @@
+# ============================================================
+# TABLE OF CONTENTS for .github/workflows/schedule.yml
+#
+#  1) Triggers (manual + cron)
+#  2) Permissions
+#  3) Concurrency guard
+#  4) Job: run-and-log
+#     4.1) Repo + Python setup
+#     4.2) Business-day / holiday gate (NY time)
+#     4.3) Intraday de-duplication (only first 10–12 ET slot)
+#     4.4) Echo current NY time (EST/EDT guardrail)
+#     4.5) Run screener and write history files
+#     4.6) Commit history updates to repo
+# ============================================================
+
 name: Scheduled Swing Scan
 
 on:
   workflow_dispatch: {}
   schedule:
-    # 10:30 / 11:30 / 12:30 ET (Mon–Fri). During EDT (UTC-4) these are ~14:30/15:30/16:30 UTC.
+    # Intraday scans at ~10:10 / 11:10 / 12:10 ET (Mon–Fri).
+    # During EDT (UTC-4) these correspond to ~14:10 / 15:10 / 16:10 UTC.
     - cron: "10 14 * * 1-5"
     - cron: "10 15 * * 1-5"
     - cron: "10 16 * * 1-5"
-    # Nightly outcome check after US close (~23:30 UTC)
+    # Nightly outcome check after US close (~23:10 UTC)
     - cron: "10 23 * * 1-5"
 
 permissions:
   contents: write
 
-# prevent overlapping runs
+# ─────────────────────────────────────────────────────────────
+# 3) Concurrency — prevent overlapping runs
+# ─────────────────────────────────────────────────────────────
 concurrency:
   group: swing-scan
   cancel-in-progress: false
@@ -23,6 +41,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ─────────────────────────────────────────────────────────
+      # 4.1) Repo + Python setup
+      # ─────────────────────────────────────────────────────────
       - name: Check out repository (full history)
         uses: actions/checkout@v4
         with:
@@ -38,6 +59,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r scripts/requirements.txt
 
+      # ─────────────────────────────────────────────────────────
+      # 4.2) Business-day / holiday gate (US Markets, NY time)
+      # ─────────────────────────────────────────────────────────
       - name: Business-day / holiday gate (US Markets, NY time)
         id: bizgate
         shell: bash
@@ -69,6 +93,10 @@ jobs:
 
           echo "run=yes" >> $GITHUB_OUTPUT
 
+      # ─────────────────────────────────────────────────────────
+      # 4.3) Intraday de-duplication — only first slot (10–12 ET)
+      #     Nightly slot always allowed.
+      # ─────────────────────────────────────────────────────────
       - name: First intraday wins (allow nightly)
         id: onceday
         if: steps.bizgate.outputs.run == 'yes'
@@ -90,17 +118,31 @@ jobs:
 
           echo "skip=false" >> $GITHUB_OUTPUT
 
+      # ─────────────────────────────────────────────────────────
+      # 4.4) Echo current NY time (EST/EDT guardrail)
+      # ─────────────────────────────────────────────────────────
+      - name: Echo current NY time (guardrail)
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        run: |
+          export TZ=America/New_York
+          echo "Current NY time: $(date)"
+          echo "Event: $GITHUB_EVENT_NAME  |  Ref: $GITHUB_REF"
+
+      # ─────────────────────────────────────────────────────────
+      # 4.5) Run screener + write history files
+      # ─────────────────────────────────────────────────────────
       - name: Run screener and write history files
         if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
         env:
-          # Make local modules importable (swing_options_screener, etc.)
           PYTHONPATH: .:./scripts
         run: |
           set -e
           mkdir -p data/history data/logs
-          # Run the scan; script writes pass_*.csv + updates outcomes.csv
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
+      # ─────────────────────────────────────────────────────────
+      # 4.6) Commit history updates to repo
+      # ─────────────────────────────────────────────────────────
       - name: Commit history updates (pass_*.csv, outcomes.csv, logs)
         run: |
           set -e
@@ -108,17 +150,14 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Stage whatever changed this run (ignore if patterns don't match)
           git add -A data/history/*.csv 2>/dev/null || true
           git add -A data/logs/*.txt     2>/dev/null || true
 
-          # If nothing was staged, there is nothing to commit/push
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          # Commit first, then rebase onto latest main (safe with autostash), then push
           git commit -m "history: update $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git fetch origin main
           git -c rebase.autoStash=true pull --rebase origin main
