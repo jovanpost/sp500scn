@@ -668,7 +668,7 @@ tab_scanner, tab_history, tab_debug = st.tabs(
 with tab_scanner:
     render_scanner_tab()
 
-# ── TAB 2: History & Outcomes (inline renderer to avoid NameError)
+# ── TAB 2: History & Outcomes (inline renderer so we avoid NameError)
 with tab_history:
     st.subheader("Latest recommendations (most recent run)")
     lastf = latest_pass_file()
@@ -689,31 +689,37 @@ with tab_history:
     else:
         dfh = dfh.copy()
 
-        # Ensure expected columns exist
+        # Ensure columns exist
         for c in ["Expiry", "EvalDate", "Notes"]:
             if c not in dfh.columns:
                 dfh[c] = pd.NA
 
-        # Prefer result_status, then Status
+        # Choose status column
         status_col = "result_status" if "result_status" in dfh.columns else ("Status" if "Status" in dfh.columns else None)
 
-        # Helper: force any datetime-ish values to tz-naive (UTC-based) pandas Timestamps
+        # Parse to tz-naive datetimes safely
         def _to_naive(series):
             s = pd.to_datetime(series, errors="coerce", utc=True)
+            # convert to UTC then drop tz -> tz-naive
             return s.dt.tz_convert("UTC").dt.tz_localize(None)
 
-        # Parse & normalize times
         dfh["Expiry_parsed"]   = _to_naive(dfh["Expiry"])
         dfh["EvalDate_parsed"] = _to_naive(dfh["EvalDate"])
 
-        # Backfill missing expiry from EvalDate + 30d (display-only)
+        # Fill missing expiry from EvalDate+30d (display-only)
         need_exp = dfh["Expiry_parsed"].isna() & dfh["EvalDate_parsed"].notna()
         if need_exp.any():
             dfh.loc[need_exp, "Expiry_parsed"] = dfh.loc[need_exp, "EvalDate_parsed"] + pd.Timedelta(days=30)
 
-        # DTE calculation — both sides tz-naive
-        today = pd.Timestamp.utcnow().normalize()
-        dfh["DTE"] = (dfh["Expiry_parsed"].dt.normalize() - today).dt.days
+        # ---- Robust DTE calc (only on valid dates) ----
+        today_ts = pd.Timestamp.utcnow().normalize()  # tz-naive Timestamp
+        mask = dfh["Expiry_parsed"].notna()
+
+        # Start as nullable integer column; fill only where valid
+        dfh["DTE"] = pd.Series(pd.NA, index=dfh.index, dtype="Int64")
+        if mask.any():
+            dte_days = (dfh.loc[mask, "Expiry_parsed"].dt.normalize() - today_ts).dt.days
+            dfh.loc[mask, "DTE"] = dte_days.astype("Int64")
 
         # Sort: earliest expiry first; for ties, most recent EvalDate first; NaT at end
         exp_key = dfh["Expiry_parsed"].fillna(pd.Timestamp.max)
@@ -725,7 +731,6 @@ with tab_history:
         notes_up = dfh_sorted["Notes"].astype(str).str.upper()
         hits   = int(notes_up.isin(["HIT_BY_SELLK", "HIT_BY_TP"]).sum())
         misses = int((notes_up == "EXPIRED_NO_HIT").sum())
-
         if status_col:
             s_up    = dfh_sorted[status_col].astype(str).str.upper()
             settled = int((s_up == "SETTLED").sum())
@@ -736,12 +741,11 @@ with tab_history:
 
         st.caption(f"Settled: {settled} • Hits: {hits} • Misses: {misses} • Pending: {pending}")
 
-        # Use parsed expiry when original is blank, format to YYYY-MM-DD for display
+        # Use parsed expiry when original is blank; format for display
         df_disp = dfh_sorted.copy()
-        use_parsed_mask = df_disp["Expiry"].isna() | (df_disp["Expiry"].astype(str).str.strip() == "")
-        df_disp.loc[use_parsed_mask, "Expiry"] = df_disp.loc[use_parsed_mask, "Expiry_parsed"].dt.strftime("%Y-%m-%d")
+        use_parsed = df_disp["Expiry"].isna() | (df_disp["Expiry"].astype(str).str.strip() == "")
+        df_disp.loc[use_parsed, "Expiry"] = df_disp.loc[use_parsed, "Expiry_parsed"].dt.strftime("%Y-%m-%d")
 
-        # Column order
         preferred = [
             "Ticker","EvalDate","Price","EntryTimeET",
             status_col if status_col else "Status",
@@ -843,6 +847,7 @@ with tab_debug:
         st.markdown(html_top, unsafe_allow_html=True)
         st.markdown(html_snapshot, unsafe_allow_html=True)
         st.markdown(html_json, unsafe_allow_html=True)
+        
         
 
 
