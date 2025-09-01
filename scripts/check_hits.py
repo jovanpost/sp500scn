@@ -9,7 +9,7 @@ sys.path.insert(0, REPO_ROOT)
 HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
 OUT_PATH = os.path.join(HIST_DIR, "outcomes.csv")
 
-from utils.outcomes import check_pending_hits, read_outcomes, write_outcomes
+from utils.outcomes import evaluate_outcomes, read_outcomes, write_outcomes
 
 
 def main() -> None:
@@ -22,7 +22,7 @@ def main() -> None:
         print("outcomes.csv empty; nothing to check.")
         return
 
-    df = check_pending_hits(df)
+    df = evaluate_outcomes(df)
     write_outcomes(df, OUT_PATH)
     print("Updated outcomes.csv")
 
