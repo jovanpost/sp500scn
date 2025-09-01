@@ -2,10 +2,14 @@
 
 ## Hit Checking
 
-Use the `scripts/check_hits.py` utility to update `data/history/outcomes.csv` with trade results.
+Trade outcomes are evaluated by `utils.outcomes.evaluate_outcomes`, which can
+process both pending trades and historical window checks. The repository
+provides small command line helpers that read `data/history/outcomes.csv`, apply
+`evaluate_outcomes`, and write the results back:
 
 ```bash
-python scripts/check_hits.py
+python scripts/check_hits.py      # evaluate pending trades
+python scripts/score_history.py   # evaluate historical windows
 ```
 
-The script fetches daily price data for each pending entry and marks hits or misses accordingly.
+Both scripts fetch daily price data and mark hits or misses as appropriate.

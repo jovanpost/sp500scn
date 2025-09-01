@@ -267,7 +267,7 @@ def settle_pending_outcomes(outcomes_path: str = str(DEFAULT_OUT_PATH)) -> pd.Da
     return out
 
 
-# ----- check_hits logic -----
+# ----- evaluation logic -----
 def _parse_date(s):
     try:
         return datetime.strptime(str(s), "%Y-%m-%d").date()
@@ -275,7 +275,7 @@ def _parse_date(s):
         return None
 
 
-def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
+def _evaluate_pending_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Evaluate pending rows for TP hits or expiry."""
     if df.empty:
         return df
@@ -323,7 +323,6 @@ def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ----- score_history logic -----
 def _coerce_date(s):
     try:
         return pd.to_datetime(s).date()
@@ -394,11 +393,29 @@ def _check_row(row: dict) -> dict:
     return row
 
 
-def score_history(df: pd.DataFrame) -> pd.DataFrame:
+def _score_history_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Apply hit/miss scoring logic to historical rows."""
     if df.empty:
         return df
     rows = df.to_dict(orient="records")
     updated = [_check_row(r) for r in rows]
     return pd.DataFrame(updated)
+
+
+def evaluate_outcomes(df: pd.DataFrame) -> pd.DataFrame:
+    """Evaluate pending rows and historical windows in ``df``.
+
+    - Rows with ``result_status == 'PENDING'`` are checked for target hits or
+      expiry using daily high prices.
+    - Rows with ``Outcome == 'PENDING'`` are evaluated against their
+      ``TargetLevel`` within the provided evaluation window.
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+    if "result_status" in out.columns:
+        out = _evaluate_pending_rows(out)
+    if "Outcome" in out.columns:
+        out = _score_history_rows(out)
+    return out
 
