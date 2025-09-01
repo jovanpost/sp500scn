@@ -74,19 +74,6 @@ def ensure_dirs() -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def pick(df: pd.DataFrame, col: str, default=None):
-    """Safe column getter for a homogeneous value; returns default if missing."""
-    try:
-        if df is None or df.empty or col not in df.columns:
-            return default
-        vals = df[col].dropna().unique()
-        if len(vals) == 0:
-            return default
-        return vals[0]
-    except Exception:
-        return default
-
-
 # --------------------------------------------------------------------
 # 3. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
