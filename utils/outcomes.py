@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, date, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -82,6 +82,30 @@ def _to_date_str(x):
     except Exception:
         pass
     return None
+
+
+def parse_date(s: Any) -> date | None:
+    """Best effort conversion of ``s`` to a :class:`datetime.date`.
+
+    Accepts ``date``/``datetime`` objects, ``pandas`` timestamps or
+    strings. Returns ``None`` if parsing fails or ``s`` is null/NaN.
+    """
+    if s is None:
+        return None
+    if isinstance(s, datetime):
+        return s.date()
+    if isinstance(s, date):
+        return s
+    try:
+        dt = pd.to_datetime(s, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(dt):
+        return None
+    try:
+        return dt.date()
+    except Exception:
+        return None
 
 
 def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
@@ -259,13 +283,6 @@ def settle_pending_outcomes(outcomes_path: str | Path = DEFAULT_OUT_PATH) -> pd.
 
 
 # ----- check_hits logic -----
-def _parse_date(s):
-    try:
-        return datetime.strptime(str(s), "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
 def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
     """Evaluate pending rows for TP hits or expiry."""
     if df.empty:
@@ -280,8 +297,8 @@ def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
         tp = r.get("TP", np.nan)
         tp = float(tp) if pd.notna(tp) else np.nan
 
-        d0 = _parse_date(r.get("EvalDate", ""))
-        exp = _parse_date(r.get("OptExpiry", ""))
+        d0 = parse_date(r.get("EvalDate"))
+        exp = parse_date(r.get("OptExpiry"))
 
         if pd.isna(tp) or d0 is None:
             continue
@@ -315,13 +332,6 @@ def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----- score_history logic -----
-def _coerce_date(s):
-    try:
-        return pd.to_datetime(s).date()
-    except Exception:
-        return None
-
-
 def _check_row(row: dict) -> dict:
     outcome = str(row.get("Outcome", "PENDING")).upper()
     if outcome not in ("PENDING", "YES", "NO"):
@@ -334,8 +344,8 @@ def _check_row(row: dict) -> dict:
     if not tkr:
         return row
 
-    eval_date = _coerce_date(row.get("EvalDate"))
-    window_end = _coerce_date(row.get("WindowEnd"))
+    eval_date = parse_date(row.get("EvalDate"))
+    window_end = parse_date(row.get("WindowEnd"))
     target = row.get("TargetLevel", np.nan)
     try:
         target = float(target)
