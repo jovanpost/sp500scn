@@ -227,6 +227,28 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
     if mode == "pending":
         today = pd.Timestamp.utcnow().date()
 
+        # Determine earliest EvalDate per ticker so we can fetch once.
+        ticker_starts: dict[str, pd.Timestamp] = {}
+        for _, r in df.iterrows():
+            status = str(r.get("result_status") or r.get("Status") or "").upper()
+            if status == "SETTLED":
+                continue
+            tkr = str(r.get("Ticker", "")).upper()
+            ev = _to_date_str(r.get("EvalDate"))
+            if tkr and ev:
+                try:
+                    ev_ts = pd.Timestamp(ev)
+                except Exception:
+                    continue
+                prev = ticker_starts.get(tkr)
+                if prev is None or ev_ts < prev:
+                    ticker_starts[tkr] = ev_ts
+
+        # Cache history DataFrames per ticker.
+        histories: dict[str, pd.DataFrame | None] = {}
+        for tkr, start_dt in ticker_starts.items():
+            histories[tkr] = fetch_history(tkr, start=start_dt, auto_adjust=False)
+
         for i, r in df.iterrows():
             status = str(r.get("result_status") or r.get("Status") or "").upper()
             if status == "SETTLED":
@@ -245,10 +267,14 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
 
             hit_date = None
             if tkr and ev and (target is not None):
+                hist = histories.get(tkr)
                 try:
-                    hist = fetch_history(tkr, start=ev, auto_adjust=False)
                     if hist is not None and not hist.empty and "High" in hist.columns:
-                        highs = hist["High"].astype(float)
+                        try:
+                            hist_slice = hist.loc[pd.Timestamp(ev) :]
+                        except Exception:
+                            hist_slice = hist
+                        highs = hist_slice["High"].astype(float)
                         meet = highs >= float(target)
                         if meet.any():
                             first_idx = meet.idxmax()
