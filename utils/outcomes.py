@@ -122,86 +122,79 @@ def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
 def upsert_and_backfill_outcomes(
     df_pass: pd.DataFrame, outcomes_path: str | Path = DEFAULT_OUT_PATH
 ) -> pd.DataFrame:
-    """Insert new outcomes rows and backfill details for pending ones."""
+    """Insert new outcome rows and backfill pending ones using vector ops."""
+
     out = read_outcomes(outcomes_path).copy()
+    df_pass = df_pass.copy() if df_pass is not None else pd.DataFrame()
 
-    if df_pass is None:
-        df_pass = pd.DataFrame()
-    else:
-        df_pass = df_pass.copy()
+    # Normalize keys
+    for df in (out, df_pass):
+        if not df.empty:
+            df["Ticker"] = df["Ticker"].astype(str).str.upper()
+            df["EvalDate"] = df["EvalDate"].map(_to_date_str)
 
-    key = lambda t, ev: (str(t).upper(), _to_date_str(ev) or "")
-    pass_map = {key(r.get("Ticker"), r.get("EvalDate")): r for _, r in df_pass.iterrows()}
+    pass_cols = ["Ticker", "EvalDate", "Price", "EntryTimeET", "BuyK", "SellK", "TP", "Expiry"]
+    for c in pass_cols:
+        if c not in df_pass.columns:
+            df_pass[c] = pd.NA
 
-    existing_keys = set()
-    if not out.empty:
-        for _, r in out.iterrows():
-            existing_keys.add(key(r.get("Ticker"), r.get("EvalDate")))
+    if not df_pass.empty:
+        expiry = df_pass.get("OptExpiry")
+        if expiry is None:
+            expiry = pd.Series(index=df_pass.index, dtype="object")
+        expiry = expiry.combine_first(df_pass.get("Expiry"))
+        ev = pd.to_datetime(df_pass["EvalDate"], errors="coerce")
+        expiry = pd.to_datetime(expiry, errors="coerce")
+        expiry = expiry.fillna(ev + pd.Timedelta(days=30))
+        df_pass["Expiry"] = expiry.dt.date.astype(str)
 
-    rows_to_append = []
-    for k, r in pass_map.items():
-        if k in existing_keys:
-            continue
-        tkr, ev = k
-        rows_to_append.append(
-            {
-                "Ticker": tkr,
-                "EvalDate": ev,
-                "Price": safe_float(r.get("Price")),
-                "EntryTimeET": r.get("EntryTimeET"),
-                "Status": "PENDING",
-                "result_status": "PENDING",
-                "HitDateET": "",
-                "Expiry": _parse_expiry_from_passrow(r),
-                "BuyK": safe_float(r.get("BuyK")),
-                "SellK": safe_float(r.get("SellK")),
-                "TP": safe_float(r.get("TP")),
-                "Notes": "",
-                "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
-            }
+    merged = pd.merge(
+        out,
+        df_pass[pass_cols],
+        on=["Ticker", "EvalDate"],
+        how="outer",
+        suffixes=("", "_pass"),
+    )
+
+    fill_cols = ["BuyK", "SellK", "TP", "Price", "Expiry"]
+    merged[fill_cols] = merged[fill_cols].combine_first(
+        merged[[f"{c}_pass" for c in fill_cols]].rename(
+            columns=lambda x: x.replace("_pass", "")
         )
+    )
 
-    if rows_to_append:
-        out = pd.concat([out, pd.DataFrame(rows_to_append)], ignore_index=True)
+    new_mask = merged["Status"].isna()
+    merged.loc[new_mask, [
+        "Status",
+        "result_status",
+        "HitDateET",
+        "Notes",
+        "run_date",
+    ]] = [
+        "PENDING",
+        "PENDING",
+        "",
+        "",
+        pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
+    ]
 
-    if not out.empty:
-        for i, r in out.iterrows():
-            if str(r.get("result_status") or r.get("Status") or "").upper() == "SETTLED":
-                continue
-            k = key(r.get("Ticker"), r.get("EvalDate"))
-            pr = pass_map.get(k)
-            if pr is None:
-                if not _to_date_str(r.get("Expiry")) and _to_date_str(r.get("EvalDate")):
-                    try:
-                        exp = (
-                            pd.Timestamp(_to_date_str(r.get("EvalDate")))
-                            + pd.Timedelta(days=30)
-                        ).date().isoformat()
-                        out.at[i, "Expiry"] = exp
-                    except Exception:
-                        pass
-                continue
-            if not _to_date_str(r.get("Expiry")):
-                out.at[i, "Expiry"] = _parse_expiry_from_passrow(pr)
-            if pd.isna(r.get("BuyK")) or r.get("BuyK") == "":
-                out.at[i, "BuyK"] = safe_float(pr.get("BuyK"))
-            if pd.isna(r.get("SellK")) or r.get("SellK") == "":
-                out.at[i, "SellK"] = safe_float(pr.get("SellK"))
-            if pd.isna(r.get("TP")) or r.get("TP") == "":
-                out.at[i, "TP"] = safe_float(pr.get("TP"))
-            if pd.isna(r.get("Price")) or r.get("Price") == "":
-                out.at[i, "Price"] = safe_float(pr.get("Price"))
+    missing_exp = merged["Expiry"].isna() | (merged["Expiry"] == "")
+    ev_dt = pd.to_datetime(merged["EvalDate"], errors="coerce")
+    merged.loc[missing_exp & ev_dt.notna(), "Expiry"] = (
+        ev_dt + pd.Timedelta(days=30)
+    ).dt.date.astype(str)
 
-    if not out.empty:
-        out["run_date"] = out["run_date"].fillna("")
-        out = (
-            out.sort_values(["Ticker", "EvalDate", "run_date"])
-            .drop_duplicates(subset=["Ticker", "EvalDate"], keep="last")
-            .reset_index(drop=True)
-        )
+    merged["run_date"] = merged["run_date"].fillna("")
 
-    write_outcomes(out, outcomes_path)
-    return out
+    merged = merged.drop(columns=[f"{c}_pass" for c in fill_cols])
+    merged = (
+        merged.sort_values(["Ticker", "EvalDate", "run_date"])
+        .drop_duplicates(subset=["Ticker", "EvalDate"], keep="last")
+        .reset_index(drop=True)
+    )
+
+    write_outcomes(merged, outcomes_path)
+    return merged
 
 
 # ----- evaluation -----
