@@ -4,12 +4,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import argparse
 from datetime import datetime, timedelta, time
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
 from utils.numeric import safe_float
 from utils.prices import fetch_history
+from sp_universe import get_sp500_tickers
 
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
@@ -33,26 +35,27 @@ RES_LOOKBACK_DEFAULT = 21
 TARGET_OPT_DAYS_DEFAULT = 30
 OPT_WIDTH_PREFERENCE = [5.0, 2.5, 1.0, 10.0]
 
-# If you pass --universe sp500 from app, you won’t use this:
-DEFAULT_TICKERS = [
-    'ENPH','NCLH','CZR','CCL','DOW','INTC','LUV','SLB','MGM','APA',
-    'HST','HAL','SW','KEY','USB','FITB','HPQ','IVZ','HBAN','TFC',
-    'WY','LKQ','WBD','AES','RF','DVN','FCX','SMCI','F','BEN',
-    'PCG','MRNA','FTV','KIM','BKR','BAX','HPE','OXY','IPG','DOC',
-    'CPRT','BF-B','NWSA','BAC','INVH','CNC','KHC','NWS','CAG','IP',
-    'CPB','CMG','UDR','CMCSA','CTRA','NI','MTCH','VICI','GEN','HRL',
-    'KVUE','EXC','FE','AMCR','PFE','PPL','CNP','MOS','KDP','PSKY',
-    'VTRS','KMI','WBA','BMY','VZ','T','CSX',
-    # extra batch you added
-    "XYZ","DAL","ON","SWK","LYB","TECH","APTV","EMN","GPN","RVTY","CFG","MCHP","ARE","MAS","BG","BXP",
-    "LW","CARR","BBY","IR","EL","KMX","SWKS","DD","IRM","PYPL","EIX","GM","FRT","CSGP","FIS","UPS","WDC",
-    "HAS","ALB","COO","ADM","FTNT","NKE","C","LVS","TRMB","MET","OMC","GEHC","IFF","SYF","UBER","PFG","AOS",
-    "TXT","FAST","TGT","SRE","SOLV","COP","TAP","HSIC","DXCM","BALL","CTSH","MDT","AKAM","TTD","ES","MKC",
-    "WFC","HOLX","REG","EQR","XEL","MRK","GLW","LNT","TPR","OTIS","TSN","OKE","D","TSCO","NEM","AIG","NDAQ",
-    "FOX","EW","MDLZ","GIS","SYY","FOXA","CTVA","PEG","CMS","CSCO","EBAY","NEE","DAY","BRO","PNW","K","CF",
-    "ETR","CHD","SCHW","MO","ROL","L","ACGL","SO","EQT","CVS","SBUX","EVRG","CL","WRB","KO","EXE","O","WMT",
-    "WMB","INCY","VTR","MNST","KR"
-]
+# Fallback CSV for offline mode (very small sample)
+FALLBACK_CSV = Path(__file__).resolve().parent / "data" / "fallback_sp500.csv"
+FALLBACK_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
+
+
+def load_default_tickers():
+    """Return S&P 500 tickers with a minimal offline fallback."""
+    tickers = get_sp500_tickers()
+    if tickers:
+        return tickers
+    # offline fallback
+    try:
+        if FALLBACK_CSV.exists():
+            return [
+                line.strip().upper()
+                for line in FALLBACK_CSV.read_text().splitlines()
+                if line.strip()
+            ]
+    except Exception:
+        pass
+    return list(FALLBACK_TICKERS)
 
 # -------------------------
 # Helpers
@@ -557,7 +560,7 @@ def run_scan(
     Entry-point for Streamlit and automation.
     Always returns full columns including options fields (empty if unavailable).
     """
-    tickers = list(tickers) if tickers else list(DEFAULT_TICKERS)
+    tickers = list(tickers) if tickers else load_default_tickers()
     kwargs = dict(
         res_days=res_days,
         rel_vol_min=rel_vol_min,
@@ -644,7 +647,7 @@ def main():
     p.add_argument("--opt-days", type=int, default=TARGET_OPT_DAYS_DEFAULT)
     args = p.parse_args()
 
-    tickers = parse_ticker_text(args.tickers) if args.tickers else list(DEFAULT_TICKERS)
+    tickers = parse_ticker_text(args.tickers) if args.tickers else load_default_tickers()
 
     if args.explain:
         explain_ticker(args.explain.upper(),
