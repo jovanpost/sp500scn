@@ -12,7 +12,8 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+
+from .prices import fetch_history
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HIST_DIR = REPO_ROOT / "data" / "history"
@@ -197,13 +198,7 @@ def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str
     try:
         if not ticker or threshold is None:
             return None
-        df = yf.download(
-            ticker,
-            start=start_date,
-            progress=False,
-            auto_adjust=False,
-            interval="1d",
-        )
+        df = fetch_history(ticker, start=start_date, auto_adjust=False)
         if df is None or df.empty or "High" not in df.columns:
             return None
         meet = df["High"] >= float(threshold)
@@ -300,10 +295,7 @@ def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
         if pd.isna(tp) or d0 is None:
             continue
 
-        try:
-            hist = yf.Ticker(tkr).history(start=d0, end=today, auto_adjust=False)
-        except Exception:
-            hist = None
+        hist = fetch_history(tkr, start=d0, end=today, auto_adjust=False)
 
         hit_time = ""
         hit_price = ""
@@ -372,39 +364,34 @@ def _check_row(row: dict) -> dict:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
 
-    try:
-        df = yf.Ticker(tkr).history(
-            start=start,
-            end=stop + pd.Timedelta(days=1),
-            auto_adjust=False,
-            actions=False,
-        )
-        if df is None or df.empty:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            return row
-
-        highs = df["High"].dropna()
-        if highs.empty:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            return row
-
-        hit_mask = highs >= target
-        if hit_mask.any():
-            first_idx = hit_mask[hit_mask].index[0]
-            row["Outcome"] = "YES"
-            row["HitDate"] = first_idx.date().isoformat()
-            row["MaxHigh"] = float(highs.max())
-        else:
-            row["MaxHigh"] = float(highs.max())
-            if today > window_end:
-                row["Outcome"] = "NO"
-
+    df = fetch_history(
+        tkr,
+        start=start,
+        end=stop + pd.Timedelta(days=1),
+        auto_adjust=False,
+    )
+    if df is None or df.empty:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
 
-    except Exception:
+    highs = df["High"].dropna()
+    if highs.empty:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
+
+    hit_mask = highs >= target
+    if hit_mask.any():
+        first_idx = hit_mask[hit_mask].index[0]
+        row["Outcome"] = "YES"
+        row["HitDate"] = first_idx.date().isoformat()
+        row["MaxHigh"] = float(highs.max())
+    else:
+        row["MaxHigh"] = float(highs.max())
+        if today > window_end:
+            row["Outcome"] = "NO"
+
+    row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return row
 
 
 def score_history(df: pd.DataFrame) -> pd.DataFrame:

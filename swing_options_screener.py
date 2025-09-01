@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from utils.prices import fetch_history
+
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
 except Exception:
@@ -74,20 +76,8 @@ def _fmt_ts(ts):
 
 def _get_history(ticker):
     # UNADJUSTED daily (aligns better with Finviz)
-    try:
-        df = yf.Ticker(ticker).history(period="16mo", auto_adjust=False, actions=False)
-        if df is None or df.empty: return None
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        if df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
-        df.columns = [c.title() for c in df.columns]
-        for col in ('Open','High','Low','Close','Volume'):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception:
-        return None
+    start = pd.Timestamp.today() - pd.DateOffset(months=16)
+    return fetch_history(ticker, start=start, auto_adjust=False)
 
 def _atr_from_ohlc(df, win):
     hl  = df['High'] - df['Low']
