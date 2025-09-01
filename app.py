@@ -17,17 +17,15 @@
 # ============================================================
 # 1. Imports & Safe third-party glue
 # ============================================================
-import os, glob, io, pandas as pd, streamlit as st
+import glob, pandas as pd, streamlit as st
 from datetime import datetime
 import swing_options_screener as sos  # core engine
 from utils.tickers import normalize_symbol
+from utils.io import PASS_DIR, HISTORY_DIR, OUTCOMES_PATH, read_csv
 
 # ============================================================
 # 2. App constants (paths, titles, etc.)
 # ============================================================
-PASS_DIR = "data/pass_logs"
-HIST_DIR = "data/history"
-OUT_FILE = os.path.join(HIST_DIR, "outcomes.csv")
 
 st.set_page_config(
     page_title="Edge500",     # Title shown in browser tab
@@ -149,13 +147,13 @@ def build_why_buy_html(row: dict) -> str:
 def latest_pass_file():
     """Return the newest pass_*.csv from either pass_logs/ or history/."""
     candidates = []
-    for d in [PASS_DIR, HIST_DIR]:
-        candidates.extend(glob.glob(os.path.join(d, "pass_*.csv")))
+    for d in [PASS_DIR, HISTORY_DIR]:
+        candidates.extend(glob.glob(str(d / "pass_*.csv")))
     return sorted(candidates)[-1] if candidates else None
 
 def load_outcomes():
-    if os.path.exists(OUT_FILE):
-        return pd.read_csv(OUT_FILE)
+    if OUTCOMES_PATH.exists():
+        return read_csv(OUTCOMES_PATH)
     return pd.DataFrame()
     
 
