@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import pandas as pd
 import requests
+from utils.tickers import normalize_symbol
 
 CACHE_PATH = "sp500_cache.json"
 CACHE_MAX_AGE_SECONDS = 6 * 60 * 60  # 6 hours
@@ -14,15 +15,6 @@ WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 # Expose last error for the UI to show a helpful message
 LAST_ERROR: Optional[str] = None
-
-def _normalize_symbol(sym: str) -> str:
-    s = (sym or "").strip().upper()
-    # Wikipedia uses dots for classes; Yahoo uses dashes
-    # e.g., BRK.B -> BRK-B, BF.B -> BF-B
-    s = s.replace(".", "-")
-    # Strip any footnote markers or stray spaces
-    s = s.replace("\u200b", "").replace("\xa0", "").strip()
-    return s
 
 def _load_cache() -> Optional[List[str]]:
     try:
@@ -82,7 +74,7 @@ def _parse_tickers_from_html(html: str) -> List[str]:
 
     tickers = []
     for raw in df[sym_col_name].astype(str).tolist():
-        sym = _normalize_symbol(raw)
+        sym = normalize_symbol(raw)
         if sym and sym.isascii():
             tickers.append(sym)
 
