@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from utils.numeric import safe_float
 from utils.prices import fetch_history
 
 try:
@@ -56,15 +57,6 @@ DEFAULT_TICKERS = [
 # -------------------------
 # Helpers
 # -------------------------
-def _to_float(x):
-    if isinstance(x, pd.Series):
-        x = x.iloc[0] if not x.empty else np.nan
-    elif isinstance(x, (np.ndarray, list, tuple)):
-        x = x[0] if len(x) else np.nan
-    if pd.isna(x): return np.nan
-    try: return float(x)
-    except Exception: return np.nan
-
 def _sanitize(val: str) -> str:
     if val is None: return ""
     s = str(val)
@@ -85,7 +77,7 @@ def _atr_from_ohlc(df, win):
     lpc = (df['Low']  - df['Close'].shift(1)).abs()
     tr = pd.concat([hl, hpc, lpc], axis=1).max(axis=1).dropna()
     if len(tr) < win: return np.nan
-    return _to_float(tr.rolling(window=win, min_periods=win).mean().iloc[-1])
+    return safe_float(tr.rolling(window=win, min_periods=win).mean().iloc[-1])
 
 def _recent_pivot_low(df, k=2, lookback_days=40):
     if len(df) < 2*k + 1: return np.nan
@@ -97,7 +89,7 @@ def _recent_pivot_low(df, k=2, lookback_days=40):
         left_ok  = all(lows[idx] < lows[idx - i] for i in range(1, k+1))
         right_ok = all(lows[idx] < lows[idx + i] for i in range(1, k+1) if idx + i < n)
         if left_ok and right_ok:
-            return _to_float(lows[idx])
+            return safe_float(lows[idx])
     return np.nan
 
 # -------------------------
@@ -143,16 +135,16 @@ def _intraday_quote_and_volume(ticker):
     m1 = _get_1m_data(ticker)
     if m1 is not None and not m1.empty:
         last_ts = m1.index[-1]
-        if (now - last_ts).total_seconds() <= 5*60 and np.isfinite(_to_float(m1['Close'].iloc[-1])):
-            last_px = _to_float(m1['Close'].iloc[-1])
-            today_vol = _to_float(m1['Volume'].sum())
+        if (now - last_ts).total_seconds() <= 5*60 and np.isfinite(safe_float(m1['Close'].iloc[-1])):
+            last_px = safe_float(m1['Close'].iloc[-1])
+            today_vol = safe_float(m1['Volume'].sum())
             if np.isfinite(last_px) and today_vol >= 0:
                 return last_px, today_vol, "1m_fresh", last_ts
 
     try:
         fi = yf.Ticker(ticker).fast_info
-        lp = _to_float(fi.get("last_price", np.nan)) if isinstance(fi, dict) else np.nan
-        tv = _to_float(fi.get("last_volume", np.nan)) if isinstance(fi, dict) else np.nan
+        lp = safe_float(fi.get("last_price", np.nan)) if isinstance(fi, dict) else np.nan
+        tv = safe_float(fi.get("last_volume", np.nan)) if isinstance(fi, dict) else np.nan
         if np.isfinite(lp):
             return lp, (tv if np.isfinite(tv) else np.nan), "fast_info", now
     except Exception:
@@ -163,7 +155,7 @@ def _intraday_quote_and_volume(ticker):
 def _previous_close_robust(df_daily, ticker):
     try:
         fi = yf.Ticker(ticker).fast_info
-        pc = _to_float(fi.get('previous_close', np.nan)) if isinstance(fi, dict) else np.nan
+        pc = safe_float(fi.get('previous_close', np.nan)) if isinstance(fi, dict) else np.nan
         if np.isfinite(pc): return pc
     except Exception:
         pass
@@ -171,8 +163,8 @@ def _previous_close_robust(df_daily, ticker):
     idx_dates = df_daily.index.date
     if len(df_daily) == 0: return np.nan
     if idx_dates[-1] == et_today and len(df_daily) >= 2:
-        return _to_float(df_daily['Close'].iloc[-2])
-    return _to_float(df_daily['Close'].iloc[-1])
+        return safe_float(df_daily['Close'].iloc[-2])
+    return safe_float(df_daily['Close'].iloc[-1])
 
 def get_entry_prevclose_todayvol(df_daily, ticker):
     """
@@ -195,16 +187,16 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
             source['vol_src']   = src
             if (src in ('fast_info','no_intraday')) and not np.isfinite(today_vol):
                 if len(idx_dates) and idx_dates[-1] == et_today:
-                    today_vol = _to_float(df_daily['Volume'].iloc[-1])
+                    today_vol = safe_float(df_daily['Volume'].iloc[-1])
                     source['vol_src'] = 'daily_partial'
             if not isinstance(entry_ts, datetime):
                 entry_ts = now
             return entry, prev_close, today_vol, source, entry_ts
 
         if len(idx_dates) and idx_dates[-1] == et_today:
-            entry = _to_float(df_daily['Close'].iloc[-1])
+            entry = safe_float(df_daily['Close'].iloc[-1])
             prev_close = _previous_close_robust(df_daily, ticker)
-            today_vol = _to_float(df_daily['Volume'].iloc[-1])
+            today_vol = safe_float(df_daily['Volume'].iloc[-1])
             source['session']   = 'OPEN'
             source['entry_src'] = 'daily_partial_close'
             source['vol_src']   = 'daily_partial'
@@ -212,7 +204,7 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
             return entry, prev_close, today_vol, source, entry_ts
 
         if len(df_daily) >= 1:
-            entry = _to_float(df_daily['Close'].iloc[-1])
+            entry = safe_float(df_daily['Close'].iloc[-1])
             prev_close = _previous_close_robust(df_daily, ticker)
             today_vol = np.nan
             source['session']   = 'OPEN'
@@ -230,17 +222,17 @@ def get_entry_prevclose_todayvol(df_daily, ticker):
 
     market_close_time = time(16, 0, 0)
     if len(idx_dates) and idx_dates[-1] == et_today:
-        entry = _to_float(df_daily['Close'].iloc[-1])
-        prev_close = _to_float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else np.nan
-        today_vol = _to_float(df_daily['Volume'].iloc[-1])
+        entry = safe_float(df_daily['Close'].iloc[-1])
+        prev_close = safe_float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else np.nan
+        today_vol = safe_float(df_daily['Volume'].iloc[-1])
         entry_ts = datetime.combine(df_daily.index[-1].date(), market_close_time, tzinfo=ZoneInfo("America/New_York"))
         source['entry_src'] = 'daily_today_close'
         source['vol_src']   = 'daily_today'
         return entry, prev_close, today_vol, source, entry_ts
 
-    entry = _to_float(df_daily['Close'].iloc[-1])
-    prev_close = _to_float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else np.nan
-    today_vol = _to_float(df_daily['Volume'].iloc[-1])
+    entry = safe_float(df_daily['Close'].iloc[-1])
+    prev_close = safe_float(df_daily['Close'].iloc[-2]) if len(df_daily) >= 2 else np.nan
+    today_vol = safe_float(df_daily['Volume'].iloc[-1])
     last_trading_date = df_daily.index[-1].date()
     entry_ts = datetime.combine(last_trading_date, market_close_time, tzinfo=ZoneInfo("America/New_York"))
     source['entry_src'] = 'daily_last_close'
@@ -259,7 +251,7 @@ def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
 
     base_series = df_daily['Volume'].iloc[-64:-1]  # last 63 completed
     if base_series.empty: return np.nan
-    avg_63 = _to_float(base_series.median() if use_median else base_series.mean())
+    avg_63 = safe_float(base_series.median() if use_median else base_series.mean())
     if not np.isfinite(avg_63) or avg_63 <= 0: return np.nan
 
     now = _now_et()
@@ -300,9 +292,9 @@ def _nearest_expiration(t: yf.Ticker, target_days=TARGET_OPT_DAYS_DEFAULT):
     return best, None
 
 def _mid_or_last(row):
-    bid = _to_float(row.get('bid', np.nan))
-    ask = _to_float(row.get('ask', np.nan))
-    last= _to_float(row.get('lastPrice', np.nan))
+    bid = safe_float(row.get('bid', np.nan))
+    ask = safe_float(row.get('ask', np.nan))
+    last = safe_float(row.get('lastPrice', np.nan))
     if np.isfinite(bid) and np.isfinite(ask) and ask >= bid:
         return 0.5*(bid+ask)
     if np.isfinite(last):
@@ -312,8 +304,8 @@ def _mid_or_last(row):
     return np.nan
 
 def _conservative_price(long_row, short_row):
-    ask_long  = _to_float(long_row.get('ask', np.nan))
-    bid_short = _to_float(short_row.get('bid', np.nan))
+    ask_long  = safe_float(long_row.get('ask', np.nan))
+    bid_short = safe_float(short_row.get('bid', np.nan))
     if not np.isfinite(ask_long): ask_long = _mid_or_last(long_row)
     if not np.isfinite(bid_short): bid_short = _mid_or_last(short_row)
     return ask_long - bid_short
@@ -335,7 +327,7 @@ def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAU
         if calls is None or calls.empty: return None, "no_calls"
 
         sell_row = calls.iloc[(calls['strike'] - tp_price).abs().idxmin()]
-        sell_k = _to_float(sell_row['strike'])
+        sell_k = safe_float(sell_row['strike'])
 
         buy_row = None
         buy_k = None
@@ -343,14 +335,14 @@ def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAU
             candidate = sell_k - w
             if not calls[np.isclose(calls['strike'], candidate)].empty:
                 buy_row = _row_for_strike(calls, candidate)
-                buy_k = _to_float(buy_row['strike'])
+                buy_k = safe_float(buy_row['strike'])
                 break
         if buy_row is None:
             lower_calls = calls[calls['strike'] < sell_k]
             if lower_calls.empty:
                 return None, "no_lower_strike"
             buy_row = lower_calls.iloc[(lower_calls['strike'] - (sell_k - 5)).abs().idxmin()]
-            buy_k = _to_float(buy_row['strike'])
+            buy_k = safe_float(buy_row['strike'])
 
         mid_long  = _mid_or_last(buy_row)
         mid_short = _mid_or_last(sell_row)
@@ -412,7 +404,7 @@ def evaluate_ticker(
 
     # Resistance: prior N-day high excluding today
     rolling_high = df['High'].rolling(window=res_days, min_periods=res_days).max()
-    resistance = _to_float(rolling_high.shift(1).iloc[-1])
+    resistance = safe_float(rolling_high.shift(1).iloc[-1])
     if not (np.isfinite(resistance) and resistance > entry): return None, "no_upside_to_resistance"
 
     # Targets & reward
@@ -449,7 +441,7 @@ def evaluate_ticker(
     examples_str = "; ".join(examples)
 
     # Support candidates
-    swing_low_21 = _to_float(df['Low'].iloc[-support_lookback_days:].min())
+    swing_low_21 = safe_float(df['Low'].iloc[-support_lookback_days:].min())
     pivot_low    = _recent_pivot_low(df, k=pivot_k, lookback_days=pivot_lookback_days)
     atr_stop     = entry - ATR_STOP_MULT * (daily_atr if np.isfinite(daily_atr) else 0.0)
 
