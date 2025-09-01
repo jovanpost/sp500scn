@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .numeric import safe_float
 from .prices import fetch_history
 from .io import OUTCOMES_CSV, read_csv, write_csv
 
@@ -52,20 +53,15 @@ def write_outcomes(df: pd.DataFrame, path: str | Path = DEFAULT_OUT_PATH) -> Non
 
 
 # ----- helpers used across operations -----
-def _safe_float(x):
-    try:
-        if x is None:
-            return None
-        if isinstance(x, float) and math.isnan(x):
-            return None
-        return float(x)
-    except Exception:
-        return None
-
 
 def _first_nonempty(*vals):
     for v in vals:
-        if v is not None and str(v).strip() != "":
+        if v is None:
+            continue
+        if isinstance(v, float) and math.isnan(v):
+            continue
+        s = str(v).strip()
+        if s and s.lower() != "nan":
             return v
     return None
 
@@ -151,15 +147,15 @@ def upsert_and_backfill_outcomes(
             {
                 "Ticker": tkr,
                 "EvalDate": ev,
-                "Price": _safe_float(r.get("Price")),
+                "Price": safe_float(r.get("Price")),
                 "EntryTimeET": r.get("EntryTimeET"),
                 "Status": "PENDING",
                 "result_status": "PENDING",
                 "HitDateET": "",
                 "Expiry": _parse_expiry_from_passrow(r),
-                "BuyK": _safe_float(r.get("BuyK")),
-                "SellK": _safe_float(r.get("SellK")),
-                "TP": _safe_float(r.get("TP")),
+                "BuyK": safe_float(r.get("BuyK")),
+                "SellK": safe_float(r.get("SellK")),
+                "TP": safe_float(r.get("TP")),
                 "Notes": "",
                 "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
             }
@@ -188,13 +184,13 @@ def upsert_and_backfill_outcomes(
             if not _to_date_str(r.get("Expiry")):
                 out.at[i, "Expiry"] = _parse_expiry_from_passrow(pr)
             if pd.isna(r.get("BuyK")) or r.get("BuyK") == "":
-                out.at[i, "BuyK"] = _safe_float(pr.get("BuyK"))
+                out.at[i, "BuyK"] = safe_float(pr.get("BuyK"))
             if pd.isna(r.get("SellK")) or r.get("SellK") == "":
-                out.at[i, "SellK"] = _safe_float(pr.get("SellK"))
+                out.at[i, "SellK"] = safe_float(pr.get("SellK"))
             if pd.isna(r.get("TP")) or r.get("TP") == "":
-                out.at[i, "TP"] = _safe_float(pr.get("TP"))
+                out.at[i, "TP"] = safe_float(pr.get("TP"))
             if pd.isna(r.get("Price")) or r.get("Price") == "":
-                out.at[i, "Price"] = _safe_float(pr.get("Price"))
+                out.at[i, "Price"] = safe_float(pr.get("Price"))
 
     if not out.empty:
         out["run_date"] = out["run_date"].fillna("")
@@ -239,7 +235,7 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
             tkr = str(r.get("Ticker", "")).upper()
             ev = _to_date_str(r.get("EvalDate"))
             expiry = _to_date_str(r.get("Expiry"))
-            target = _first_nonempty(_safe_float(r.get("SellK")), _safe_float(r.get("TP")))
+            target = _first_nonempty(safe_float(r.get("SellK")), safe_float(r.get("TP")))
 
             if not expiry and ev:
                 try:
