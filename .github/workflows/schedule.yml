@@ -140,6 +140,14 @@ jobs:
           mkdir -p data/history data/logs
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
+      - name: Evaluate outcomes
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        env:
+          PYTHONPATH: .:./scripts
+        run: |
+          set -e
+          python scripts/evaluate_outcomes.py --mode pending
+
       # ─────────────────────────────────────────────────────────
       # 4.6) Commit history updates to repo
       # ─────────────────────────────────────────────────────────
