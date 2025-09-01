@@ -1,7 +1,9 @@
 import json
 import html as _html
+import pandas as pd
 import streamlit as st
 import swing_options_screener as sos
+from utils.prices import fetch_history
 from utils.tickers import normalize_symbol
 
 
@@ -108,29 +110,6 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
     return "<br>".join(lines)
 
 
-def _yf_fetch_daily(symbol: str):
-    """Fallback: pull ~6 months daily bars via yfinance and shape like engine OHLCV."""
-    try:
-        import yfinance as yf
-        df = yf.download(symbol, period="6mo", interval="1d", auto_adjust=False, progress=False)
-        if df is None or df.empty:
-            return None
-        cols = {c.lower(): c for c in df.columns}
-        for need in ["Open", "High", "Low", "Close", "Volume"]:
-            if need not in df.columns:
-                for k, v in cols.items():
-                    if k == need.lower():
-                        break
-                else:
-                    return None
-        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-        if df.empty:
-            return None
-        return df
-    except Exception:
-        return None
-
-
 def diagnose_ticker(
     ticker: str,
     res_days=None,
@@ -150,7 +129,11 @@ def diagnose_ticker(
     df = sos._get_history(symbol) if symbol else None
 
     if df is None and symbol:
-        df = _yf_fetch_daily(symbol)
+        df = fetch_history(
+            symbol,
+            start=pd.Timestamp.today() - pd.DateOffset(months=6),
+            auto_adjust=False,
+        )
 
     entry = prev_close = today_vol = None
     src = {}
