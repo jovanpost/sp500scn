@@ -129,9 +129,9 @@ jobs:
           echo "Event: $GITHUB_EVENT_NAME  |  Ref: $GITHUB_REF"
 
       # ─────────────────────────────────────────────────────────
-      # 4.5) Run screener + write history files
+      # 4.5) Run screener via scripts/run_and_log.py + write history files
       # ─────────────────────────────────────────────────────────
-      - name: Run screener and write history files
+      - name: Run scripts/run_and_log.py and write history files
         if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
         env:
           PYTHONPATH: .:./scripts
