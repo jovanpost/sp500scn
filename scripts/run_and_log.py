@@ -28,7 +28,11 @@ except Exception:
 # Shared outcome helpers
 from _bootstrap import add_repo_root; add_repo_root()
 from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, write_csv
-from utils.outcomes import upsert_and_backfill_outcomes, settle_pending_outcomes
+from utils.outcomes import (
+    upsert_and_backfill_outcomes,
+    evaluate_outcomes,
+    write_outcomes,
+)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -92,9 +96,10 @@ def main() -> int:
             print(f"[run_and_log] wrote {pass_path}")
             wrote_pass = True
 
-            # Update outcomes.csv (insert new, backfill, settle)
-            upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
-            settle_pending_outcomes(OUTCOMES_CSV)
+            # Update outcomes.csv (insert new, backfill, evaluate)
+            out_df = upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
+            out_df = evaluate_outcomes(out_df, mode="pending")
+            write_outcomes(out_df, OUTCOMES_CSV)
         else:
             print("[run_and_log] scan returned no passing tickers.")
 
