@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
@@ -202,119 +202,8 @@ def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str
         return None
     return None
 
+# ----- evaluation helpers -----
 
-def settle_pending_outcomes(outcomes_path: str | Path = DEFAULT_OUT_PATH) -> pd.DataFrame:
-    """Mark pending outcomes as settled if hit or expired."""
-    out = read_outcomes(outcomes_path).copy()
-    if out.empty:
-        return out
-
-    today = pd.Timestamp.utcnow().date()
-    changed = False
-
-    for i, r in out.iterrows():
-        status = str(r.get("result_status") or r.get("Status") or "").upper()
-        if status == "SETTLED":
-            continue
-
-        tkr = str(r.get("Ticker", "")).upper()
-        ev = _to_date_str(r.get("EvalDate"))
-        expiry = _to_date_str(r.get("Expiry"))
-        target = _first_nonempty(_safe_float(r.get("SellK")), _safe_float(r.get("TP")))
-
-        if not expiry and ev:
-            try:
-                expiry = (pd.Timestamp(ev) + pd.Timedelta(days=30)).date().isoformat()
-            except Exception:
-                expiry = ev
-
-        hit_date = None
-        if tkr and ev and (target is not None):
-            hit_date = _first_hit_date_since(tkr, ev, target)
-
-        if hit_date:
-            out.at[i, "HitDateET"] = f"{hit_date} 16:00:00 ET"
-            out.at[i, "Notes"] = (
-                "HIT_BY_SELLK" if pd.notna(r.get("SellK")) else "HIT_BY_TP"
-            )
-            out.at[i, "Status"] = "SETTLED"
-            out.at[i, "result_status"] = "SETTLED"
-            changed = True
-            continue
-
-        if expiry:
-            try:
-                exp_d = pd.Timestamp(expiry).date()
-                if today > exp_d:
-                    out.at[i, "Status"] = "SETTLED"
-                    out.at[i, "result_status"] = "SETTLED"
-                    out.at[i, "Notes"] = "EXPIRED_NO_HIT"
-                    changed = True
-            except Exception:
-                pass
-
-    if changed:
-        write_outcomes(out, outcomes_path)
-    return out
-
-
-# ----- check_hits logic -----
-def _parse_date(s):
-    try:
-        return datetime.strptime(str(s), "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
-    """Evaluate pending rows for TP hits or expiry."""
-    if df.empty:
-        return df
-
-    today = datetime.now(timezone.utc).date()
-
-    pend_mask = df.get("result_status", "") == "PENDING"
-    df_p = df[pend_mask].copy()
-    for idx, r in df_p.iterrows():
-        tkr = str(r["Ticker"])
-        tp = r.get("TP", np.nan)
-        tp = float(tp) if pd.notna(tp) else np.nan
-
-        d0 = _parse_date(r.get("EvalDate", ""))
-        exp = _parse_date(r.get("OptExpiry", ""))
-
-        if pd.isna(tp) or d0 is None:
-            continue
-
-        hist = fetch_history(tkr, start=d0, end=today, auto_adjust=False)
-
-        hit_time = ""
-        hit_price = ""
-        hit = False
-        if hist is not None and not hist.empty and "High" in hist.columns:
-            highs = hist["High"].astype(float)
-            hit_idx = highs[highs >= tp]
-            if not hit_idx.empty:
-                hit = True
-                first = hit_idx.index[0]
-                hit_time = first.strftime("%Y-%m-%d")
-                hit_price = float(highs.loc[first])
-
-        if hit:
-            df.loc[df.index == idx, "result_status"] = "HIT"
-            df.loc[df.index == idx, "result_note"] = "TP reached by daily high"
-            df.loc[df.index == idx, "hit_time"] = hit_time
-            df.loc[df.index == idx, "hit_price"] = hit_price
-        else:
-            if exp is not None and today > exp:
-                df.loc[df.index == idx, "result_status"] = "MISS"
-                df.loc[df.index == idx, "result_note"] = "Expired without TP"
-                df.loc[df.index == idx, "hit_time"] = ""
-                df.loc[df.index == idx, "hit_price"] = ""
-    return df
-
-
-# ----- score_history logic -----
 def _coerce_date(s):
     try:
         return pd.to_datetime(s).date()
@@ -326,14 +215,11 @@ def _check_row(row: dict) -> dict:
     outcome = str(row.get("Outcome", "PENDING")).upper()
     if outcome not in ("PENDING", "YES", "NO"):
         outcome = "PENDING"
-
     if outcome != "PENDING":
         return row
-
     tkr = str(row.get("Ticker", "")).strip().upper()
     if not tkr:
         return row
-
     eval_date = _coerce_date(row.get("EvalDate"))
     window_end = _coerce_date(row.get("WindowEnd"))
     target = row.get("TargetLevel", np.nan)
@@ -341,20 +227,15 @@ def _check_row(row: dict) -> dict:
         target = float(target)
     except Exception:
         target = np.nan
-
     today = date.today()
-
     if eval_date is None or window_end is None or not np.isfinite(target):
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
-
     start = pd.Timestamp(eval_date)
     stop = pd.Timestamp(min(window_end, today))
-
     if start > stop:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
-
     df = fetch_history(
         tkr,
         start=start,
@@ -364,12 +245,10 @@ def _check_row(row: dict) -> dict:
     if df is None or df.empty:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
-
     highs = df["High"].dropna()
     if highs.empty:
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         return row
-
     hit_mask = highs >= target
     if hit_mask.any():
         first_idx = hit_mask[hit_mask].index[0]
@@ -380,16 +259,51 @@ def _check_row(row: dict) -> dict:
         row["MaxHigh"] = float(highs.max())
         if today > window_end:
             row["Outcome"] = "NO"
-
     row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     return row
 
 
-def score_history(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply hit/miss scoring logic to historical rows."""
+def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
+    """Evaluate pending rows or historical windows based on ``mode``."""
     if df.empty:
         return df
-    rows = df.to_dict(orient="records")
-    updated = [_check_row(r) for r in rows]
-    return pd.DataFrame(updated)
-
+    if mode == "historical":
+        rows = df.to_dict(orient="records")
+        updated = [_check_row(r) for r in rows]
+        return pd.DataFrame(updated)
+    if mode != "pending":
+        raise ValueError("mode must be 'pending' or 'historical'")
+    out = df.copy()
+    today = pd.Timestamp.utcnow().date()
+    for i, r in out.iterrows():
+        status = str(r.get("result_status") or r.get("Status") or "").upper()
+        if status == "SETTLED":
+            continue
+        tkr = str(r.get("Ticker", "")).upper()
+        ev = _to_date_str(r.get("EvalDate"))
+        expiry = _to_date_str(r.get("Expiry"))
+        target = _first_nonempty(_safe_float(r.get("SellK")), _safe_float(r.get("TP")))
+        if not expiry and ev:
+            try:
+                expiry = (pd.Timestamp(ev) + pd.Timedelta(days=30)).date().isoformat()
+            except Exception:
+                expiry = ev
+        hit_date = None
+        if tkr and ev and (target is not None):
+            hit_date = _first_hit_date_since(tkr, ev, target)
+        if hit_date:
+            out.at[i, "HitDateET"] = f"{hit_date} 16:00:00 ET"
+            out.at[i, "Notes"] = "HIT_BY_SELLK" if pd.notna(r.get("SellK")) else "HIT_BY_TP"
+            out.at[i, "Status"] = "SETTLED"
+            out.at[i, "result_status"] = "SETTLED"
+            continue
+        if expiry:
+            try:
+                exp_d = pd.Timestamp(expiry).date()
+                if today > exp_d:
+                    out.at[i, "Status"] = "SETTLED"
+                    out.at[i, "result_status"] = "SETTLED"
+                    out.at[i, "Notes"] = "EXPIRED_NO_HIT"
+            except Exception:
+                pass
+    return out
