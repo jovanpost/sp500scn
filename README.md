@@ -4,6 +4,9 @@
 
 Use the `scripts/evaluate_outcomes.py` utility to update `data/history/outcomes.csv` with trade results.
 
+`outcomes.csv` tracks columns such as `Ticker`, `EvalDate`, `Price`, `LastPrice`,
+`LastPriceAt`, `PctToTarget`, option strikes, status fields, and other notes.
+
 For pending trades:
 
 ```bash

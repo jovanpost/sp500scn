@@ -21,6 +21,9 @@ OUTCOLS = [
     "Ticker",
     "EvalDate",
     "Price",
+    "LastPrice",
+    "LastPriceAt",
+    "PctToTarget",
     "EntryTimeET",
     "Status",
     "result_status",
@@ -143,11 +146,21 @@ def upsert_and_backfill_outcomes(
         if k in existing_keys:
             continue
         tkr, ev = k
+        price = safe_float(r.get("Price"))
+        target = _first_nonempty(safe_float(r.get("SellK")), safe_float(r.get("TP")))
+        pct_to_target = (
+            (float(price) - float(target)) / float(target)
+            if (price is not None and target is not None and not math.isnan(float(target)))
+            else pd.NA
+        )
         rows_to_append.append(
             {
                 "Ticker": tkr,
                 "EvalDate": ev,
-                "Price": safe_float(r.get("Price")),
+                "Price": price,
+                "LastPrice": price,
+                "LastPriceAt": r.get("EntryTimeET"),
+                "PctToTarget": pct_to_target,
                 "EntryTimeET": r.get("EntryTimeET"),
                 "Status": "PENDING",
                 "result_status": "PENDING",
@@ -250,14 +263,41 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
             histories[tkr] = fetch_history(tkr, start=start_dt, auto_adjust=False)
 
         for i, r in df.iterrows():
-            status = str(r.get("result_status") or r.get("Status") or "").upper()
-            if status == "SETTLED":
-                continue
-
             tkr = str(r.get("Ticker", "")).upper()
             ev = _to_date_str(r.get("EvalDate"))
             expiry = _to_date_str(r.get("Expiry"))
             target = _first_nonempty(safe_float(r.get("SellK")), safe_float(r.get("TP")))
+
+            hist = histories.get(tkr)
+            last_price = None
+            last_price_at = None
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                try:
+                    closes = hist["Close"].dropna().astype(float)
+                    if not closes.empty:
+                        last_price = float(closes.iloc[-1])
+                        ts = closes.index[-1]
+                        if isinstance(ts, pd.Timestamp):
+                            last_price_at = f"{ts.date().isoformat()} 16:00:00 ET"
+                        else:
+                            last_price_at = f"{_to_date_str(ts)} 16:00:00 ET"
+                except Exception:
+                    last_price = None
+                    last_price_at = None
+
+            if last_price is not None:
+                df.at[i, "LastPrice"] = last_price
+                if last_price_at:
+                    df.at[i, "LastPriceAt"] = last_price_at
+                if target is not None and not math.isnan(float(target)):
+                    try:
+                        df.at[i, "PctToTarget"] = (last_price - float(target)) / float(target)
+                    except Exception:
+                        pass
+
+            status = str(r.get("result_status") or r.get("Status") or "").upper()
+            if status == "SETTLED":
+                continue
 
             if not expiry and ev:
                 try:
@@ -267,7 +307,6 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
 
             hit_date = None
             if tkr and ev and (target is not None):
-                hist = histories.get(tkr)
                 try:
                     if hist is not None and not hist.empty and "High" in hist.columns:
                         try:
