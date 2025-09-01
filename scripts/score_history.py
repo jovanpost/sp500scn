@@ -6,18 +6,16 @@
 # - If hit: Outcome=YES, HitDate=first hit date, MaxHigh=max high in window
 # - Else if today > WindowEnd and not hit: Outcome=NO, MaxHigh=max high
 # - Else: still PENDING, but refreshes CheckedAtUTC
-import os
+from pathlib import Path
 import sys
 from datetime import datetime, date
 import pandas as pd
 import numpy as np
 import yfinance as yf
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-
-HIST_DIR = os.path.join(ROOT, "data", "history")
-OUTCOMES_CSV = os.path.join(HIST_DIR, "outcomes.csv")
+# Ensure repo root on path for utility imports
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from utils.io import OUTCOMES_CSV, read_csv, write_csv
 
 
 def _coerce_date(s):
@@ -100,11 +98,11 @@ def _check_row(row):
 
 
 def main():
-    if not os.path.exists(OUTCOMES_CSV):
+    if not OUTCOMES_CSV.exists():
         print("No outcomes.csv yet; nothing to score.")
         return
 
-    df = pd.read_csv(OUTCOMES_CSV)
+    df = read_csv(OUTCOMES_CSV)
     if df.empty:
         print("outcomes.csv empty; nothing to score.")
         return
@@ -112,7 +110,7 @@ def main():
     rows = df.to_dict(orient="records")
     updated = [_check_row(r) for r in rows]
     new_df = pd.DataFrame(updated)
-    new_df.to_csv(OUTCOMES_CSV, index=False)
+    write_csv(OUTCOMES_CSV, new_df)
     print(f"Scored {len(new_df)} rows → wrote outcomes.csv")
 
 

@@ -6,15 +6,16 @@ Update data/history/outcomes.csv:
 - If past OptExpiry and never hit -> mark MISS.
 """
 
-import os, sys, csv
+from pathlib import Path
+import sys
 from datetime import datetime, date, timezone
 import pandas as pd
 import numpy as np
 import yfinance as yf
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
-OUT_PATH = os.path.join(HIST_DIR, "outcomes.csv")
+# Ensure repo root on path for utility imports
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from utils.io import OUTCOMES_CSV, read_csv, write_csv
 
 def _parse_date(s):
     try:
@@ -23,11 +24,11 @@ def _parse_date(s):
         return None
 
 def main():
-    if not os.path.exists(OUT_PATH):
+    if not OUTCOMES_CSV.exists():
         print("No outcomes.csv yet; nothing to check.")
         return
 
-    df = pd.read_csv(OUT_PATH)
+    df = read_csv(OUTCOMES_CSV)
     if df.empty:
         print("outcomes.csv empty; nothing to check.")
         return
@@ -85,7 +86,7 @@ def main():
                 df.loc[df.index == idx, "hit_time"]      = ""
                 df.loc[df.index == idx, "hit_price"]     = ""
 
-    df.to_csv(OUT_PATH, index=False, quoting=csv.QUOTE_MINIMAL)
+    write_csv(OUTCOMES_CSV, df)
     print("Updated outcomes.csv")
 
 if __name__ == "__main__":
