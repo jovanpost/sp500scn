@@ -46,7 +46,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     dfh = dfh.copy()
 
     # Ensure expected columns exist so downstream ops don't KeyError
-    for c in ["Expiry", "EvalDate", "Notes"]:
+    for c in ["Expiry", "EvalDate", "Notes", "LastPrice", "LastPriceAt", "PctToTarget"]:
         if c not in dfh.columns:
             dfh[c] = pd.NA
 
@@ -118,6 +118,9 @@ def outcomes_summary(dfh: pd.DataFrame):
         "Ticker",
         "EvalDate",
         "Price",
+        "LastPrice",
+        "LastPriceAt",
+        "PctToTarget",
         "EntryTimeET",
         status_col if status_col else "Status",
         "HitDateET",
@@ -132,8 +135,23 @@ def outcomes_summary(dfh: pd.DataFrame):
     if cols:
         df_disp = df_disp[cols]
 
+    styler = df_disp
+    if "PctToTarget" in df_disp.columns:
+        df_disp["PctToTarget"] = pd.to_numeric(df_disp["PctToTarget"], errors="coerce")
+
+        def _pct_color(val):
+            if pd.isna(val):
+                return ""
+            return "color: green;" if abs(val) <= 0.05 else ""
+
+        styler = (
+            df_disp.style.format({"PctToTarget": "{:.1%}"}).applymap(
+                _pct_color, subset=["PctToTarget"]
+            )
+        )
+
     st.dataframe(
-        df_disp, use_container_width=True, height=min(600, 80 + 28 * len(df_disp))
+        styler, use_container_width=True, height=min(600, 80 + 28 * len(df_disp))
     )
 
 
