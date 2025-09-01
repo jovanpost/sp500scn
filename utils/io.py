@@ -9,6 +9,7 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
+PASS_DIR = DATA_DIR / "pass_logs"
 OUTCOMES_CSV = HISTORY_DIR / "outcomes.csv"
 
 
@@ -28,3 +29,12 @@ def write_csv(path: Union[str, Path], df: pd.DataFrame, **kwargs) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(p, index=False, **kwargs)
+
+
+def list_pass_files() -> list[Path]:
+    """Return sorted paths for ``pass_*.{csv,psv}`` from relevant directories."""
+    paths: list[Path] = []
+    for d in [PASS_DIR, HISTORY_DIR, REPO_ROOT / "history"]:
+        paths.extend(d.glob("pass_*.csv"))
+        paths.extend(d.glob("pass_*.psv"))
+    return sorted(paths)

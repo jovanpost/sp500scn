@@ -1,19 +1,12 @@
-import glob
-import os
 import pandas as pd
 import streamlit as st
-from utils.io import DATA_DIR, HISTORY_DIR, read_csv
+from utils.io import list_pass_files, read_csv
 from utils.outcomes import read_outcomes
-
-PASS_DIR = DATA_DIR / "pass_logs"
 
 
 def load_history_df() -> pd.DataFrame:
     """Return a DataFrame concatenating all historical PASS snapshots."""
-    paths = []
-    paths.extend(sorted(glob.glob(str(HISTORY_DIR / "pass_*.psv"))))
-    # Legacy fallback
-    paths.extend(sorted(glob.glob("history/pass_*.psv")))
+    paths = [p for p in list_pass_files() if p.suffix == ".psv"]
 
     if not paths:
         return pd.DataFrame()
@@ -22,7 +15,7 @@ def load_history_df() -> pd.DataFrame:
     for p in paths:
         try:
             df = pd.read_csv(p, sep="|")
-            df["__source_file"] = os.path.basename(p)
+            df["__source_file"] = p.name
             frames.append(df)
         except Exception:
             continue
@@ -35,10 +28,8 @@ def load_history_df() -> pd.DataFrame:
 
 def latest_pass_file():
     """Return the newest pass_*.csv from either pass_logs/ or history/."""
-    candidates = []
-    for d in [PASS_DIR, HISTORY_DIR]:
-        candidates.extend(glob.glob(str(d / "pass_*.csv")))
-    return sorted(candidates)[-1] if candidates else None
+    candidates = [p for p in list_pass_files() if p.suffix == ".csv"]
+    return candidates[-1] if candidates else None
 
 
 def load_outcomes():
