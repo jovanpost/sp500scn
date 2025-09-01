@@ -120,57 +120,8 @@ def write_csv(path: Path, df: pd.DataFrame) -> None:
 # --------------------------------------------------------------------
 # 5. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-from typing import Tuple, Optional
-import pandas as pd
-import swing_options_screener as sos
-
-def _safe_engine_run_scan() -> dict:
-    """
-    Call sos.run_scan() across historical signature variants and normalize
-    the result to a dict with keys: {'pass': DataFrame|None, 'scan': DataFrame|None}
-    """
-    import pandas as _pd
-
-    # Try different parameter names used across versions of your engine
-    try:
-        out = sos.run_scan(market="sp500", with_options=True)
-    except TypeError:
-        try:
-            out = sos.run_scan(universe="sp500", with_options=True)
-        except TypeError:
-            out = sos.run_scan(with_options=True)
-
-    df_pass, df_scan = None, None
-
-    if isinstance(out, dict):
-        cand = out.get("pass", None)
-        if isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-        cand = out.get("pass_df", None)
-        if df_pass is None and isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-        cand = out.get("pass_df_unadjusted", None)
-        if df_pass is None and isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-
-        cand = out.get("scan", None)
-        if isinstance(cand, _pd.DataFrame):
-            df_scan = cand
-        cand = out.get("scan_df", None)
-        if df_scan is None and isinstance(cand, _pd.DataFrame):
-            df_scan = cand
-
-    elif isinstance(out, (list, tuple)):
-        if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
-            df_pass = out[0]
-        if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
-            df_scan = out[1]
-
-    elif isinstance(out, _pd.DataFrame):
-        # Some versions just return the passing table
-        df_pass = out
-
-    return {"pass": df_pass, "scan": df_scan}
+from typing import Optional
+from utils.scan import safe_run_scan
 
 # --------------------------------------------------------------------
 # 6. Main (glue: run, save pass file, write logs, upsert outcomes)
@@ -182,7 +133,7 @@ def main() -> int:
     ensure_dirs()
 
     try:
-        res = _safe_engine_run_scan()
+        res = safe_run_scan()
         df_pass: Optional[pd.DataFrame] = res.get("pass")
         # df_scan = res.get("scan")  # currently unused here
 

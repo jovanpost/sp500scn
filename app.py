@@ -17,10 +17,10 @@
 # ============================================================
 import os, glob, io, pandas as pd, streamlit as st
 from datetime import datetime
-import swing_options_screener as sos  # core engine
 from ui.layout import setup_page, render_header
 from ui.debugger import render_debugger_tab
 from utils.formatting import _bold, _usd, _pct, _safe
+from utils.scan import safe_run_scan
 
 # ============================================================
 # 2. App constants (paths, titles, etc.)
@@ -134,53 +134,6 @@ def outcomes_summary(dfh: pd.DataFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. TAB – Scanner (table → WHY BUY → Sheets export)
 # ─────────────────────────────────────────────────────────────────────────────
-def _safe_run_scan() -> dict:
-    """Call sos.run_scan with backward-compatible signatures and normalize outputs
-    without using boolean truthiness on DataFrames."""
-    import pandas as _pd
-
-    # Try different parameter names used across your versions
-    try:
-        out = sos.run_scan(market="sp500", with_options=True)
-    except TypeError:
-        try:
-            out = sos.run_scan(universe="sp500", with_options=True)
-        except TypeError:
-            out = sos.run_scan(with_options=True)
-
-    df_pass, df_scan = None, None
-
-    if isinstance(out, dict):
-        cand = out.get("pass", None)
-        if isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-        cand = out.get("pass_df", None)
-        if df_pass is None and isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-        cand = out.get("pass_df_unadjusted", None)
-        if df_pass is None and isinstance(cand, _pd.DataFrame):
-            df_pass = cand
-
-        cand = out.get("scan", None)
-        if isinstance(cand, _pd.DataFrame):
-            df_scan = cand
-        cand = out.get("scan_df", None)
-        if df_scan is None and isinstance(cand, _pd.DataFrame):
-            df_scan = cand
-
-    elif isinstance(out, (list, tuple)):
-        if len(out) >= 1 and isinstance(out[0], _pd.DataFrame):
-            df_pass = out[0]
-        if len(out) >= 2 and isinstance(out[1], _pd.DataFrame):
-            df_scan = out[1]
-
-    elif isinstance(out, _pd.DataFrame):
-        # Some versions just return the passing table
-        df_pass = out
-
-    return {"pass": df_pass, "scan": df_scan}
-
-
 def _sheet_friendly(df: pd.DataFrame) -> pd.DataFrame:
     """Produce a sheet-friendly subset (subset of columns)."""
     prefer = [
@@ -227,7 +180,7 @@ def render_scanner_tab():
 
     if run_clicked:
         with st.spinner("Scanning…"):
-            out = _safe_run_scan()
+            out = safe_run_scan()
         df_pass: pd.DataFrame | None = out.get("pass", None)
 
         st.session_state["last_pass"] = df_pass
