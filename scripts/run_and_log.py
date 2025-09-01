@@ -17,9 +17,11 @@ Bibliography (Section Index)
 import argparse
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
-import inspect
+from typing import Optional
+
 import pandas as pd
+
+from _bootstrap import add_repo_root; add_repo_root()
 
 # Screener module (must be importable from repo root)
 try:
@@ -35,9 +37,6 @@ except Exception:
     spuni = None
 
 # Shared outcome helpers
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, write_csv
 from utils.outcomes import upsert_and_backfill_outcomes, settle_pending_outcomes
 
@@ -77,9 +76,6 @@ def ensure_dirs() -> None:
 # --------------------------------------------------------------------
 # 3. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-from typing import Tuple, Optional
-import pandas as pd
-import swing_options_screener as sos
 
 def _safe_engine_run_scan() -> dict:
     """

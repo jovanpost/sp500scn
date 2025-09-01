@@ -4,12 +4,7 @@
 # - For Outcome == PENDING, checks if TargetLevel was hit (High >= level)
 #   between EvalDate (inclusive) and min(WindowEnd, today) (inclusive).
 #   Results are written back to outcomes.csv.
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from _bootstrap import add_repo_root; add_repo_root()
 
 from utils.io import OUTCOMES_CSV
 from utils.outcomes import read_outcomes, score_history, write_outcomes

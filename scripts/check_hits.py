@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Update ``data/history/outcomes.csv`` by evaluating pending rows."""
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from _bootstrap import add_repo_root; add_repo_root()
 
 from utils.io import OUTCOMES_CSV
 from utils.outcomes import check_pending_hits, read_outcomes, write_outcomes
