@@ -5,6 +5,7 @@ import streamlit as st
 import swing_options_screener as sos
 from utils.prices import fetch_history
 from utils.tickers import normalize_symbol
+from utils.formatting import _usd, _pct
 
 
 # Functions extracted from app.py for diagnostics
@@ -47,18 +48,6 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
     daily_cap = ctx.get("daily_cap")
     req_tp_pct = ctx.get("tp_req_pct")
 
-    def pct(x):
-        try:
-            return f"{float(x):.2f}%"
-        except Exception:
-            return str(x)
-
-    def usd(x, nd=2):
-        try:
-            return f"${float(x):.{nd}f}"
-        except Exception:
-            return str(x)
-
     if code == "relvol_low_timeadj":
         lines.append(
             f"Relative volume is too low: current RelVol (time-adjusted) is **{rel:.2f}×**, "
@@ -66,21 +55,21 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
         )
     elif code == "not_up_on_day":
         lines.append(
-            f"Price isn’t up on the day: change is **{pct(chg)}** from "
-            f"yesterday’s close {usd(prev_close)} to entry {usd(entry)}."
+            f"Price isn’t up on the day: change is **{_pct(chg)}** from "
+            f"yesterday’s close {_usd(prev_close)} to entry {_usd(entry)}."
         )
     elif code == "no_upside_to_resistance":
-        lines.append(f"No room to the recent high: resistance {usd(res)} is not above entry {usd(entry)}.")
+        lines.append(f"No room to the recent high: resistance {_usd(res)} is not above entry {_usd(entry)}.")
     elif code == "atr_capacity_short_vs_tp":
         lines.append(
             "ATR capacity is too small to reasonably reach the target in a month: "
-            f"need ≈ **{pct(req_tp_pct)}** to target (≈ {usd(tp)}), but Daily ATR is "
-            f"{usd(daily_atr, nd=4)}, implying about **{usd(daily_cap)}** over ~21 trading days."
+            f"need ≈ **{_pct(req_tp_pct)}** to target (≈ {_usd(tp)}), but Daily ATR is "
+            f"{_usd(daily_atr, nd=4)}, implying about **{_usd(daily_cap)}** over ~21 trading days."
         )
     elif code == "history_21d_zero_pass":
         lines.append(
             "History check failed: in the last year there were **0** cases where a 21-trading-day move "
-            f"matched or exceeded the required **{pct(req_tp_pct)}**."
+            f"matched or exceeded the required **{_pct(req_tp_pct)}**."
         )
     elif code in {"no_valid_support", "non_positive_risk"}:
         lines.append("Couldn’t find a valid support below price to place a stop (risk would be non-positive).")
@@ -97,13 +86,13 @@ def _mk_reason_expl(reason: str, ctx: dict) -> str:
 
     snap = []
     if _finite(entry) and _finite(prev_close):
-        snap.append(f"Entry {usd(entry)} vs prev close {usd(prev_close)} → day change {pct(chg)}.")
+        snap.append(f"Entry {_usd(entry)} vs prev close {_usd(prev_close)} → day change {_pct(chg)}.")
     if _finite(res) and _finite(tp):
-        snap.append(f"Resistance {usd(res)}, TP {usd(tp)}.")
+        snap.append(f"Resistance {_usd(res)}, TP {_usd(tp)}.")
     if _finite(rel):
         snap.append(f"RelVol (time-adjusted): {rel:.2f}× (min {rel_min:.2f}×).")
     if _finite(daily_atr):
-        snap.append(f"Daily ATR {usd(daily_atr, nd=4)} ⇒ ~{usd(daily_cap)} / 21 trading days.")
+        snap.append(f"Daily ATR {_usd(daily_atr, nd=4)} ⇒ ~{_usd(daily_cap)} / 21 trading days.")
     if snap:
         lines.append("")
         lines.append("**Snapshot:** " + " ".join(snap))
