@@ -313,68 +313,46 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
         outcome = str(row.get("Outcome", "PENDING")).upper()
         if outcome not in ("PENDING", "YES", "NO"):
             outcome = "PENDING"
-
-        if outcome != "PENDING":
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
-
-        tkr = str(row.get("Ticker", "")).strip().upper()
-        if not tkr:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
-
-        eval_date = parse_date(row.get("EvalDate"))
-        window_end = parse_date(row.get("WindowEnd"))
-        target = row.get("TargetLevel", np.nan)
-        try:
-            target = float(target)
-        except Exception:
-            target = np.nan
+        row["Outcome"] = outcome
 
         today = date.today()
 
-        if eval_date is None or window_end is None or not np.isfinite(target):
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
+        if outcome == "PENDING":
+            tkr = str(row.get("Ticker", "")).strip().upper()
+            if tkr:
+                eval_date = parse_date(row.get("EvalDate"))
+                window_end = parse_date(row.get("WindowEnd"))
+                target = row.get("TargetLevel", np.nan)
+                try:
+                    target = float(target)
+                except Exception:
+                    target = np.nan
 
-        start = pd.Timestamp(eval_date)
-        stop = pd.Timestamp(min(window_end, today))
-
-        if start > stop:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
-
-        hist = fetch_history(
-            tkr,
-            start=start,
-            end=stop + pd.Timedelta(days=1),
-            auto_adjust=False,
-        )
-        if hist is None or hist.empty:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
-
-        highs = hist["High"].dropna()
-        if highs.empty:
-            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            updated.append(row)
-            continue
-
-        hit_mask = highs >= target
-        if hit_mask.any():
-            first_idx = hit_mask[hit_mask].index[0]
-            row["Outcome"] = "YES"
-            row["HitDate"] = first_idx.date().isoformat()
-            row["MaxHigh"] = float(highs.max())
-        else:
-            row["MaxHigh"] = float(highs.max())
-            if today > window_end:
-                row["Outcome"] = "NO"
+                if (
+                    eval_date is not None
+                    and window_end is not None
+                    and np.isfinite(target)
+                ):
+                    start = pd.Timestamp(eval_date)
+                    stop = pd.Timestamp(min(window_end, today))
+                    if start <= stop:
+                        hist = fetch_history(
+                            tkr,
+                            start=start,
+                            end=stop + pd.Timedelta(days=1),
+                            auto_adjust=False,
+                        )
+                        if hist is not None and not hist.empty:
+                            highs = hist["High"].dropna()
+                            if not highs.empty:
+                                row["MaxHigh"] = float(highs.max())
+                                hit_mask = highs >= target
+                                if hit_mask.any():
+                                    first_idx = hit_mask[hit_mask].index[0]
+                                    row["Outcome"] = "YES"
+                                    row["HitDate"] = first_idx.date().isoformat()
+                                elif today > window_end:
+                                    row["Outcome"] = "NO"
 
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         updated.append(row)
