@@ -20,6 +20,7 @@
 import os, glob, io, pandas as pd, streamlit as st
 from datetime import datetime
 import swing_options_screener as sos  # core engine
+from utils.tickers import normalize_symbol
 
 # ============================================================
 # 2. App constants (paths, titles, etc.)
@@ -223,64 +224,6 @@ def _finite(x):
     except Exception:
         return False
 
-# --- Aliases for common company names → tickers ---
-_ALIAS_MAP = {
-    "NVIDIA": "NVDA", "NVIDIA CORPORATION": "NVDA",
-    "TESLA": "TSLA", "TESLA INC": "TSLA",
-    "APPLE": "AAPL", "APPLE INC": "AAPL",
-    "MICROSOFT": "MSFT", "MICROSOFT CORPORATION": "MSFT",
-    "ALPHABET": "GOOGL", "GOOGLE": "GOOGL",
-    "META": "META", "META PLATFORMS": "META",
-    "AMAZON": "AMZN", "AMAZONCOM": "AMZN", "AMAZON.COM": "AMZN",
-    "NETFLIX": "NFLX", "WALMART": "WMT", "WALMART INC": "WMT",
-    "JPMORGAN": "JPM", "JPMORGAN CHASE": "JPM",
-    "BERKSHIRE": "BRK.B", "BERKSHIRE HATHAWAY": "BRK.B",
-    "UNITEDHEALTH": "UNH", "UNITEDHEALTH GROUP": "UNH",
-    "COCA COLA": "KO", "COCA-COLA": "KO",
-    "PEPSICO": "PEP", "ADOBE": "ADBE", "INTEL": "INTC",
-    "AMD": "AMD", "BROADCOM": "AVGO", "SALESFORCE": "CRM",
-    "SERVICENOW": "NOW", "SERVICE NOW": "NOW",
-    "CROWDSTRIKE": "CRWD", "MCDONALDS": "MCD", "MCDONALD'S": "MCD",
-    "COSTCO": "COST", "HOME DEPOT": "HD",
-    "PROCTER & GAMBLE": "PG", "PROCTER AND GAMBLE": "PG",
-    "ELI LILLY": "LLY", "ABBVIE": "ABBV",
-    "EXXON": "XOM", "EXXONMOBIL": "XOM", "CHEVRON": "CVX",
-}
-
-def _normalize_brk(s: str) -> str | None:
-    s2 = s.replace(" ", "").replace("-", "").replace("_", "").upper()
-    if s2 in {"BRKB", "BRK.B"}: return "BRK.B"
-    if s2 in {"BRKA", "BRK.A"}: return "BRK.A"
-    sU = s.upper().strip()
-    if sU in {"BRK B", "BRK-B", "BRK_B"}: return "BRK.B"
-    if sU in {"BRK A", "BRK-A", "BRK_A"}: return "BRK.A"
-    return None
-
-def _normalize_symbol(inp: str) -> str | None:
-    """Best-effort mapping: ticker-looking → upper; else try aliases; else heuristics."""
-    if not inp: return None
-    s = str(inp).strip()
-    if not s: return None
-
-    # Looks like a ticker already?
-    if 1 <= len(s) <= 6 and all(c.isalnum() or c == "." for c in s):
-        brk = _normalize_brk(s)
-        return brk if brk else s.upper()
-
-    # Company name path
-    key = s.upper()
-    key = key.replace(",", "").replace(".", "")
-    for kill in (" INC", " CORPORATION", " COMPANY", " HOLDINGS", " PLC", " LTD"):
-        key = key.replace(kill, "")
-    key = key.replace(" CLASS A", "").replace(" CLASS B", "")
-    key = " ".join(key.split())
-
-    if key in _ALIAS_MAP:
-        return _ALIAS_MAP[key]
-
-    # Last chance Berkshire normalization
-    brk = _normalize_brk(s)
-    return brk if brk else s.upper()
 
 def _mk_reason_expl(reason: str, ctx: dict) -> str:
     """Turn engine reason codes into friendly, numeric explanations."""
@@ -395,7 +338,7 @@ def diagnose_ticker(ticker: str,
     rr_min = rr_min if rr_min is not None else getattr(sos, "RR_MIN_DEFAULT", 2.0)
 
     original = (ticker or "").strip()
-    symbol = _normalize_symbol(original)
+    symbol = normalize_symbol(original)
 
     # Try engine history first
     df = sos._get_history(symbol) if symbol else None
