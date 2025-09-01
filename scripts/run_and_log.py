@@ -98,10 +98,6 @@ def pick(df: pd.DataFrame, col: str, default=None):
         return default
 
 
-def safe_str(x):
-    return "" if x is None else str(x)
-
-
 # --------------------------------------------------------------------
 # 3. Robust IO (read/write CSV)
 # --------------------------------------------------------------------
@@ -179,20 +175,11 @@ def _safe_engine_run_scan() -> dict:
 # --------------------------------------------------------------------
 # 6. Main (glue: run, save pass file, write logs, upsert outcomes)
 # --------------------------------------------------------------------
-import sys
-from pathlib import Path
-from datetime import datetime, timezone
-
-HIST_DIR = Path("data/history")
-LOG_DIR  = Path("data/logs")
-OUT_PATH = HIST_DIR / "outcomes.csv"
-
 def _utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 def main() -> int:
-    HIST_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_dirs()
 
     try:
         res = _safe_engine_run_scan()
@@ -203,14 +190,14 @@ def main() -> int:
         if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
             # filename with UTC timestamp
             pass_name = f"pass_{_utc_ts()}.csv"
-            pass_path = HIST_DIR / pass_name
+            pass_path = HISTORY_DIR / pass_name
             df_pass.to_csv(pass_path, index=False)
             print(f"[run_and_log] wrote {pass_path}")
             wrote_pass = True
 
             # Update outcomes.csv (insert new, backfill, settle)
-            upsert_and_backfill_outcomes(df_pass, str(OUT_PATH))
-            settle_pending_outcomes(str(OUT_PATH))
+            upsert_and_backfill_outcomes(df_pass, str(OUTCOMES_FILE))
+            settle_pending_outcomes(str(OUTCOMES_FILE))
         else:
             print("[run_and_log] scan returned no passing tickers.")
 
