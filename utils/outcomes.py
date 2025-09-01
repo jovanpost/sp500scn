@@ -347,7 +347,49 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
 
     # Historical mode
     rows = df.to_dict(orient="records")
-    updated = []
+
+    # Determine history range per ticker so we can fetch once.
+    today = date.today()
+    ticker_ranges: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    for row in rows:
+        tkr = str(row.get("Ticker", "")).strip().upper()
+        if not tkr:
+            continue
+        eval_date = parse_date(row.get("EvalDate"))
+        window_end = parse_date(row.get("WindowEnd"))
+        target = row.get("TargetLevel", np.nan)
+        try:
+            target = float(target)
+        except Exception:
+            target = np.nan
+        if eval_date is None or window_end is None or not np.isfinite(target):
+            continue
+        start = pd.Timestamp(eval_date)
+        stop = pd.Timestamp(min(window_end, today))
+        if start > stop:
+            continue
+        prev = ticker_ranges.get(tkr)
+        if prev is None:
+            ticker_ranges[tkr] = (start, stop)
+        else:
+            prev_start, prev_stop = prev
+            if start < prev_start:
+                prev_start = start
+            if stop > prev_stop:
+                prev_stop = stop
+            ticker_ranges[tkr] = (prev_start, prev_stop)
+
+    # Fetch histories once per ticker.
+    histories: dict[str, pd.DataFrame | None] = {}
+    for tkr, (start, stop) in ticker_ranges.items():
+        histories[tkr] = fetch_history(
+            tkr,
+            start=start,
+            end=stop + pd.Timedelta(days=1),
+            auto_adjust=False,
+        )
+
+    updated: list[dict[str, Any]] = []
     for row in rows:
         outcome = str(row.get("Outcome", "PENDING")).upper()
         if outcome not in ("PENDING", "YES", "NO"):
@@ -372,8 +414,6 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
         except Exception:
             target = np.nan
 
-        today = date.today()
-
         if eval_date is None or window_end is None or not np.isfinite(target):
             row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             updated.append(row)
@@ -381,22 +421,20 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
 
         start = pd.Timestamp(eval_date)
         stop = pd.Timestamp(min(window_end, today))
-
         if start > stop:
             row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             updated.append(row)
             continue
 
-        hist = fetch_history(
-            tkr,
-            start=start,
-            end=stop + pd.Timedelta(days=1),
-            auto_adjust=False,
-        )
+        hist = histories.get(tkr)
         if hist is None or hist.empty:
             row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             updated.append(row)
             continue
+        try:
+            hist = hist.loc[start:stop]
+        except Exception:
+            pass
 
         highs = hist["High"].dropna()
         if highs.empty:
