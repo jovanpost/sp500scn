@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.io import OUTCOMES_CSV
-from utils.outcomes import read_outcomes, score_history, write_outcomes
+from utils.outcomes import evaluate_outcomes, read_outcomes, write_outcomes
 
 
 def main() -> None:
@@ -25,7 +25,7 @@ def main() -> None:
         print("outcomes.csv empty; nothing to score.")
         return
 
-    new_df = score_history(df)
+    new_df = evaluate_outcomes(df, mode="historical")
     write_outcomes(new_df, OUTCOMES_CSV)
     print(f"Scored {len(new_df)} rows → wrote outcomes.csv")
 

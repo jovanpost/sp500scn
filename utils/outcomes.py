@@ -282,124 +282,141 @@ def settle_pending_outcomes(outcomes_path: str | Path = DEFAULT_OUT_PATH) -> pd.
     return out
 
 
-# ----- check_hits logic -----
-def check_pending_hits(df: pd.DataFrame) -> pd.DataFrame:
-    """Evaluate pending rows for TP hits or expiry."""
+# ----- evaluation -----
+def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
+    """Evaluate outcome rows in ``df``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame to evaluate.
+    mode : {"pending", "historical"}, optional
+        Select evaluation behavior. ``"pending"`` (default) checks for TP hits
+        or expiry on rows where ``result_status`` is ``PENDING``. ``"historical"``
+        applies window-based scoring used for historical backtesting.
+    """
     if df.empty:
         return df
 
-    today = datetime.now(timezone.utc).date()
+    mode = str(mode).lower()
+    if mode not in {"pending", "historical"}:
+        raise ValueError("mode must be 'pending' or 'historical'")
 
-    pend_mask = df.get("result_status", "") == "PENDING"
-    df_p = df[pend_mask].copy()
-    for idx, r in df_p.iterrows():
-        tkr = str(r["Ticker"])
-        tp = r.get("TP", np.nan)
-        tp = float(tp) if pd.notna(tp) else np.nan
+    if mode == "pending":
+        today = datetime.now(timezone.utc).date()
 
-        d0 = parse_date(r.get("EvalDate"))
-        exp = parse_date(r.get("OptExpiry"))
+        pend_mask = df.get("result_status", "") == "PENDING"
+        df_p = df[pend_mask].copy()
+        for idx, r in df_p.iterrows():
+            tkr = str(r["Ticker"])
+            tp = r.get("TP", np.nan)
+            tp = float(tp) if pd.notna(tp) else np.nan
 
-        if pd.isna(tp) or d0 is None:
+            d0 = parse_date(r.get("EvalDate"))
+            exp = parse_date(r.get("OptExpiry"))
+
+            if pd.isna(tp) or d0 is None:
+                continue
+
+            hist = fetch_history(tkr, start=d0, end=today, auto_adjust=False)
+
+            hit_time = ""
+            hit_price = ""
+            hit = False
+            if hist is not None and not hist.empty and "High" in hist.columns:
+                highs = hist["High"].astype(float)
+                hit_idx = highs[highs >= tp]
+                if not hit_idx.empty:
+                    hit = True
+                    first = hit_idx.index[0]
+                    hit_time = first.strftime("%Y-%m-%d")
+                    hit_price = float(highs.loc[first])
+
+            if hit:
+                df.loc[df.index == idx, "result_status"] = "HIT"
+                df.loc[df.index == idx, "result_note"] = "TP reached by daily high"
+                df.loc[df.index == idx, "hit_time"] = hit_time
+                df.loc[df.index == idx, "hit_price"] = hit_price
+            else:
+                if exp is not None and today > exp:
+                    df.loc[df.index == idx, "result_status"] = "MISS"
+                    df.loc[df.index == idx, "result_note"] = "Expired without TP"
+                    df.loc[df.index == idx, "hit_time"] = ""
+                    df.loc[df.index == idx, "hit_price"] = ""
+        return df
+
+    # Historical mode
+    rows = df.to_dict(orient="records")
+    updated = []
+    for row in rows:
+        outcome = str(row.get("Outcome", "PENDING")).upper()
+        if outcome not in ("PENDING", "YES", "NO"):
+            outcome = "PENDING"
+
+        if outcome != "PENDING":
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
             continue
 
-        hist = fetch_history(tkr, start=d0, end=today, auto_adjust=False)
+        tkr = str(row.get("Ticker", "")).strip().upper()
+        if not tkr:
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
+            continue
 
-        hit_time = ""
-        hit_price = ""
-        hit = False
-        if hist is not None and not hist.empty and "High" in hist.columns:
-            highs = hist["High"].astype(float)
-            hit_idx = highs[highs >= tp]
-            if not hit_idx.empty:
-                hit = True
-                first = hit_idx.index[0]
-                hit_time = first.strftime("%Y-%m-%d")
-                hit_price = float(highs.loc[first])
+        eval_date = parse_date(row.get("EvalDate"))
+        window_end = parse_date(row.get("WindowEnd"))
+        target = row.get("TargetLevel", np.nan)
+        try:
+            target = float(target)
+        except Exception:
+            target = np.nan
 
-        if hit:
-            df.loc[df.index == idx, "result_status"] = "HIT"
-            df.loc[df.index == idx, "result_note"] = "TP reached by daily high"
-            df.loc[df.index == idx, "hit_time"] = hit_time
-            df.loc[df.index == idx, "hit_price"] = hit_price
+        today = date.today()
+
+        if eval_date is None or window_end is None or not np.isfinite(target):
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
+            continue
+
+        start = pd.Timestamp(eval_date)
+        stop = pd.Timestamp(min(window_end, today))
+
+        if start > stop:
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
+            continue
+
+        hist = fetch_history(
+            tkr,
+            start=start,
+            end=stop + pd.Timedelta(days=1),
+            auto_adjust=False,
+        )
+        if hist is None or hist.empty:
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
+            continue
+
+        highs = hist["High"].dropna()
+        if highs.empty:
+            row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(row)
+            continue
+
+        hit_mask = highs >= target
+        if hit_mask.any():
+            first_idx = hit_mask[hit_mask].index[0]
+            row["Outcome"] = "YES"
+            row["HitDate"] = first_idx.date().isoformat()
+            row["MaxHigh"] = float(highs.max())
         else:
-            if exp is not None and today > exp:
-                df.loc[df.index == idx, "result_status"] = "MISS"
-                df.loc[df.index == idx, "result_note"] = "Expired without TP"
-                df.loc[df.index == idx, "hit_time"] = ""
-                df.loc[df.index == idx, "hit_price"] = ""
-    return df
+            row["MaxHigh"] = float(highs.max())
+            if today > window_end:
+                row["Outcome"] = "NO"
 
-
-# ----- score_history logic -----
-def _check_row(row: dict) -> dict:
-    outcome = str(row.get("Outcome", "PENDING")).upper()
-    if outcome not in ("PENDING", "YES", "NO"):
-        outcome = "PENDING"
-
-    if outcome != "PENDING":
-        return row
-
-    tkr = str(row.get("Ticker", "")).strip().upper()
-    if not tkr:
-        return row
-
-    eval_date = parse_date(row.get("EvalDate"))
-    window_end = parse_date(row.get("WindowEnd"))
-    target = row.get("TargetLevel", np.nan)
-    try:
-        target = float(target)
-    except Exception:
-        target = np.nan
-
-    today = date.today()
-
-    if eval_date is None or window_end is None or not np.isfinite(target):
         row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        return row
+        updated.append(row)
 
-    start = pd.Timestamp(eval_date)
-    stop = pd.Timestamp(min(window_end, today))
-
-    if start > stop:
-        row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        return row
-
-    df = fetch_history(
-        tkr,
-        start=start,
-        end=stop + pd.Timedelta(days=1),
-        auto_adjust=False,
-    )
-    if df is None or df.empty:
-        row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        return row
-
-    highs = df["High"].dropna()
-    if highs.empty:
-        row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        return row
-
-    hit_mask = highs >= target
-    if hit_mask.any():
-        first_idx = hit_mask[hit_mask].index[0]
-        row["Outcome"] = "YES"
-        row["HitDate"] = first_idx.date().isoformat()
-        row["MaxHigh"] = float(highs.max())
-    else:
-        row["MaxHigh"] = float(highs.max())
-        if today > window_end:
-            row["Outcome"] = "NO"
-
-    row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    return row
-
-
-def score_history(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply hit/miss scoring logic to historical rows."""
-    if df.empty:
-        return df
-    rows = df.to_dict(orient="records")
-    updated = [_check_row(r) for r in rows]
     return pd.DataFrame(updated)
 
