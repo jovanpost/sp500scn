@@ -6,10 +6,8 @@ Bibliography (Section Index)
 =======================================================================
 1. Imports & CLI
 2. Paths, Constants, Helpers
-3. Robust IO (read/write CSV)
-4. Outcomes Upsert (non-destructive append/update)
-5. Screener Runner (invoke library, gather DataFrames)
-6. Main (glue: run, save pass file, write logs, upsert outcomes)
+3. Screener Runner (invoke library, gather DataFrames)
+4. Main (glue: run, save pass file, write logs, upsert outcomes)
 =======================================================================
 """
 
@@ -17,11 +15,11 @@ Bibliography (Section Index)
 # 1. Imports & CLI
 # --------------------------------------------------------------------
 import argparse
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-import inspect
+from typing import Optional
+
 import pandas as pd
 
 # Screener module (must be importable from repo root)
@@ -30,12 +28,6 @@ try:
 except Exception as e:
     print(f"[FATAL] Could not import swing_options_screener: {e}", file=sys.stderr)
     sys.exit(1)
-
-# Optional universe helper (only used if present)
-try:
-    import sp_universe as spuni  # optional
-except Exception:
-    spuni = None
 
 # Shared outcome helpers
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,58 +64,15 @@ HISTORY_DIR = Path("data/history")
 LOGS_DIR = Path("data/logs")
 OUTCOMES_FILE = HISTORY_DIR / "outcomes.csv"
 
-UTC_NOW = datetime.now(timezone.utc)
-STAMP = UTC_NOW.strftime("%Y%m%d-%H%M")
-
-PASS_PATH = HISTORY_DIR / f"pass_{STAMP}.csv"
-SCAN_PATH = HISTORY_DIR / f"scan_{STAMP}.csv"
-LOG_PATH = LOGS_DIR / f"scan_{STAMP}.txt"
-
 
 def ensure_dirs() -> None:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def pick(df: pd.DataFrame, col: str, default=None):
-    """Safe column getter for a homogeneous value; returns default if missing."""
-    try:
-        if df is None or df.empty or col not in df.columns:
-            return default
-        vals = df[col].dropna().unique()
-        if len(vals) == 0:
-            return default
-        return vals[0]
-    except Exception:
-        return default
-
-
 # --------------------------------------------------------------------
-# 3. Robust IO (read/write CSV)
+# 3. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-def read_csv_if_exists(path: Path) -> pd.DataFrame:
-    if path.exists():
-        try:
-            return pd.read_csv(path)
-        except Exception as e:
-            print(f"[WARN] Failed reading {path}: {e}", file=sys.stderr)
-    return pd.DataFrame()
-
-
-def write_csv(path: Path, df: pd.DataFrame) -> None:
-    try:
-        df.to_csv(path, index=False)
-    except Exception as e:
-        print(f"[ERROR] Failed writing {path}: {e}", file=sys.stderr)
-
-
-# --------------------------------------------------------------------
-# 5. Screener Runner (invoke library, gather DataFrames)
-# --------------------------------------------------------------------
-from typing import Tuple, Optional
-import pandas as pd
-import swing_options_screener as sos
-
 def _safe_engine_run_scan() -> dict:
     """
     Call sos.run_scan() across historical signature variants and normalize
@@ -173,7 +122,7 @@ def _safe_engine_run_scan() -> dict:
     return {"pass": df_pass, "scan": df_scan}
 
 # --------------------------------------------------------------------
-# 6. Main (glue: run, save pass file, write logs, upsert outcomes)
+# 4. Main (glue: run, save pass file, write logs, upsert outcomes)
 # --------------------------------------------------------------------
 def _utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
