@@ -12,22 +12,18 @@
 # 9. TAB – Debugger
 # ============================================================
 
-# ============================================================
-# 1. Imports & Safe third-party glue
-# ============================================================
-import os, glob, io, pandas as pd, streamlit as st
+import glob, io, pandas as pd, streamlit as st
 from datetime import datetime
 import swing_options_screener as sos  # core engine
 from ui.layout import setup_page, render_header
 from ui.debugger import render_debugger_tab
 from utils.formatting import _bold, _usd, _pct, _safe
+from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, read_csv
 
 # ============================================================
 # 2. App constants (paths, titles, etc.)
 # ============================================================
-PASS_DIR = "data/pass_logs"
-HIST_DIR = "data/history"
-OUT_FILE = os.path.join(HIST_DIR, "outcomes.csv")
+PASS_DIR = DATA_DIR / "pass_logs"
 # Initialize page and global layout/CSS
 setup_page()
 
@@ -78,13 +74,13 @@ def build_why_buy_html(row: dict) -> str:
 def latest_pass_file():
     """Return the newest pass_*.csv from either pass_logs/ or history/."""
     candidates = []
-    for d in [PASS_DIR, HIST_DIR]:
-        candidates.extend(glob.glob(os.path.join(d, "pass_*.csv")))
+    for d in [PASS_DIR, HISTORY_DIR]:
+        candidates.extend(glob.glob(str(d / "pass_*.csv")))
     return sorted(candidates)[-1] if candidates else None
 
 def load_outcomes():
-    if os.path.exists(OUT_FILE):
-        return pd.read_csv(OUT_FILE)
+    if OUTCOMES_CSV.exists():
+        return read_csv(OUTCOMES_CSV)
     return pd.DataFrame()
     
 
@@ -274,7 +270,7 @@ with tab_history:
     lastf = latest_pass_file()
     if lastf:
         try:
-            df_last = pd.read_csv(lastf)
+            df_last = read_csv(lastf)
             st.dataframe(df_last, use_container_width=True)
         except Exception as e:
             st.warning(f"Could not read latest pass file: {e}")

@@ -6,10 +6,8 @@ Bibliography (Section Index)
 =======================================================================
 1. Imports & CLI
 2. Paths, Constants, Helpers
-3. Robust IO (read/write CSV)
-4. Outcomes Upsert (non-destructive append/update)
-5. Screener Runner (invoke library, gather DataFrames)
-6. Main (glue: run, save pass file, write logs, upsert outcomes)
+3. Screener Runner (invoke library, gather DataFrames)
+4. Main (glue: run, save pass file, write logs, upsert outcomes)
 =======================================================================
 """
 
@@ -17,7 +15,6 @@ Bibliography (Section Index)
 # 1. Imports & CLI
 # --------------------------------------------------------------------
 import argparse
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +38,7 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, write_csv
 from utils.outcomes import upsert_and_backfill_outcomes, settle_pending_outcomes
 
 def parse_args() -> argparse.Namespace:
@@ -68,16 +66,7 @@ def parse_args() -> argparse.Namespace:
 # --------------------------------------------------------------------
 # 2. Paths, Constants, Helpers
 # --------------------------------------------------------------------
-HISTORY_DIR = Path("data/history")
-LOGS_DIR = Path("data/logs")
-OUTCOMES_FILE = HISTORY_DIR / "outcomes.csv"
-
-UTC_NOW = datetime.now(timezone.utc)
-STAMP = UTC_NOW.strftime("%Y%m%d-%H%M")
-
-PASS_PATH = HISTORY_DIR / f"pass_{STAMP}.csv"
-SCAN_PATH = HISTORY_DIR / f"scan_{STAMP}.csv"
-LOG_PATH = LOGS_DIR / f"scan_{STAMP}.txt"
+LOGS_DIR = DATA_DIR / "logs"
 
 
 def ensure_dirs() -> None:
@@ -99,26 +88,7 @@ def pick(df: pd.DataFrame, col: str, default=None):
 
 
 # --------------------------------------------------------------------
-# 3. Robust IO (read/write CSV)
-# --------------------------------------------------------------------
-def read_csv_if_exists(path: Path) -> pd.DataFrame:
-    if path.exists():
-        try:
-            return pd.read_csv(path)
-        except Exception as e:
-            print(f"[WARN] Failed reading {path}: {e}", file=sys.stderr)
-    return pd.DataFrame()
-
-
-def write_csv(path: Path, df: pd.DataFrame) -> None:
-    try:
-        df.to_csv(path, index=False)
-    except Exception as e:
-        print(f"[ERROR] Failed writing {path}: {e}", file=sys.stderr)
-
-
-# --------------------------------------------------------------------
-# 5. Screener Runner (invoke library, gather DataFrames)
+# 3. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
 from typing import Tuple, Optional
 import pandas as pd
@@ -173,7 +143,7 @@ def _safe_engine_run_scan() -> dict:
     return {"pass": df_pass, "scan": df_scan}
 
 # --------------------------------------------------------------------
-# 6. Main (glue: run, save pass file, write logs, upsert outcomes)
+# 4. Main (glue: run, save pass file, write logs, upsert outcomes)
 # --------------------------------------------------------------------
 def _utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -191,13 +161,13 @@ def main() -> int:
             # filename with UTC timestamp
             pass_name = f"pass_{_utc_ts()}.csv"
             pass_path = HISTORY_DIR / pass_name
-            df_pass.to_csv(pass_path, index=False)
+            write_csv(pass_path, df_pass)
             print(f"[run_and_log] wrote {pass_path}")
             wrote_pass = True
 
             # Update outcomes.csv (insert new, backfill, settle)
-            upsert_and_backfill_outcomes(df_pass, str(OUTCOMES_FILE))
-            settle_pending_outcomes(str(OUTCOMES_FILE))
+            upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
+            settle_pending_outcomes(OUTCOMES_CSV)
         else:
             print("[run_and_log] scan returned no passing tickers.")
 

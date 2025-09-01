@@ -4,20 +4,19 @@
 # - For Outcome == PENDING, checks if TargetLevel was hit (High >= level)
 #   between EvalDate (inclusive) and min(WindowEnd, today) (inclusive).
 #   Results are written back to outcomes.csv.
-import os
 import sys
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-HIST_DIR = os.path.join(ROOT, "data", "history")
-OUTCOMES_CSV = os.path.join(HIST_DIR, "outcomes.csv")
-
+from utils.io import OUTCOMES_CSV
 from utils.outcomes import read_outcomes, score_history, write_outcomes
 
 
 def main() -> None:
-    if not os.path.exists(OUTCOMES_CSV):
+    if not OUTCOMES_CSV.exists():
         print("No outcomes.csv yet; nothing to score.")
         return
 

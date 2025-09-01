@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import csv
 import math
-import os
 from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Optional
@@ -14,10 +12,9 @@ import numpy as np
 import pandas as pd
 
 from .prices import fetch_history
+from .io import OUTCOMES_CSV, read_csv, write_csv
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-HIST_DIR = REPO_ROOT / "data" / "history"
-DEFAULT_OUT_PATH = HIST_DIR / "outcomes.csv"
+DEFAULT_OUT_PATH = OUTCOMES_CSV
 
 OUTCOLS = [
     "Ticker",
@@ -37,27 +34,21 @@ OUTCOLS = [
 
 
 # ----- basic IO -----
-def read_outcomes(path: str = str(DEFAULT_OUT_PATH)) -> pd.DataFrame:
+def read_outcomes(path: str | Path = DEFAULT_OUT_PATH) -> pd.DataFrame:
     """Read outcomes.csv if it exists, else empty DataFrame."""
-    if not os.path.exists(path):
+    df = read_csv(path)
+    if df.empty:
         return pd.DataFrame(columns=OUTCOLS)
-    try:
-        df = pd.read_csv(path)
-        if df.empty:
-            return pd.DataFrame(columns=OUTCOLS)
-        return df
-    except Exception:
-        return pd.DataFrame(columns=OUTCOLS)
+    return df
 
 
-def write_outcomes(df: pd.DataFrame, path: str = str(DEFAULT_OUT_PATH)) -> None:
+def write_outcomes(df: pd.DataFrame, path: str | Path = DEFAULT_OUT_PATH) -> None:
     """Write outcomes DataFrame to CSV ensuring expected columns."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     for c in OUTCOLS:
         if c not in df.columns:
             df[c] = pd.NA
     df = df[OUTCOLS]
-    df.to_csv(path, index=False, quoting=csv.QUOTE_MINIMAL)
+    write_csv(path, df)
 
 
 # ----- helpers used across operations -----
@@ -109,7 +100,7 @@ def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
 
 # ----- upsert/backfill (from run_and_log) -----
 def upsert_and_backfill_outcomes(
-    df_pass: pd.DataFrame, outcomes_path: str = str(DEFAULT_OUT_PATH)
+    df_pass: pd.DataFrame, outcomes_path: str | Path = DEFAULT_OUT_PATH
 ) -> pd.DataFrame:
     """Insert new outcomes rows and backfill details for pending ones."""
     out = read_outcomes(outcomes_path).copy()
@@ -212,7 +203,7 @@ def _first_hit_date_since(ticker: str, start_date: str, threshold: float) -> str
     return None
 
 
-def settle_pending_outcomes(outcomes_path: str = str(DEFAULT_OUT_PATH)) -> pd.DataFrame:
+def settle_pending_outcomes(outcomes_path: str | Path = DEFAULT_OUT_PATH) -> pd.DataFrame:
     """Mark pending outcomes as settled if hit or expired."""
     out = read_outcomes(outcomes_path).copy()
     if out.empty:
