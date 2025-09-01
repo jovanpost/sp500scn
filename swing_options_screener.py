@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, time
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from utils.prices import fetch_history
 
 try:
     from zoneinfo import ZoneInfo  # py>=3.9
@@ -71,23 +72,6 @@ def _sanitize(val: str) -> str:
 def _fmt_ts(ts):
     if not isinstance(ts, datetime): return ""
     return ts.strftime("%Y-%m-%d %H:%M:%S ET")
-
-def _get_history(ticker):
-    # UNADJUSTED daily (aligns better with Finviz)
-    try:
-        df = yf.Ticker(ticker).history(period="16mo", auto_adjust=False, actions=False)
-        if df is None or df.empty: return None
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        if df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
-        df.columns = [c.title() for c in df.columns]
-        for col in ('Open','High','Low','Close','Volume'):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception:
-        return None
 
 def _atr_from_ohlc(df, win):
     hl  = df['High'] - df['Low']
@@ -408,7 +392,7 @@ def evaluate_ticker(
     pivot_lookback_days=PIVOT_LOOKBACK_DAYS,
     prefer_stop="safest",
 ):
-    df = _get_history(ticker)
+    df = fetch_history(ticker, period="16mo", auto_adjust=False)
     if df is None or df.empty: return None, "no_data"
     if len(df) < max(22, res_days + 1): return None, "insufficient_rows"
 
@@ -535,7 +519,7 @@ def evaluate_ticker(
 # Debug & CLI hooks
 # -------------------------
 def check_ticker(ticker, **kwargs):
-    df = _get_history(ticker)
+    df = fetch_history(ticker, period="16mo", auto_adjust=False)
     entry, prev_close, today_vol, src, entry_ts = get_entry_prevclose_todayvol(df, ticker) if df is not None else (np.nan, np.nan, np.nan, {}, None)
     row, reason = evaluate_ticker(ticker, **kwargs)
     now = _now_et()

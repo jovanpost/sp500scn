@@ -10,9 +10,12 @@ import os, sys, csv
 from datetime import datetime, date, timezone
 import pandas as pd
 import numpy as np
-import yfinance as yf
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+
+from utils.prices import fetch_history
+
 HIST_DIR = os.path.join(REPO_ROOT, "data", "history")
 OUT_PATH = os.path.join(HIST_DIR, "outcomes.csv")
 
@@ -53,10 +56,7 @@ def main():
         if pd.isna(tp) or d0 is None:
             continue
 
-        try:
-            hist = yf.Ticker(tkr).history(start=d0, end=today, auto_adjust=False)
-        except Exception:
-            hist = None
+        hist = fetch_history(tkr, start=d0, end=today, auto_adjust=False)
 
         hit_time = ""
         hit_price = ""

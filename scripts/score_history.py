@@ -11,10 +11,11 @@ import sys
 from datetime import datetime, date
 import pandas as pd
 import numpy as np
-import yfinance as yf
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+from utils.prices import fetch_history
 
 HIST_DIR = os.path.join(ROOT, "data", "history")
 OUTCOMES_CSV = os.path.join(HIST_DIR, "outcomes.csv")
@@ -67,8 +68,12 @@ def _check_row(row):
 
     try:
         # UNADJUSTED daily, like the screener
-        df = yf.Ticker(tkr).history(start=start, end=stop + pd.Timedelta(days=1),
-                                    auto_adjust=False, actions=False)  # end is exclusive, hence +1 day
+        df = fetch_history(
+            tkr,
+            start=start,
+            end=stop + pd.Timedelta(days=1),  # end is exclusive, hence +1 day
+            auto_adjust=False,
+        )
         if df is None or df.empty:
             row["CheckedAtUTC"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             return row
