@@ -1,21 +1,15 @@
 # SP500SCN
 
-## Hit Checking
+## Outcome Evaluation
 
-Use the `scripts/check_hits.py` utility to update `data/history/outcomes.csv` with trade results.
-
-```bash
-python scripts/check_hits.py
-```
-
-The script fetches daily price data for each pending entry and marks hits or misses accordingly.
-
-## Historical Scoring
-
-For backtesting datasets that include `EvalDate`, `WindowEnd`, and `TargetLevel`
-columns, run `scripts/score_history.py` to evaluate whether price targets were
-hit before each window closed.
+Use `scripts/evaluate_outcomes.py` to update `data/history/outcomes.csv`.
+The script reads the existing outcomes file, evaluates rows and writes the
+results back to disk.
 
 ```bash
-python scripts/score_history.py
+# Check pending trades for TP hits or expiry
+python scripts/evaluate_outcomes.py --mode pending
+
+# Score historical backtest rows
+python scripts/evaluate_outcomes.py --mode historical
 ```

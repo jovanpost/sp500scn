@@ -10,7 +10,8 @@
 #     4.3) Intraday de-duplication (only first 10–12 ET slot)
 #     4.4) Echo current NY time (EST/EDT guardrail)
 #     4.5) Run screener and write history files
-#     4.6) Commit history updates to repo
+#     4.6) Evaluate pending outcomes
+#     4.7) Commit history updates to repo
 # ============================================================
 
 name: Scheduled Swing Scan
@@ -141,7 +142,16 @@ jobs:
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
       # ─────────────────────────────────────────────────────────
-      # 4.6) Commit history updates to repo
+      # 4.6) Evaluate pending outcomes
+      # ─────────────────────────────────────────────────────────
+      - name: Evaluate pending outcomes
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        run: |
+          set -e
+          python scripts/evaluate_outcomes.py --mode pending
+
+      # ─────────────────────────────────────────────────────────
+      # 4.7) Commit history updates to repo
       # ─────────────────────────────────────────────────────────
       - name: Commit history updates (pass_*.csv, outcomes.csv, logs)
         run: |
