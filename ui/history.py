@@ -1,7 +1,8 @@
 import glob
 import pandas as pd
 import streamlit as st
-from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, read_csv
+from utils.io import DATA_DIR, HISTORY_DIR, read_csv
+from utils.outcomes import read_outcomes
 
 PASS_DIR = DATA_DIR / "pass_logs"
 
@@ -15,13 +16,12 @@ def latest_pass_file():
 
 
 def load_outcomes():
-    if OUTCOMES_CSV.exists():
-        return read_csv(OUTCOMES_CSV)
-    return pd.DataFrame()
+    """Thin wrapper around :func:`utils.outcomes.read_outcomes`."""
+    return read_outcomes()
 
 
 def outcomes_summary(dfh: pd.DataFrame):
-    if dfh is None or dfh.empty:
+    if dfh.empty:
         st.info("No outcomes yet.")
         return
 
@@ -77,7 +77,7 @@ def render_history_tab():
     st.subheader("Outcomes (sorted by option expiry)")
 
     dfh = load_outcomes()
-    if dfh is None or dfh.empty:
+    if dfh.empty:
         st.info("No outcomes yet.")
     else:
         dfh = dfh.copy()
