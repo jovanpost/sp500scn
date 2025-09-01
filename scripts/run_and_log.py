@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import inspect
 import pandas as pd
+from typing import Optional
 
 # Screener module (must be importable from repo root)
 try:
@@ -77,9 +78,6 @@ def ensure_dirs() -> None:
 # --------------------------------------------------------------------
 # 3. Screener Runner (invoke library, gather DataFrames)
 # --------------------------------------------------------------------
-from typing import Tuple, Optional
-import pandas as pd
-import swing_options_screener as sos
 
 def _safe_engine_run_scan() -> dict:
     """
