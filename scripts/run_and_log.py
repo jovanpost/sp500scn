@@ -17,7 +17,6 @@ Bibliography (Section Index)
 import argparse
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 import pandas as pd
 
 # Optional universe helper (only used if present)
@@ -27,9 +26,7 @@ except Exception:
     spuni = None
 
 # Shared outcome helpers
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from _bootstrap import add_repo_root; add_repo_root()
 from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, write_csv
 from utils.outcomes import upsert_and_backfill_outcomes, settle_pending_outcomes
 
