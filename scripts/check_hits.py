@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.io import OUTCOMES_CSV
-from utils.outcomes import check_pending_hits, read_outcomes, write_outcomes
+from utils.outcomes import evaluate_outcomes, read_outcomes, write_outcomes
 
 
 def main() -> None:
@@ -22,7 +22,7 @@ def main() -> None:
         print("outcomes.csv empty; nothing to check.")
         return
 
-    df = check_pending_hits(df)
+    df = evaluate_outcomes(df, mode="pending")
     write_outcomes(df, OUTCOMES_CSV)
     print("Updated outcomes.csv")
 
