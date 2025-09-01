@@ -1,9 +1,35 @@
 import glob
+import os
 import pandas as pd
 import streamlit as st
 from utils.io import DATA_DIR, HISTORY_DIR, OUTCOMES_CSV, read_csv
 
 PASS_DIR = DATA_DIR / "pass_logs"
+
+
+def load_history_df() -> pd.DataFrame:
+    """Return a DataFrame concatenating all historical PASS snapshots."""
+    paths = []
+    paths.extend(sorted(glob.glob(str(HISTORY_DIR / "pass_*.psv"))))
+    # Legacy fallback
+    paths.extend(sorted(glob.glob("history/pass_*.psv")))
+
+    if not paths:
+        return pd.DataFrame()
+
+    frames = []
+    for p in paths:
+        try:
+            df = pd.read_csv(p, sep="|")
+            df["__source_file"] = os.path.basename(p)
+            frames.append(df)
+        except Exception:
+            continue
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
 
 
 def latest_pass_file():
