@@ -31,6 +31,9 @@ OUTCOLS = [
     "TP",
     "Notes",
     "run_date",
+    "LastPrice",
+    "LastPriceAt",
+    "PctToTarget",
 ]
 
 
@@ -227,6 +230,10 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
     if mode == "pending":
         today = pd.Timestamp.utcnow().date()
 
+        for c in ["LastPrice", "LastPriceAt", "PctToTarget"]:
+            if c not in df.columns:
+                df[c] = pd.NA
+
         for i, r in df.iterrows():
             status = str(r.get("result_status") or r.get("Status") or "").upper()
             if status == "SETTLED":
@@ -247,15 +254,32 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
             if tkr and ev and (target is not None):
                 try:
                     hist = fetch_history(tkr, start=ev, auto_adjust=False)
-                    if hist is not None and not hist.empty and "High" in hist.columns:
-                        highs = hist["High"].astype(float)
-                        meet = highs >= float(target)
-                        if meet.any():
-                            first_idx = meet.idxmax()
-                            if isinstance(first_idx, pd.Timestamp):
-                                hit_date = first_idx.date().isoformat()
-                            else:
-                                hit_date = _to_date_str(first_idx)
+                    if hist is not None and not hist.empty:
+                        # last close price and timestamp
+                        if "Close" in hist.columns:
+                            closes = hist["Close"].dropna().astype(float)
+                            if not closes.empty:
+                                last_price = float(closes.iloc[-1])
+                                last_at = closes.index[-1]
+                                df.at[i, "LastPrice"] = last_price
+                                df.at[i, "LastPriceAt"] = last_at.strftime("%Y-%m-%d %H:%M:%S")
+                                entry_price = safe_float(r.get("Price"))
+                                if (
+                                    np.isfinite(entry_price)
+                                    and np.isfinite(target)
+                                    and target != entry_price
+                                ):
+                                    pct = (target - last_price) / (target - entry_price) * 100.0
+                                    df.at[i, "PctToTarget"] = float(pct)
+                        if "High" in hist.columns:
+                            highs = hist["High"].astype(float)
+                            meet = highs >= float(target)
+                            if meet.any():
+                                first_idx = meet.idxmax()
+                                if isinstance(first_idx, pd.Timestamp):
+                                    hit_date = first_idx.date().isoformat()
+                                else:
+                                    hit_date = _to_date_str(first_idx)
                 except Exception:
                     hit_date = None
 
