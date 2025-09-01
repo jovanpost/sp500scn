@@ -8,10 +8,6 @@ from utils.outcomes import evaluate_outcomes, read_outcomes, write_outcomes
 
 
 def main() -> None:
-    if not OUTCOMES_CSV.exists():
-        print("No outcomes.csv yet; nothing to check.")
-        return
-
     df = read_outcomes(OUTCOMES_CSV)
     if df.empty:
         print("outcomes.csv empty; nothing to check.")
