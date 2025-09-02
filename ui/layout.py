@@ -139,6 +139,23 @@ def setup_page():
             padding-left: var(--padding);
             padding-right: var(--padding);
         }}
+
+        /* --- DataFrame tables --- */
+        div[data-testid="stDataFrame"] table {{
+            color: var(--text-color);
+            background-color: var(--bg-color);
+        }}
+        div[data-testid="stDataFrame"] th {{
+            background-color: #1a1a1a !important;
+            color: var(--text-color) !important;
+        }}
+        div[data-testid="stDataFrame"] td {{
+            background-color: #000000 !important;
+            color: var(--text-color) !important;
+            border-color: #333333 !important;
+        }}
+        div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: #0d0d0d; }}
+        div[data-testid="stDataFrame"] tr:hover {{ background: #1a1a1a; }}
         </style>
         """,
         unsafe_allow_html=True,
