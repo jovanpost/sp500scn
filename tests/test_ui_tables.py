@@ -12,7 +12,7 @@ import ui.history as history
 import ui.scan as scan
 
 
-def test_outcomes_summary_uses_dataframe(monkeypatch):
+def test_outcomes_summary_orders_columns(monkeypatch):
     df = pd.DataFrame(
         {
             "Ticker": ["AAA"],
@@ -40,7 +40,52 @@ def test_outcomes_summary_uses_dataframe(monkeypatch):
 
     history.outcomes_summary(df)
 
-    assert isinstance(called.get("df"), pd.DataFrame)
+    displayed = called.get("df")
+    assert isinstance(displayed, pd.DataFrame)
+    assert list(displayed.columns) == [
+        "Ticker",
+        "EvalDate",
+        "Price",
+        "RelVol(TimeAdj63d)",
+        "LastPrice",
+        "LastPriceAt",
+        "PctToTarget",
+        "EntryTimeET",
+        "Status",
+        "HitDateET",
+        "Expiry",
+        "DTE",
+        "BuyK",
+        "SellK",
+        "TP",
+        "Notes",
+    ]
+
+
+def test_render_history_tab_shows_extended_columns(monkeypatch):
+    df_last = pd.DataFrame(
+        {
+            "Ticker": ["AAA"],
+            "Price": [1],
+            "RelVol(TimeAdj63d)": [1.5],
+            "TP": [2],
+            "Extra": [3],
+        }
+    )
+
+    calls = {}
+    monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "dataframe", lambda df_arg: calls.setdefault("df", df_arg))
+    monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
+    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
+    monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
+
+    history.render_history_tab()
+
+    displayed = calls.get("df")
+    assert isinstance(displayed, pd.DataFrame)
+    assert list(displayed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 
 
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
