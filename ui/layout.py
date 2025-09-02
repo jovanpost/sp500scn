@@ -30,10 +30,10 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
-            --table-bg: #121212;
-            --table-text: #e0e0e0;
-            --table-border: #333;
-            --table-row-alt: #1a1a1a;
+            --table-bg: #f8f9fa;
+            --table-text: #222;
+            --table-border: #ccc;
+            --table-row-alt: #ffffff;
         }}
 
         body {{
@@ -145,12 +145,15 @@ def setup_page():
         }}
 
         /* --- DataFrame tables --- */
+        div[data-testid="stDataFrame"] > div {{
+            border: 1px solid var(--table-border);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }}
         div[data-testid="stDataFrame"] table {{
             background-color: var(--table-bg);
             color: var(--table-text);
-            border-radius: 6px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }}
         div[data-testid="stDataFrame"] th,
         div[data-testid="stDataFrame"] td {{
@@ -158,14 +161,14 @@ def setup_page():
             color: var(--table-text) !important;
         }}
         div[data-testid="stDataFrame"] th {{
-            background-color: #111 !important;
+            background-color: var(--table-row-alt) !important;
             font-weight: 700;
         }}
         div[data-testid="stDataFrame"] td {{
             background-color: var(--table-bg) !important;
         }}
         div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: var(--table-row-alt); }}
-        div[data-testid="stDataFrame"] tr:hover {{ background: #2e2e2e; }}
+        div[data-testid="stDataFrame"] tr:hover {{ background: #e6e6e6; }}
 
         td[data-testid*="col_PctChange"] {{
             color: var(--color-primary);

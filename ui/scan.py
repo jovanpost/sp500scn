@@ -108,7 +108,11 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
-            st.dataframe(_style_negatives(df_pass))
+            st.dataframe(
+                _style_negatives(df_pass).set_properties(
+                    border_color="#ccc", border_style="solid", border_width="1px"
+                )
+            )
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
                 st.table(_sheet_friendly(df_pass))
@@ -116,7 +120,11 @@ def render_scanner_tab():
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.dataframe(_style_negatives(df_pass))
+        st.dataframe(
+            _style_negatives(df_pass).set_properties(
+                border_color="#ccc", border_style="solid", border_width="1px"
+            )
+        )
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
             st.table(_sheet_friendly(df_pass))
