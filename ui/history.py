@@ -205,10 +205,9 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    st.dataframe(
-        _apply_dark_theme(
-            _style_negatives(df_disp)
-        ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px")
+    st.markdown(
+        _apply_dark_theme(_style_negatives(df_disp)).to_html(),
+        unsafe_allow_html=True,
     )
 
 
@@ -240,17 +239,9 @@ def render_history_tab():
             cols = [c for c in preferred if c in df_last.columns]
             df_show = df_last[cols] if cols else df_last  # fall back to full frame
 
-            kwargs = {"use_container_width": True}
-            if hasattr(st, "column_config"):
-                kwargs["column_config"] = {
-                    c: st.column_config.Column() for c in df_show.columns
-                }
-
-            st.dataframe(
-                _apply_dark_theme(
-                    _style_negatives(df_show)
-                ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px"),
-                **kwargs,
+            st.markdown(
+                _apply_dark_theme(_style_negatives(df_show)).to_html(),
+                unsafe_allow_html=True,
             )
     else:
         st.subheader("Trading day — recommendations")

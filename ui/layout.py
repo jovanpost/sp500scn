@@ -149,32 +149,6 @@ def setup_page():
             padding-right: var(--padding);
         }}
 
-        /* --- DataFrame tables --- */
-        div[data-testid="stDataFrame"] > div {{
-            border: 1px solid var(--table-border);
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }}
-        div[data-testid="stDataFrame"] table {{
-            background-color: var(--table-bg);
-            color: var(--table-text);
-            border-collapse: collapse;
-        }}
-        div[data-testid="stDataFrame"] th {{
-            background-color: var(--table-header-bg) !important;
-            color: var(--table-header-text) !important;
-            border: 1px solid var(--table-border) !important;
-            font-weight: 700;
-        }}
-        div[data-testid="stDataFrame"] td {{
-            background-color: var(--table-bg) !important;
-            color: var(--table-text) !important;
-            border: 1px solid var(--table-border) !important;
-        }}
-        div[data-testid="stDataFrame"] tbody tr:nth-child(even) {{ background: var(--table-row-alt); }}
-        div[data-testid="stDataFrame"] tbody tr:hover {{ background: var(--table-hover); }}
-
         td[data-testid*="col_PctChange"] {{
             color: var(--table-pos);
         }}

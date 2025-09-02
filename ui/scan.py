@@ -109,25 +109,33 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
-            st.dataframe(
-                _apply_dark_theme(
-                    _style_negatives(df_pass)
-                ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px")
+            st.markdown(
+                _apply_dark_theme(_style_negatives(df_pass)).to_html(),
+                unsafe_allow_html=True,
             )
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.table(_sheet_friendly(df_pass))
+                st.markdown(
+                    _apply_dark_theme(
+                        _style_negatives(_sheet_friendly(df_pass))
+                    ).to_html(),
+                    unsafe_allow_html=True,
+                )
 
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.dataframe(
-            _apply_dark_theme(
-                _style_negatives(df_pass)
-            ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px")
+        st.markdown(
+            _apply_dark_theme(_style_negatives(df_pass)).to_html(),
+            unsafe_allow_html=True,
         )
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
-            st.table(_sheet_friendly(df_pass))
+            st.markdown(
+                _apply_dark_theme(
+                    _style_negatives(_sheet_friendly(df_pass))
+                ).to_html(),
+                unsafe_allow_html=True,
+            )
     else:
         st.caption("No results yet. Press **RUN** to scan.")
