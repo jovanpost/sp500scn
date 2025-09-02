@@ -8,6 +8,7 @@
 #     4.1) Repo + Python setup
 #     4.2) Business-day / holiday gate (NY time)
 #     4.3) Intraday de-duplication (only first 10–12 ET slot)
+#     4.3a) Nightly slot detection (NY time)
 #     4.4) Echo current NY time (EST/EDT guardrail)
 #     4.5) Run screener and write history files
 #     4.6) Commit history updates to repo
@@ -118,11 +119,27 @@ jobs:
 
           echo "skip=false" >> $GITHUB_OUTPUT
 
+# ─────────────────────────────────────────────────────────
+# 4.3a) Nightly slot detection (NY time)
+# ─────────────────────────────────────────────────────────
+      - name: Determine nightly slot (NY time)
+        id: timeslot
+        if: steps.bizgate.outputs.run == 'yes'
+        shell: bash
+        run: |
+          export TZ=America/New_York
+          HOUR=$(date +%H)
+          if [ "$HOUR" -ge 18 ]; then
+            echo "nightly=true" >> $GITHUB_OUTPUT
+          else
+            echo "nightly=false" >> $GITHUB_OUTPUT
+          fi
+
       # ─────────────────────────────────────────────────────────
       # 4.4) Echo current NY time (EST/EDT guardrail)
       # ─────────────────────────────────────────────────────────
       - name: Echo current NY time (guardrail)
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes' && (steps.onceday.outputs.skip == 'false' || steps.timeslot.outputs.nightly == 'true')
         run: |
           export TZ=America/New_York
           echo "Current NY time: $(date)"
@@ -132,7 +149,7 @@ jobs:
       # 4.5) Run screener via scripts/run_and_log.py + write history files
       # ─────────────────────────────────────────────────────────
       - name: Run scripts/run_and_log.py and write history files
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false' && steps.timeslot.outputs.nightly != 'true'
         env:
           PYTHONPATH: .:./scripts
         run: |
@@ -141,7 +158,7 @@ jobs:
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
       - name: Evaluate outcomes
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes' && (steps.onceday.outputs.skip == 'false' || steps.timeslot.outputs.nightly == 'true')
         env:
           PYTHONPATH: .:./scripts
         run: |
@@ -152,6 +169,7 @@ jobs:
       # 4.6) Commit history updates to repo
       # ─────────────────────────────────────────────────────────
       - name: Commit history updates (pass_*.csv, outcomes.csv, logs)
+        if: steps.bizgate.outputs.run == 'yes' && (steps.onceday.outputs.skip == 'false' || steps.timeslot.outputs.nightly == 'true')
         run: |
           set -e
 
