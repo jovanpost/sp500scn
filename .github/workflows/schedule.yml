@@ -7,9 +7,9 @@
 #  4) Job: run-and-log
 #     4.1) Repo + Python setup
 #     4.2) Business-day / holiday gate (NY time)
-#     4.3) Intraday de-duplication (only first 10–12 ET slot)
-#     4.4) Echo current NY time (EST/EDT guardrail)
-#     4.5) Run screener and write history files
+#     4.3) Echo current NY time (EST/EDT guardrail)
+#     4.4) Run screener and write history files (intraday)
+#     4.5) Evaluate outcomes (nightly)
 #     4.6) Commit history updates to repo
 # ============================================================
 
@@ -18,11 +18,18 @@ name: Scheduled Swing Scan
 on:
   workflow_dispatch: {}
   schedule:
-    # Intraday scans at ~10:10 / 11:10 / 12:10 ET (Mon–Fri).
-    # During EDT (UTC-4) these correspond to ~14:10 / 15:10 / 16:10 UTC.
+    # Intraday scans every 30m from ~09:40 ET through 14:10 ET (Mon–Fri).
+    # During EDT (UTC-4) these correspond to ~13:40–18:10 UTC.
+    - cron: "40 13 * * 1-5"
     - cron: "10 14 * * 1-5"
+    - cron: "40 14 * * 1-5"
     - cron: "10 15 * * 1-5"
+    - cron: "40 15 * * 1-5"
     - cron: "10 16 * * 1-5"
+    - cron: "40 16 * * 1-5"
+    - cron: "10 17 * * 1-5"
+    - cron: "40 17 * * 1-5"
+    - cron: "10 18 * * 1-5"
     # Nightly outcome check after US close (~23:10 UTC)
     - cron: "10 23 * * 1-5"
 
@@ -94,45 +101,20 @@ jobs:
           echo "run=yes" >> $GITHUB_OUTPUT
 
       # ─────────────────────────────────────────────────────────
-      # 4.3) Intraday de-duplication — only first slot (10–12 ET)
-      #     Nightly slot always allowed.
-      # ─────────────────────────────────────────────────────────
-      - name: First intraday wins (allow nightly)
-        id: onceday
-        if: steps.bizgate.outputs.run == 'yes'
-        shell: bash
-        run: |
-          set -e
-          export TZ=America/New_York
-          HOUR=$(date +%H)             # 00–23 in ET
-          TODAY=$(date +%Y-%m-%d)
-
-          # Only one of the three intraday slots (10–12 ET)
-          if [ "$HOUR" -ge 10 ] && [ "$HOUR" -le 12 ]; then
-            if ls data/history/pass_${TODAY//-/}*.csv >/dev/null 2>&1; then
-              echo "Intraday scan already ran for $TODAY – skipping this slot."
-              echo "skip=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-          fi
-
-          echo "skip=false" >> $GITHUB_OUTPUT
-
-      # ─────────────────────────────────────────────────────────
-      # 4.4) Echo current NY time (EST/EDT guardrail)
+      # 4.3) Echo current NY time (EST/EDT guardrail)
       # ─────────────────────────────────────────────────────────
       - name: Echo current NY time (guardrail)
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes'
         run: |
           export TZ=America/New_York
           echo "Current NY time: $(date)"
           echo "Event: $GITHUB_EVENT_NAME  |  Ref: $GITHUB_REF"
 
       # ─────────────────────────────────────────────────────────
-      # 4.5) Run screener via scripts/run_and_log.py + write history files
+      # 4.4) Run screener via scripts/run_and_log.py + write history files (intraday)
       # ─────────────────────────────────────────────────────────
       - name: Run scripts/run_and_log.py and write history files
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes' && github.event.schedule != '10 23 * * 1-5'
         env:
           PYTHONPATH: .:./scripts
         run: |
@@ -140,8 +122,11 @@ jobs:
           mkdir -p data/history data/logs
           python scripts/run_and_log.py --universe sp500 --with-options | tee "data/logs/scan_$(date -u +%Y%m%d-%H%M%S).txt"
 
+      # ─────────────────────────────────────────────────────────
+      # 4.5) Evaluate outcomes (nightly)
+      # ─────────────────────────────────────────────────────────
       - name: Evaluate outcomes
-        if: steps.bizgate.outputs.run == 'yes' && steps.onceday.outputs.skip == 'false'
+        if: steps.bizgate.outputs.run == 'yes' && github.event.schedule == '10 23 * * 1-5'
         env:
           PYTHONPATH: .:./scripts
         run: |
