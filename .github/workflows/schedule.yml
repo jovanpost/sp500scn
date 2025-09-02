@@ -132,7 +132,7 @@ jobs:
       # 4.4) Run screener via scripts/run_and_log.py + write history files (intraday, no eval)
       # ─────────────────────────────────────────────────────────
       - name: Run scripts/run_and_log.py and write history files
-        if: steps.bizgate.outputs.run == 'yes' && github.event.schedule != '10 23 * * 1-5'
+        if: steps.bizgate.outputs.run == 'yes' && github.event.schedule != '10 23 * 3-10 1-5' && github.event.schedule != '10 0 * 11-12,1-2 2-6'
         env:
           PYTHONPATH: .:./scripts
         run: |
@@ -144,7 +144,7 @@ jobs:
       # 4.5) Evaluate outcomes via scripts/evaluate_outcomes.py (nightly)
       # ─────────────────────────────────────────────────────────
       - name: Evaluate outcomes
-        if: steps.bizgate.outputs.run == 'yes' && github.event.schedule == '10 23 * * 1-5'
+        if: steps.bizgate.outputs.run == 'yes' && (github.event.schedule == '10 23 * 3-10 1-5' || github.event.schedule == '10 0 * 11-12,1-2 2-6')
         env:
           PYTHONPATH: .:./scripts
         run: |
