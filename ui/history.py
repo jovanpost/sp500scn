@@ -232,16 +232,19 @@ def render_history_tab():
                 "LastPriceAt",
                 "PctToTarget",
                 "EntryTimeET",
+                "HitDateET",
+                "Expiry",
+                "DTE",
                 "BuyK",
                 "SellK",
                 "TP",
+                "Notes",
             ]
             cols = [c for c in preferred if c in df_last.columns]
             df_show = df_last[cols] if cols else df_last  # fall back to full frame
-
-            st.markdown(
-                _apply_dark_theme(_style_negatives(df_show)).to_html(),
-                unsafe_allow_html=True,
+            st.dataframe(
+                _apply_dark_theme(_style_negatives(df_show)),
+                use_container_width=True,
             )
     else:
         st.subheader("Trading day — recommendations")
