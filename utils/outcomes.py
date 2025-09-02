@@ -153,7 +153,8 @@ def upsert_and_backfill_outcomes(
     df_pass["BuyK"] = df_pass["BuyK"].map(safe_float)
     df_pass["SellK"] = df_pass["SellK"].map(safe_float)
     df_pass["TP"] = df_pass["TP"].map(safe_float)
-    df_pass["run_date"] = df_pass["run_date"].apply(_to_date_str)
+    today_str = datetime.now().date().isoformat()
+    df_pass["run_date"] = df_pass["run_date"].apply(_to_date_str).fillna(today_str)
 
     tgt = df_pass["SellK"].combine_first(df_pass["TP"])
     df_pass["PctToTarget"] = np.where(
@@ -184,8 +185,8 @@ def upsert_and_backfill_outcomes(
         out = merged[OUTCOLS]
         out["run_date"] = out["run_date"].fillna("")
         out = (
-            out.sort_values(["Ticker", "EvalDate", "run_date"])
-            .drop_duplicates(subset=["Ticker", "EvalDate"], keep="last")
+            out.sort_values(["Ticker", "run_date", "EvalDate"])
+            .drop_duplicates(subset=["Ticker", "run_date"], keep="first")
             .reset_index(drop=True)
         )
 

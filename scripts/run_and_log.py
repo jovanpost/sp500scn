@@ -19,6 +19,11 @@ import sys
 from datetime import datetime, timezone
 import pandas as pd
 
+try:
+    from zoneinfo import ZoneInfo  # py>=3.9
+except Exception:
+    from backports.zoneinfo import ZoneInfo
+
 # Optional universe helper (only used if present)
 try:
     import sp_universe as spuni  # optional
@@ -32,6 +37,7 @@ from utils.outcomes import (
     upsert_and_backfill_outcomes,
     evaluate_outcomes,
     write_outcomes,
+    read_outcomes,
 )
 
 def parse_args() -> argparse.Namespace:
@@ -83,23 +89,35 @@ def main() -> int:
     ensure_dirs()
 
     try:
+        existing = read_outcomes(OUTCOMES_CSV)
+        run_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
         res = safe_run_scan()
         df_pass: Optional[pd.DataFrame] = res.get("pass")
         # df_scan = res.get("scan")  # currently unused here
 
-        wrote_pass = False
         if isinstance(df_pass, pd.DataFrame) and not df_pass.empty:
-            # filename with UTC timestamp
-            pass_name = f"pass_{_utc_ts()}.csv"
-            pass_path = HISTORY_DIR / pass_name
-            write_csv(pass_path, df_pass)
-            print(f"[run_and_log] wrote {pass_path}")
-            wrote_pass = True
+            df_pass = df_pass.copy()
+            df_pass["Ticker"] = df_pass["Ticker"].astype(str).str.upper()
+            df_pass["run_date"] = run_date
 
-            # Update outcomes.csv (insert new, backfill, evaluate)
-            out_df = upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
-            out_df = evaluate_outcomes(out_df, mode="pending")
-            write_outcomes(out_df, OUTCOMES_CSV)
+            today_tickers = set(
+                existing.loc[existing["run_date"] == run_date, "Ticker"].astype(str).str.upper()
+            )
+            df_pass = df_pass[~df_pass["Ticker"].isin(today_tickers)]
+
+            if not df_pass.empty:
+                # filename with UTC timestamp
+                pass_name = f"pass_{_utc_ts()}.csv"
+                pass_path = HISTORY_DIR / pass_name
+                write_csv(pass_path, df_pass)
+                print(f"[run_and_log] wrote {pass_path}")
+                # Update outcomes.csv (insert new, backfill, evaluate)
+                out_df = upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
+                out_df = evaluate_outcomes(out_df, mode="pending")
+                write_outcomes(out_df, OUTCOMES_CSV)
+            else:
+                print("[run_and_log] no new tickers to record today.")
         else:
             print("[run_and_log] scan returned no passing tickers.")
 
