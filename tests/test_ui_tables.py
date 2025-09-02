@@ -34,16 +34,21 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         }
     )
 
-    called = {}
-    monkeypatch.setattr(history.st, "dataframe", lambda df_arg, *a, **k: called.setdefault("df", df_arg))
+    html = {}
+    monkeypatch.setattr(
+        history.st,
+        "markdown",
+        lambda html_arg, *a, **k: html.setdefault("html", html_arg),
+    )
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
-    displayed = called.get("df")
-    assert isinstance(displayed, Styler)
-    assert list(displayed.data.columns) == [
+    displayed = html.get("html")
+    assert displayed is not None
+    parsed = pd.read_html(displayed, index_col=0)[0]
+    assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
         "Price",
@@ -83,21 +88,19 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         }
     )
 
-    calls = {}
+    html_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(
-        history.st, "dataframe", lambda df_arg, *a, **k: calls.setdefault("df", df_arg)
-    )
+    monkeypatch.setattr(history.st, "markdown", lambda html_arg, *a, **k: html_calls.append(html_arg))
     monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
     monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
 
     history.render_history_tab()
 
-    displayed = calls.get("df")
-    assert isinstance(displayed, Styler)
-    assert list(displayed.data.columns) == [
+    assert html_calls
+    parsed = pd.read_html(html_calls[-1], index_col=0)[0]
+    assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
         "run_date",
@@ -117,13 +120,11 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
     df = pd.DataFrame({"Ticker": ["AAA"], "Price": [1], "RelVol(TimeAdj63d)": [1], "TP": [2]})
 
-    calls = {}
-    monkeypatch.setattr(scan.st, "markdown", lambda *a, **k: None)
+    html_calls = []
+    monkeypatch.setattr(scan.st, "markdown", lambda html_arg, *a, **k: html_calls.append(html_arg))
     monkeypatch.setattr(scan.st, "button", lambda *a, **k: False)
     monkeypatch.setattr(scan.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(scan.st, "dataframe", lambda df_arg, *a, **k: calls.setdefault("df", df_arg))
     monkeypatch.setattr(scan, "_render_why_buy_block", lambda df_arg: None)
-    monkeypatch.setattr(scan.st, "table", lambda *a, **k: None)
     monkeypatch.setattr(scan.st, "caption", lambda *a, **k: None)
 
     @contextmanager
@@ -134,8 +135,10 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     monkeypatch.setattr(scan.st, "session_state", {"last_pass": df})
 
     scan.render_scanner_tab()
-
-    assert isinstance(calls.get("df"), Styler)
+    table_html = next((h for h in html_calls if "<table" in h), None)
+    assert table_html is not None
+    parsed = pd.read_html(table_html, index_col=0)[0]
+    assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 
 
 def test_style_negatives_marks_negatives():
