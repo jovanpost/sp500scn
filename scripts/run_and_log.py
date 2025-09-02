@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="If available, save raw scan DF alongside pass file.",
     )
+    p.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Evaluate outcomes after insert/backfill (default: skip)",
+    )
     return p.parse_args()
 
 
@@ -86,13 +91,14 @@ def _utc_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
 def main() -> int:
+    args = parse_args()
     ensure_dirs()
 
     try:
         existing = read_outcomes(OUTCOMES_CSV)
         run_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 
-        res = safe_run_scan()
+        res = safe_run_scan(with_options=args.with_options)
         df_pass: Optional[pd.DataFrame] = res.get("pass")
         # df_scan = res.get("scan")  # currently unused here
 
@@ -112,9 +118,10 @@ def main() -> int:
                 pass_path = HISTORY_DIR / pass_name
                 write_csv(pass_path, df_pass)
                 print(f"[run_and_log] wrote {pass_path}")
-                # Update outcomes.csv (insert new, backfill, evaluate)
+                # Update outcomes.csv (insert new, backfill; evaluation optional)
                 out_df = upsert_and_backfill_outcomes(df_pass, OUTCOMES_CSV)
-                out_df = evaluate_outcomes(out_df, mode="pending")
+                if args.evaluate:
+                    out_df = evaluate_outcomes(out_df, mode="pending")
                 write_outcomes(out_df, OUTCOMES_CSV)
             else:
                 print("[run_and_log] no new tickers to record today.")
