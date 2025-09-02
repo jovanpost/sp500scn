@@ -1,6 +1,7 @@
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -11,7 +12,7 @@ from utils import outcomes
 
 
 def test_upsert_assigns_run_date_and_dedupes(tmp_path):
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     out_path = tmp_path / "outcomes.csv"
 
     existing = pd.DataFrame([
