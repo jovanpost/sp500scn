@@ -33,7 +33,7 @@ def setup_page():
             --table-bg: #1E1E2E;
             --table-header-bg: #2A2A3C;
             --table-row-alt: #25273A;
-            --table-hover: #2F3349;
+            --table-hover: #2f498f;
             --table-text: #E0E0E0;
             --table-header-text: #B0B3C5;
             --table-border: #2E2E3E;
