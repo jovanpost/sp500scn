@@ -53,6 +53,19 @@ def setup_page():
             justify-content: center;
             margin: 0.5rem 0 1rem;
         }
+
+        /* --- Tabs --- */
+        div[data-testid="stTabs"] button {
+            padding: 0.25rem 0.5rem;
+        }
+        @media (max-width: 600px) {
+            div[data-testid="stTabs"] > div > div > div[role="tablist"] {
+                flex-wrap: wrap;
+            }
+            div[data-testid="stTabs"] button {
+                flex: 1 0 auto;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
