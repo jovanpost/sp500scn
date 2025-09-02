@@ -180,7 +180,10 @@ def render_history_tab():
         else:
             preferred = [
                 "Ticker",
+                "EvalDate",
+                "run_date",
                 "Price",
+                "Change%",
                 "RelVol(TimeAdj63d)",
                 "LastPrice",
                 "LastPriceAt",
@@ -191,7 +194,7 @@ def render_history_tab():
                 "TP",
             ]
             cols = [c for c in preferred if c in df_last.columns]
-            df_show = df_last[cols] if cols else df_last
+            df_show = df_last[cols] if cols else df_last  # fall back to full frame
 
             kwargs = {"use_container_width": True}
             if hasattr(st, "column_config"):
