@@ -40,7 +40,7 @@ def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
         },
         {
             "selector": "tbody tr:hover",
-            "props": [("background-color", "#2F3349")],
+            "props": [("background-color", "#3E4967")],
         },
     ])
 
@@ -205,9 +205,9 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    st.markdown(
-        _apply_dark_theme(_style_negatives(df_disp)).to_html(),
-        unsafe_allow_html=True,
+    st.dataframe(
+        _apply_dark_theme(_style_negatives(df_disp)),
+        use_container_width=True,
     )
 
 
