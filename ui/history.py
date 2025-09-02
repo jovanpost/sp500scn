@@ -178,12 +178,28 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            cols = [
-                c
-                for c in ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
-                if c in df_last.columns
+            preferred = [
+                "Ticker",
+                "Price",
+                "RelVol(TimeAdj63d)",
+                "LastPrice",
+                "LastPriceAt",
+                "PctToTarget",
+                "EntryTimeET",
+                "BuyK",
+                "SellK",
+                "TP",
             ]
-            st.dataframe(df_last[cols] if cols else df_last)
+            cols = [c for c in preferred if c in df_last.columns]
+            df_show = df_last[cols] if cols else df_last
+
+            kwargs = {"use_container_width": True}
+            if hasattr(st, "column_config"):
+                kwargs["column_config"] = {
+                    c: st.column_config.Column(width=100) for c in df_show.columns
+                }
+
+            st.dataframe(df_show, **kwargs)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")

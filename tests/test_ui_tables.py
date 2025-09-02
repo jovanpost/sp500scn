@@ -68,6 +68,12 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
             "Ticker": ["AAA"],
             "Price": [1],
             "RelVol(TimeAdj63d)": [1.5],
+            "LastPrice": [1.1],
+            "LastPriceAt": ["2024-01-02"],
+            "PctToTarget": [0.2],
+            "EntryTimeET": ["09:30"],
+            "BuyK": [1],
+            "SellK": [2],
             "TP": [2],
             "Extra": [3],
         }
@@ -76,7 +82,9 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     calls = {}
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(history.st, "dataframe", lambda df_arg: calls.setdefault("df", df_arg))
+    monkeypatch.setattr(
+        history.st, "dataframe", lambda df_arg, *a, **k: calls.setdefault("df", df_arg)
+    )
     monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
     monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
@@ -85,7 +93,18 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 
     displayed = calls.get("df")
     assert isinstance(displayed, pd.DataFrame)
-    assert list(displayed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
+    assert list(displayed.columns) == [
+        "Ticker",
+        "Price",
+        "RelVol(TimeAdj63d)",
+        "LastPrice",
+        "LastPriceAt",
+        "PctToTarget",
+        "EntryTimeET",
+        "BuyK",
+        "SellK",
+        "TP",
+    ]
 
 
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
