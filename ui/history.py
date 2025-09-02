@@ -1,8 +1,18 @@
 import pandas as pd
 import streamlit as st
+from pandas.io.formats.style import Styler
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 from utils.formatting import _usd, _safe
+
+
+def _style_negatives(df: pd.DataFrame) -> Styler:
+    """Return a Styler adding class "neg" to negative numeric cells."""
+    classes = pd.DataFrame("", index=df.index, columns=df.columns)
+    num_cols = df.select_dtypes(include="number").columns
+    for col in num_cols:
+        classes.loc[df[col] < 0, col] = "neg"
+    return df.style.set_td_classes(classes)
 
 
 def load_history_df() -> pd.DataFrame:
@@ -165,7 +175,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    st.dataframe(df_disp)
+    st.dataframe(_style_negatives(df_disp))
 
 
 def render_history_tab():
@@ -202,7 +212,7 @@ def render_history_tab():
                     c: st.column_config.Column() for c in df_show.columns
                 }
 
-            st.dataframe(df_show, **kwargs)
+            st.dataframe(_style_negatives(df_show), **kwargs)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")

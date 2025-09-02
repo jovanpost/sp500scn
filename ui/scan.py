@@ -1,7 +1,17 @@
 import pandas as pd
 import streamlit as st
+from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
+
+
+def _style_negatives(df: pd.DataFrame) -> Styler:
+    """Return a Styler adding class "neg" to negative numeric cells."""
+    classes = pd.DataFrame("", index=df.index, columns=df.columns)
+    num_cols = df.select_dtypes(include="number").columns
+    for col in num_cols:
+        classes.loc[df[col] < 0, col] = "neg"
+    return df.style.set_td_classes(classes)
 
 
 def build_why_buy_html(row: dict) -> str:
@@ -98,7 +108,7 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
-            st.dataframe(df_pass)
+            st.dataframe(_style_negatives(df_pass))
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
                 st.table(_sheet_friendly(df_pass))
@@ -106,7 +116,7 @@ def render_scanner_tab():
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.dataframe(df_pass)
+        st.dataframe(_style_negatives(df_pass))
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
             st.table(_sheet_friendly(df_pass))
