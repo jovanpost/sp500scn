@@ -2,16 +2,25 @@ import streamlit as st
 
 
 def setup_page():
+    if "dark_mode" not in st.session_state:
+        st.session_state["dark_mode"] = False
+
     st.set_page_config(
         page_title="Edge500",     # Title shown in browser tab
         page_icon="logo.png",     # Favicon (logo.png in repo root)
         layout="wide",
     )
 
-    primary = "#ff6b6b"
-    secondary = "#3399ff"
-    background = "#000000"
-    text = "#f2f2f2"
+    if st.session_state["dark_mode"]:
+        primary = "#ff6b6b"
+        secondary = "#3399ff"
+        background = "#0e1117"
+        text = "#f2f2f2"
+    else:
+        primary = "#ff4b4b"
+        secondary = "#0066cc"
+        background = "#ffffff"
+        text = "#111111"
 
     # Import Google font
     st.markdown(
@@ -84,6 +93,7 @@ def setup_page():
             border-radius: 8px;
             margin: 0.5rem 0 1rem;
         }}
+        .hero img {{ width: 140px; }}
         @keyframes gradientShift {{
             0% {{background-position: 0% 50%;}}
             50% {{background-position: 100% 50%;}}
@@ -107,6 +117,31 @@ def setup_page():
                 flex: 1 0 auto;
                 white-space: nowrap;
             }}
+        }}
+
+        /* --- Card grid for ticker displays --- */
+        .cards-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.75rem;
+        }}
+        .ticker-card {{
+            border: 1px solid var(--color-secondary);
+            border-radius: 8px;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-color);
+        }}
+        .ticker-card .price {{
+            color: var(--color-primary);
+            font-weight: 700;
+        }}
+        .ticker-card .relvol {{
+            color: #d97706;
+            font-weight: 600;
+        }}
+        .ticker-card .tp {{
+            color: #1b9e3f;
+            font-weight: 600;
         }}
 
         @media (max-width: 600px) {{
@@ -146,16 +181,21 @@ def setup_page():
             background-color: var(--bg-color);
         }}
         div[data-testid="stDataFrame"] th {{
-            background-color: #1a1a1a !important;
+            background-color: var(--color-secondary) !important;
             color: var(--text-color) !important;
         }}
         div[data-testid="stDataFrame"] td {{
-            background-color: #000000 !important;
+            background-color: var(--bg-color) !important;
             color: var(--text-color) !important;
-            border-color: #333333 !important;
+            border-color: var(--color-secondary) !important;
         }}
-        div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: #0d0d0d; }}
-        div[data-testid="stDataFrame"] tr:hover {{ background: #1a1a1a; }}
+        div[data-testid="stDataFrame"] tr:nth-child(even) {{
+            background: color-mix(in srgb, var(--color-secondary) 5%, var(--bg-color));
+        }}
+        div[data-testid="stDataFrame"] tr:hover {{
+            background: color-mix(in srgb, var(--color-secondary) 15%, var(--bg-color));
+        }}
+
         </style>
         """,
         unsafe_allow_html=True,
@@ -164,9 +204,8 @@ def setup_page():
 
 def render_header():
     """Render animated hero header with logo."""
-    header = st.container()
-    with header:
-        st.markdown('<div class="hero">', unsafe_allow_html=True)
-        st.image("logo.png", width=140)
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="hero"><img src="logo.png" alt="Edge500 logo"></div>',
+        unsafe_allow_html=True,
+    )
     st.divider()
