@@ -34,20 +34,22 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         }
     )
 
-    html = {}
+    df_calls = []
     monkeypatch.setattr(
         history.st,
-        "markdown",
-        lambda html_arg, *a, **k: html.setdefault("html", html_arg),
+        "dataframe",
+        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
     )
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
-    displayed = html.get("html")
-    assert displayed is not None
-    parsed = pd.read_html(displayed, index_col=0)[0]
+    assert df_calls
+    df_shown, kwargs = df_calls[0]
+    assert kwargs.get("use_container_width") is True
+    html = df_shown.to_html()
+    parsed = pd.read_html(html, index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -95,25 +97,43 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     df_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(
         history.st,
         "dataframe",
         lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
     )
-    monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
+
+    df_outcomes = pd.DataFrame(
+        {
+            "Ticker": ["AAA"],
+            "EvalDate": ["2024-01-01"],
+            "Price": [1],
+            "RelVol(TimeAdj63d)": [1.5],
+            "LastPrice": [1.1],
+            "LastPriceAt": ["2024-01-02"],
+            "PctToTarget": [0.2],
+            "EntryTimeET": ["09:30"],
+            "Status": ["OPEN"],
+            "HitDateET": [pd.NA],
+            "Expiry": ["2024-02-01"],
+            "BuyK": [1],
+            "SellK": [2],
+            "TP": [2],
+            "Notes": [""],
+        }
+    )
+    monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
-    monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
 
     history.render_history_tab()
 
-    assert df_calls
-    df_shown, kwargs = df_calls[-1]
-    if isinstance(df_shown, Styler):
-        displayed = df_shown.data
-    else:
-        displayed = df_shown
+    assert len(df_calls) >= 2
+    df_shown, kwargs = df_calls[0]
     assert kwargs.get("use_container_width") is True
-    assert list(displayed.columns) == [
+    html = df_shown.to_html()
+    parsed = pd.read_html(html, index_col=0)[0]
+    assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
         "run_date",
