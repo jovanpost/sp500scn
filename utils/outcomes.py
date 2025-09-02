@@ -209,6 +209,13 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Ensure blank result_status values are treated as pending so they
+    # participate in evaluation and get written back correctly.
+    if "result_status" in df.columns:
+        df["result_status"] = df["result_status"].apply(
+            lambda x: "PENDING" if pd.isna(x) or str(x).strip() == "" else x
+        )
+
     mode = str(mode).lower()
     if mode not in {"pending", "historical"}:
         raise ValueError("mode must be 'pending' or 'historical'")
