@@ -139,6 +139,21 @@ def setup_page():
             padding-left: var(--padding);
             padding-right: var(--padding);
         }}
+
+        div[data-testid="stDataFrame"] div[role="grid"] {{
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            border-radius: 8px;
+        }}
+        div[data-testid="stDataFrame"] th {{
+            background-color: #111;
+            color: var(--text-color);
+            font-weight: 700;
+            border-bottom: 2px solid var(--color-primary);
+        }}
+        div[data-testid="stDataFrame"] td {{
+            border-color: #222;
+        }}
         </style>
         """,
         unsafe_allow_html=True,

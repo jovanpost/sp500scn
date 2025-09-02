@@ -178,11 +178,16 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            cols = [
-                c
-                for c in ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
-                if c in df_last.columns
+            preferred = [
+                "Ticker",
+                "Price",
+                "TP",
+                "RelVol(TimeAdj63d)",
+                "EntryTimeET",
+                "LastPrice",
+                "LastPriceAt",
             ]
+            cols = [c for c in preferred if c in df_last.columns]
             st.dataframe(df_last[cols] if cols else df_last)
     else:
         st.subheader("Trading day — recommendations")
