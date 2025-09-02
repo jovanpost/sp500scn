@@ -263,17 +263,21 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
                         last_price = float(closes.iloc[-1])
                         ts = closes.index[-1]
                         if isinstance(ts, pd.Timestamp):
-                            last_price_at = f"{ts.date().isoformat()} 16:00:00 ET"
+                            if ts.tzinfo is None:
+                                ts = ts.tz_localize("UTC")
+                            ts = ts.tz_convert("America/New_York")
+                            last_price_at = ts.strftime("%Y-%m-%d %H:%M:%S ET")
                         else:
-                            last_price_at = f"{_to_date_str(ts)} 16:00:00 ET"
+                            last_price_at = datetime.now(ZoneInfo("America/New_York")).strftime(
+                                "%Y-%m-%d %H:%M:%S ET"
+                            )
                 except Exception:
                     last_price = None
                     last_price_at = None
 
             if last_price is not None:
                 df.at[i, "LastPrice"] = last_price
-                if last_price_at:
-                    df.at[i, "LastPriceAt"] = last_price_at
+                df.at[i, "LastPriceAt"] = last_price_at
                 if target is not None and not math.isnan(float(target)):
                     try:
                         df.at[i, "PctToTarget"] = (last_price - float(target)) / float(target)
