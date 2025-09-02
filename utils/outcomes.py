@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -153,7 +154,7 @@ def upsert_and_backfill_outcomes(
     df_pass["BuyK"] = df_pass["BuyK"].map(safe_float)
     df_pass["SellK"] = df_pass["SellK"].map(safe_float)
     df_pass["TP"] = df_pass["TP"].map(safe_float)
-    today_str = datetime.now().date().isoformat()
+    today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     df_pass["run_date"] = df_pass["run_date"].apply(_to_date_str).fillna(today_str)
 
     tgt = df_pass["SellK"].combine_first(df_pass["TP"])
