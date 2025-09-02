@@ -39,6 +39,7 @@ from utils.outcomes import (
     write_outcomes,
     read_outcomes,
 )
+from utils.nyse_calendar import previous_trading_day
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -96,7 +97,7 @@ def main() -> int:
 
     try:
         existing = read_outcomes(OUTCOMES_CSV)
-        run_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        run_date = previous_trading_day().isoformat()
 
         res = safe_run_scan(with_options=args.with_options)
         df_pass: Optional[pd.DataFrame] = res.get("pass")
@@ -140,7 +141,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
 
 
 
