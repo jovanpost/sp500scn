@@ -97,7 +97,8 @@ def main() -> int:
 
     try:
         existing = read_outcomes(OUTCOMES_CSV)
-        run_date = previous_trading_day().isoformat()
+        ref_date = datetime.now(ZoneInfo("America/New_York")).date()
+        run_date = previous_trading_day(ref=ref_date).isoformat()
 
         res = safe_run_scan(with_options=args.with_options)
         df_pass: Optional[pd.DataFrame] = res.get("pass")
