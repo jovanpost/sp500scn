@@ -47,11 +47,40 @@ def setup_page():
         }
         .em { font-style: italic; }
 
-        /* --- Logo header --- */
-        .app-logo {
+        /* --- Hero header --- */
+        .hero-bar {
             display: flex;
+            align-items: center;
             justify-content: center;
+            background: linear-gradient(90deg, #ff8a00, #e52e71);
+            color: #fff;
+            font-weight: 800;
+            font-size: 2rem;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
             margin: 0.5rem 0 1rem;
+            animation: slide-in 0.6s ease-out;
+        }
+        .hero-logo {
+            margin-right: 0.5rem;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+        @keyframes glow {
+            from { text-shadow: 0 0 2px #fff; }
+            to { text-shadow: 0 0 10px #fff; }
+        }
+        @keyframes slide-in {
+            from { transform: translateY(-10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        @media (max-width: 600px) {
+            .hero-bar {
+                flex-direction: column;
+                font-size: 1.5rem;
+            }
+            .hero-logo {
+                margin: 0 0 0.25rem 0;
+            }
         }
         </style>
         """,
@@ -60,7 +89,13 @@ def setup_page():
 
 
 def render_header():
-    st.markdown('<div class="app-logo">', unsafe_allow_html=True)
-    st.image("logo.png", width=140)
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="hero-bar">
+            <span class="hero-logo">🔥</span>
+            <span>Edge500</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.divider()
