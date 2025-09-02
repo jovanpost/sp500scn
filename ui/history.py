@@ -196,7 +196,7 @@ def render_history_tab():
             kwargs = {"use_container_width": True}
             if hasattr(st, "column_config"):
                 kwargs["column_config"] = {
-                    c: st.column_config.Column(width=100) for c in df_show.columns
+                    c: st.column_config.Column() for c in df_show.columns
                 }
 
             st.dataframe(df_show, **kwargs)
