@@ -27,3 +27,17 @@ def test_load_outcomes_missing_file(tmp_path, monkeypatch):
     df = history.load_outcomes()
     assert df.empty
     assert list(df.columns) == outcomes.OUTCOLS
+
+
+def test_latest_trading_day_recs_filters_and_dedupes():
+    df = pd.DataFrame(
+        {
+            "Ticker": ["AAA", "BBB", "AAA"],
+            "run_date": ["2023-01-01", "2023-01-02", "2023-01-02"],
+        }
+    )
+
+    latest, date_str = history.latest_trading_day_recs(df)
+    assert date_str == "2023-01-02"
+    assert set(latest["Ticker"]) == {"AAA", "BBB"}
+    assert len(latest) == 2

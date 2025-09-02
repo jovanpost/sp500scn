@@ -42,12 +42,3 @@ def test_load_history_df_uses_list_pass_files(monkeypatch, tmp_path):
     monkeypatch.setattr(history, "list_pass_files", lambda: [psv])
     df = history.load_history_df()
     assert df["__source_file"].tolist() == ["pass_1.psv"]
-
-
-def test_latest_pass_file_uses_list_pass_files(monkeypatch, tmp_path):
-    csv1 = tmp_path / "pass_20230101.csv"
-    csv1.touch()
-    csv2 = tmp_path / "pass_20230102.csv"
-    csv2.touch()
-    monkeypatch.setattr(history, "list_pass_files", lambda: [csv1, csv2])
-    assert history.latest_pass_file() == csv2
