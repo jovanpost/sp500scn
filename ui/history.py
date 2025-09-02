@@ -15,28 +15,34 @@ def _style_negatives(df: pd.DataFrame) -> Styler:
     return df.style.set_td_classes(classes)
 
 
-def _apply_light_theme(df: pd.DataFrame | Styler) -> Styler:
-    return (
-        (df.style if isinstance(df, pd.DataFrame) else df)
-        .set_table_styles([
-            {
-                "selector": "th",
-                "props": [
-                    ("background-color", "#f8f9fa"),
-                    ("color", "#222"),
-                    ("border", "1px solid #ccc"),
-                ],
-            },
-            {
-                "selector": "td",
-                "props": [
-                    ("background-color", "#ffffff"),
-                    ("color", "#222"),
-                    ("border", "1px solid #ccc"),
-                ],
-            },
-        ])
-    )
+def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
+    base = df.style if isinstance(df, pd.DataFrame) else df
+    return base.set_table_styles([
+        {
+            "selector": "th",
+            "props": [
+                ("background-color", "#2A2A3C"),
+                ("color", "#B0B3C5"),
+                ("border", "1px solid #2E2E3E"),
+            ],
+        },
+        {
+            "selector": "td",
+            "props": [
+                ("background-color", "#1E1E2E"),
+                ("color", "#E0E0E0"),
+                ("border", "1px solid #2E2E3E"),
+            ],
+        },
+        {
+            "selector": "tbody tr:nth-child(even)",
+            "props": [("background-color", "#25273A")],
+        },
+        {
+            "selector": "tbody tr:hover",
+            "props": [("background-color", "#2F3349")],
+        },
+    ])
 
 
 def load_history_df() -> pd.DataFrame:
@@ -200,9 +206,9 @@ def outcomes_summary(dfh: pd.DataFrame):
     if cols:
         df_disp = df_disp[cols]
     st.dataframe(
-        _apply_light_theme(
+        _apply_dark_theme(
             _style_negatives(df_disp)
-        ).set_properties(border_color="#ccc", border_style="solid", border_width="1px")
+        ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px")
     )
 
 
@@ -241,9 +247,9 @@ def render_history_tab():
                 }
 
             st.dataframe(
-                _apply_light_theme(
+                _apply_dark_theme(
                     _style_negatives(df_show)
-                ).set_properties(border_color="#ccc", border_style="solid", border_width="1px"),
+                ).set_properties(border_color="#2E2E3E", border_style="solid", border_width="1px"),
                 **kwargs,
             )
     else:
