@@ -16,7 +16,7 @@ render_header()
 
 # Create tabs once with unique variable names
 tab_scanner, tab_history, tab_debug = st.tabs(
-    ["Scanner", "History & Outcomes", "Debugger"]
+    ["🔍 Scanner", "📈 History & Outcomes", "🐞 Debugger"]
 )
 
 with tab_scanner:
