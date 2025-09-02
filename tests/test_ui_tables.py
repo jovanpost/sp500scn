@@ -34,20 +34,20 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         }
     )
 
-    html = {}
+    captured = {}
     monkeypatch.setattr(
         history.st,
-        "markdown",
-        lambda html_arg, *a, **k: html.setdefault("html", html_arg),
+        "dataframe",
+        lambda data, *a, **k: captured.setdefault("data", data),
     )
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
-    displayed = html.get("html")
+    displayed = captured.get("data")
     assert displayed is not None
-    parsed = pd.read_html(displayed, index_col=0)[0]
+    parsed = pd.read_html(displayed.to_html(), index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -88,18 +88,18 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         }
     )
 
-    html_calls = []
+    captured = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(history.st, "markdown", lambda html_arg, *a, **k: html_calls.append(html_arg))
+    monkeypatch.setattr(history.st, "dataframe", lambda data, *a, **k: captured.append(data))
     monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
     monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
 
     history.render_history_tab()
 
-    assert html_calls
-    parsed = pd.read_html(html_calls[-1], index_col=0)[0]
+    assert captured
+    parsed = pd.read_html(captured[-1].to_html(), index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
