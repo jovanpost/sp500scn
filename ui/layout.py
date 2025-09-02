@@ -30,10 +30,15 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
-            --table-bg: #f8f9fa;
-            --table-text: #222;
-            --table-border: #ccc;
-            --table-row-alt: #ffffff;
+            --table-bg: #1E1E2E;
+            --table-header-bg: #2A2A3C;
+            --table-row-alt: #25273A;
+            --table-hover: #2F3349;
+            --table-text: #E0E0E0;
+            --table-header-text: #B0B3C5;
+            --table-border: #2E2E3E;
+            --table-pos: #4ADE80;
+            --table-neg: #F87171;
         }}
 
         body {{
@@ -154,27 +159,27 @@ def setup_page():
         div[data-testid="stDataFrame"] table {{
             background-color: var(--table-bg);
             color: var(--table-text);
-        }}
-        div[data-testid="stDataFrame"] th,
-        div[data-testid="stDataFrame"] td {{
-            border-color: var(--table-border) !important;
-            color: var(--table-text) !important;
+            border-collapse: collapse;
         }}
         div[data-testid="stDataFrame"] th {{
-            background-color: var(--table-row-alt) !important;
+            background-color: var(--table-header-bg) !important;
+            color: var(--table-header-text) !important;
+            border: 1px solid var(--table-border) !important;
             font-weight: 700;
         }}
         div[data-testid="stDataFrame"] td {{
             background-color: var(--table-bg) !important;
+            color: var(--table-text) !important;
+            border: 1px solid var(--table-border) !important;
         }}
-        div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: var(--table-row-alt); }}
-        div[data-testid="stDataFrame"] tr:hover {{ background: #e6e6e6; }}
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) {{ background: var(--table-row-alt); }}
+        div[data-testid="stDataFrame"] tbody tr:hover {{ background: var(--table-hover); }}
 
         td[data-testid*="col_PctChange"] {{
-            color: var(--color-primary);
+            color: var(--table-pos);
         }}
         td[data-testid*="col_PctChange"].neg {{
-            color: #ff6b6b;
+            color: var(--table-neg);
         }}
         </style>
         """,
