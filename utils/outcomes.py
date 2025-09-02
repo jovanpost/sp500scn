@@ -127,85 +127,61 @@ def upsert_and_backfill_outcomes(
 ) -> pd.DataFrame:
     """Insert new outcomes rows and backfill details for pending ones."""
     out = read_outcomes(outcomes_path).copy()
+    if df_pass is None or df_pass.empty:
+        write_outcomes(out, outcomes_path)
+        return out
 
-    if df_pass is None:
-        df_pass = pd.DataFrame()
+    df_pass = df_pass.copy()
+    for c in [
+        "Ticker",
+        "EvalDate",
+        "Price",
+        "BuyK",
+        "SellK",
+        "TP",
+        "EntryTimeET",
+        "HitDateET",
+        "Notes",
+        "run_date",
+    ]:
+        if c not in df_pass.columns:
+            df_pass[c] = pd.NA
+
+    df_pass["Ticker"] = df_pass["Ticker"].astype(str).str.upper()
+    df_pass["EvalDate"] = df_pass["EvalDate"].apply(_to_date_str)
+    df_pass["Price"] = df_pass["Price"].map(safe_float)
+    df_pass["BuyK"] = df_pass["BuyK"].map(safe_float)
+    df_pass["SellK"] = df_pass["SellK"].map(safe_float)
+    df_pass["TP"] = df_pass["TP"].map(safe_float)
+    df_pass["run_date"] = df_pass["run_date"].apply(_to_date_str)
+
+    tgt = df_pass["SellK"].combine_first(df_pass["TP"])
+    df_pass["PctToTarget"] = np.where(
+        (df_pass["Price"].notna()) & (tgt.notna()) & (~pd.isna(tgt)),
+        (df_pass["Price"] - tgt) / tgt,
+        pd.NA,
+    )
+    df_pass["LastPrice"] = df_pass["Price"]
+    df_pass["LastPriceAt"] = df_pass["EntryTimeET"]
+    df_pass["Status"] = "PENDING"
+    df_pass["result_status"] = "PENDING"
+    df_pass["Expiry"] = df_pass.apply(_parse_expiry_from_passrow, axis=1)
+
+    new_rows = df_pass[OUTCOLS].copy()
+
+    if out.empty:
+        out = new_rows
     else:
-        df_pass = df_pass.copy()
-
-    key = lambda t, ev: (str(t).upper(), _to_date_str(ev) or "")
-    pass_map = {key(r.get("Ticker"), r.get("EvalDate")): r for _, r in df_pass.iterrows()}
-
-    existing_keys = set()
-    if not out.empty:
-        for _, r in out.iterrows():
-            existing_keys.add(key(r.get("Ticker"), r.get("EvalDate")))
-
-    rows_to_append = []
-    for k, r in pass_map.items():
-        if k in existing_keys:
-            continue
-        tkr, ev = k
-        price = safe_float(r.get("Price"))
-        target = _first_nonempty(safe_float(r.get("SellK")), safe_float(r.get("TP")))
-        pct_to_target = (
-            (float(price) - float(target)) / float(target)
-            if (price is not None and target is not None and not math.isnan(float(target)))
-            else pd.NA
-        )
-        rows_to_append.append(
-            {
-                "Ticker": tkr,
-                "EvalDate": ev,
-                "Price": price,
-                "LastPrice": price,
-                "LastPriceAt": r.get("EntryTimeET"),
-                "PctToTarget": pct_to_target,
-                "EntryTimeET": r.get("EntryTimeET"),
-                "Status": "PENDING",
-                "result_status": "PENDING",
-                "HitDateET": "",
-                "Expiry": _parse_expiry_from_passrow(r),
-                "BuyK": safe_float(r.get("BuyK")),
-                "SellK": safe_float(r.get("SellK")),
-                "TP": safe_float(r.get("TP")),
-                "Notes": "",
-                "run_date": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
-            }
-        )
-
-    if rows_to_append:
-        out = pd.concat([out, pd.DataFrame(rows_to_append)], ignore_index=True)
-
-    if not out.empty:
-        for i, r in out.iterrows():
-            if str(r.get("result_status") or r.get("Status") or "").upper() == "SETTLED":
+        key_cols = ["Ticker", "EvalDate"]
+        merged = pd.merge(out, new_rows, on=key_cols, how="outer", suffixes=("", "_new"))
+        for col in OUTCOLS:
+            if col in key_cols:
                 continue
-            k = key(r.get("Ticker"), r.get("EvalDate"))
-            pr = pass_map.get(k)
-            if pr is None:
-                if not _to_date_str(r.get("Expiry")) and _to_date_str(r.get("EvalDate")):
-                    try:
-                        exp = (
-                            pd.Timestamp(_to_date_str(r.get("EvalDate")))
-                            + pd.Timedelta(days=30)
-                        ).date().isoformat()
-                        out.at[i, "Expiry"] = exp
-                    except Exception:
-                        pass
-                continue
-            if not _to_date_str(r.get("Expiry")):
-                out.at[i, "Expiry"] = _parse_expiry_from_passrow(pr)
-            if pd.isna(r.get("BuyK")) or r.get("BuyK") == "":
-                out.at[i, "BuyK"] = safe_float(pr.get("BuyK"))
-            if pd.isna(r.get("SellK")) or r.get("SellK") == "":
-                out.at[i, "SellK"] = safe_float(pr.get("SellK"))
-            if pd.isna(r.get("TP")) or r.get("TP") == "":
-                out.at[i, "TP"] = safe_float(pr.get("TP"))
-            if pd.isna(r.get("Price")) or r.get("Price") == "":
-                out.at[i, "Price"] = safe_float(pr.get("Price"))
-
-    if not out.empty:
+            new_col = f"{col}_new"
+            if new_col in merged.columns:
+                merged[col] = merged[col].combine_first(merged[new_col])
+                merged.drop(columns=new_col, inplace=True)
+        out = merged[OUTCOLS]
         out["run_date"] = out["run_date"].fillna("")
         out = (
             out.sort_values(["Ticker", "EvalDate", "run_date"])
