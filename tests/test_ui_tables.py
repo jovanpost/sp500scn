@@ -66,7 +66,10 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     df_last = pd.DataFrame(
         {
             "Ticker": ["AAA"],
+            "EvalDate": ["2024-01-01"],
+            "run_date": ["2024-01-02"],
             "Price": [1],
+            "Change%": [0.05],
             "RelVol(TimeAdj63d)": [1.5],
             "LastPrice": [1.1],
             "LastPriceAt": ["2024-01-02"],
@@ -95,7 +98,10 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     assert isinstance(displayed, pd.DataFrame)
     assert list(displayed.columns) == [
         "Ticker",
+        "EvalDate",
+        "run_date",
         "Price",
+        "Change%",
         "RelVol(TimeAdj63d)",
         "LastPrice",
         "LastPriceAt",
