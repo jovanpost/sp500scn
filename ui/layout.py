@@ -2,25 +2,16 @@ import streamlit as st
 
 
 def setup_page():
-    if "dark_mode" not in st.session_state:
-        st.session_state["dark_mode"] = False
-
     st.set_page_config(
         page_title="Edge500",     # Title shown in browser tab
         page_icon="logo.png",     # Favicon (logo.png in repo root)
         layout="wide",
     )
 
-    if st.session_state["dark_mode"]:
-        primary = "#ff6b6b"
-        secondary = "#3399ff"
-        background = "#0e1117"
-        text = "#f2f2f2"
-    else:
-        primary = "#ff4b4b"
-        secondary = "#0066cc"
-        background = "#ffffff"
-        text = "#111111"
+    primary = "#ff6b6b"
+    secondary = "#3399ff"
+    background = "#000000"
+    text = "#f2f2f2"
 
     # Import Google font
     st.markdown(
@@ -93,7 +84,6 @@ def setup_page():
             border-radius: 8px;
             margin: 0.5rem 0 1rem;
         }}
-        .hero img {{ width: 140px; }}
         @keyframes gradientShift {{
             0% {{background-position: 0% 50%;}}
             50% {{background-position: 100% 50%;}}
@@ -182,8 +172,9 @@ def setup_page():
 
 def render_header():
     """Render animated hero header with logo."""
-    st.markdown(
-        '<div class="hero"><img src="logo.png" alt="Edge500 logo"></div>',
-        unsafe_allow_html=True,
-    )
+    header = st.container()
+    with header:
+        st.markdown('<div class="hero">', unsafe_allow_html=True)
+        st.image("logo.png", width=140)
+        st.markdown('</div>', unsafe_allow_html=True)
     st.divider()

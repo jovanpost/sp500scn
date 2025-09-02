@@ -8,9 +8,6 @@ from ui.debugger import render_debugger_tab
 # Initialize page and global layout/CSS
 setup_page()
 
-# Theme toggle
-st.sidebar.toggle("Dark mode", key="dark_mode")
-
 # ---- Brand header ----
 render_header()
 
