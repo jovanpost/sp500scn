@@ -3,6 +3,7 @@ import streamlit as st
 from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
+from .history import _apply_light_theme
 
 
 def _style_negatives(df: pd.DataFrame) -> Styler:
@@ -109,9 +110,9 @@ def render_scanner_tab():
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
             st.dataframe(
-                _style_negatives(df_pass).set_properties(
-                    border_color="#ccc", border_style="solid", border_width="1px"
-                )
+                _apply_light_theme(
+                    _style_negatives(df_pass)
+                ).set_properties(border_color="#ccc", border_style="solid", border_width="1px")
             )
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
@@ -121,9 +122,9 @@ def render_scanner_tab():
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
         st.dataframe(
-            _style_negatives(df_pass).set_properties(
-                border_color="#ccc", border_style="solid", border_width="1px"
-            )
+            _apply_light_theme(
+                _style_negatives(df_pass)
+            ).set_properties(border_color="#ccc", border_style="solid", border_width="1px")
         )
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
