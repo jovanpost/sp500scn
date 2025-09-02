@@ -53,7 +53,7 @@ def _compute_year(year: int) -> list[str]:
     cal = mcal.get_calendar("NYSE")
     start = f"{year}-01-01"
     end = f"{year}-12-31"
-    hol = cal.holidays(start=start, end=end)
+    hol = cal.holidays(start_date=start, end_date=end)
     return [d.strftime("%Y-%m-%d") for d in hol.to_pydatetime()]
 
 def get_nyse_holidays(start_year: int, end_year: int) -> Set[date]:
