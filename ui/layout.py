@@ -149,6 +149,16 @@ def setup_page():
             padding-right: var(--padding);
         }}
 
+        /* --- DataFrame tables --- */
+        div[data-testid="stDataFrame"] thead th {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }}
+        div[data-testid="stDataFrame"] tbody tr:hover {{
+            background-color: var(--table-hover);
+        }}
+
         td[data-testid*="col_PctChange"] {{
             color: var(--table-pos);
         }}
