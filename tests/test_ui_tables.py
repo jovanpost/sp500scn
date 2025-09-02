@@ -81,26 +81,39 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
             "LastPriceAt": ["2024-01-02"],
             "PctToTarget": [0.2],
             "EntryTimeET": ["09:30"],
+            "HitDateET": [pd.NA],
+            "Expiry": ["2024-02-01"],
+            "DTE": [10],
             "BuyK": [1],
             "SellK": [2],
             "TP": [2],
+            "Notes": [""],
             "Extra": [3],
         }
     )
 
-    html_calls = []
+    df_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(history.st, "markdown", lambda html_arg, *a, **k: html_calls.append(html_arg))
+    monkeypatch.setattr(
+        history.st,
+        "dataframe",
+        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
+    )
     monkeypatch.setattr(history, "load_outcomes", lambda: pd.DataFrame())
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
     monkeypatch.setattr(history, "outcomes_summary", lambda _df: None)
 
     history.render_history_tab()
 
-    assert html_calls
-    parsed = pd.read_html(html_calls[-1], index_col=0)[0]
-    assert list(parsed.columns) == [
+    assert df_calls
+    df_shown, kwargs = df_calls[-1]
+    if isinstance(df_shown, Styler):
+        displayed = df_shown.data
+    else:
+        displayed = df_shown
+    assert kwargs.get("use_container_width") is True
+    assert list(displayed.columns) == [
         "Ticker",
         "EvalDate",
         "run_date",
@@ -111,9 +124,13 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         "LastPriceAt",
         "PctToTarget",
         "EntryTimeET",
+        "HitDateET",
+        "Expiry",
+        "DTE",
         "BuyK",
         "SellK",
         "TP",
+        "Notes",
     ]
 
 
