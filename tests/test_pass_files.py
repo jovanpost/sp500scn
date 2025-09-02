@@ -39,6 +39,10 @@ def test_list_pass_files(tmp_path, monkeypatch):
 def test_load_history_df_uses_list_pass_files(monkeypatch, tmp_path):
     psv = tmp_path / "pass_1.psv"
     psv.write_text("a|b\n1|2\n")
-    monkeypatch.setattr(history, "list_pass_files", lambda: [psv])
+    csv = tmp_path / "pass_2.csv"
+    csv.write_text("a,b\n3,4\n")
+    monkeypatch.setattr(history, "list_pass_files", lambda: [psv, csv])
     df = history.load_history_df()
-    assert df["__source_file"].tolist() == ["pass_1.psv"]
+    assert df["__source_file"].tolist() == ["pass_1.psv", "pass_2.csv"]
+    assert df["a"].tolist() == [1, 3]
+    assert df["b"].tolist() == [2, 4]

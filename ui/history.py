@@ -6,7 +6,7 @@ from utils.outcomes import read_outcomes
 
 def load_history_df() -> pd.DataFrame:
     """Return a DataFrame concatenating all historical PASS snapshots."""
-    paths = [p for p in list_pass_files() if p.suffix == ".psv"]
+    paths = [p for p in list_pass_files() if p.suffix in {".psv", ".csv"}]
 
     if not paths:
         return pd.DataFrame()
@@ -14,7 +14,8 @@ def load_history_df() -> pd.DataFrame:
     frames = []
     for p in paths:
         try:
-            df = pd.read_csv(p, sep="|")
+            sep = "|" if p.suffix == ".psv" else ","
+            df = pd.read_csv(p, sep=sep)
             df["__source_file"] = p.name
             frames.append(df)
         except Exception:
