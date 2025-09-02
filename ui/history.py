@@ -15,6 +15,30 @@ def _style_negatives(df: pd.DataFrame) -> Styler:
     return df.style.set_td_classes(classes)
 
 
+def _apply_light_theme(df: pd.DataFrame | Styler) -> Styler:
+    return (
+        (df.style if isinstance(df, pd.DataFrame) else df)
+        .set_table_styles([
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#f8f9fa"),
+                    ("color", "#222"),
+                    ("border", "1px solid #ccc"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("background-color", "#ffffff"),
+                    ("color", "#222"),
+                    ("border", "1px solid #ccc"),
+                ],
+            },
+        ])
+    )
+
+
 def load_history_df() -> pd.DataFrame:
     """Return a DataFrame concatenating all historical PASS snapshots."""
     paths = [p for p in list_pass_files() if p.suffix in {".psv", ".csv"}]
@@ -176,9 +200,9 @@ def outcomes_summary(dfh: pd.DataFrame):
     if cols:
         df_disp = df_disp[cols]
     st.dataframe(
-        _style_negatives(df_disp).set_properties(
-            border_color="#ccc", border_style="solid", border_width="1px"
-        )
+        _apply_light_theme(
+            _style_negatives(df_disp)
+        ).set_properties(border_color="#ccc", border_style="solid", border_width="1px")
     )
 
 
@@ -217,9 +241,9 @@ def render_history_tab():
                 }
 
             st.dataframe(
-                _style_negatives(df_show).set_properties(
-                    border_color="#ccc", border_style="solid", border_width="1px"
-                ),
+                _apply_light_theme(
+                    _style_negatives(df_show)
+                ).set_properties(border_color="#ccc", border_style="solid", border_width="1px"),
                 **kwargs,
             )
     else:
