@@ -1,0 +1,68 @@
+import sys
+from pathlib import Path
+from contextlib import contextmanager
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import ui.history as history
+import ui.scan as scan
+
+
+def test_outcomes_summary_uses_dataframe(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "Ticker": ["AAA"],
+            "EvalDate": ["2024-01-01"],
+            "Price": [10],
+            "RelVol(TimeAdj63d)": [1.2],
+            "LastPrice": [11],
+            "LastPriceAt": ["2024-01-02"],
+            "PctToTarget": [0.1],
+            "EntryTimeET": ["09:30"],
+            "Status": ["OPEN"],
+            "HitDateET": [pd.NA],
+            "Expiry": ["2024-02-01"],
+            "BuyK": [1],
+            "SellK": [2],
+            "TP": [12],
+            "Notes": [""],
+        }
+    )
+
+    called = {}
+    monkeypatch.setattr(history.st, "dataframe", lambda df_arg: called.setdefault("df", df_arg))
+    monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
+
+    history.outcomes_summary(df)
+
+    assert isinstance(called.get("df"), pd.DataFrame)
+
+
+def test_render_scanner_tab_shows_dataframe(monkeypatch):
+    df = pd.DataFrame({"Ticker": ["AAA"], "Price": [1], "RelVol(TimeAdj63d)": [1], "TP": [2]})
+
+    calls = {}
+    monkeypatch.setattr(scan.st, "markdown", lambda *a, **k: None)
+    monkeypatch.setattr(scan.st, "button", lambda *a, **k: False)
+    monkeypatch.setattr(scan.st, "info", lambda *a, **k: None)
+    monkeypatch.setattr(scan.st, "dataframe", lambda df_arg: calls.setdefault("df", df_arg))
+    monkeypatch.setattr(scan, "_render_why_buy_block", lambda df_arg: None)
+    monkeypatch.setattr(scan.st, "table", lambda *a, **k: None)
+    monkeypatch.setattr(scan.st, "caption", lambda *a, **k: None)
+
+    @contextmanager
+    def dummy_expander(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(scan.st, "expander", dummy_expander)
+    monkeypatch.setattr(scan.st, "session_state", {"last_pass": df})
+
+    scan.render_scanner_tab()
+
+    assert isinstance(calls.get("df"), pd.DataFrame)
+

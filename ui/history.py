@@ -67,30 +67,6 @@ def load_outcomes():
     return read_outcomes()
 
 
-def _render_cards(df: pd.DataFrame):
-    """Render DataFrame rows as card-style blocks."""
-    if df is None or df.empty:
-        return
-    with st.container():
-        st.markdown("<div class='cards-grid'>", unsafe_allow_html=True)
-        for _, row in df.iterrows():
-            with st.container():
-                st.markdown("<div class='ticker-card'>", unsafe_allow_html=True)
-                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                tkr = _safe(row.get("Ticker", ""))
-                price_val = row.get("Price", None)
-                price = _usd(price_val) if price_val is not None else "—"
-                relvol = _safe(row.get("RelVol(TimeAdj63d)", ""))
-                tp_val = row.get("TP", None)
-                tp = _usd(tp_val) if tp_val is not None else "—"
-                c1.markdown(f"**{tkr}**")
-                c2.markdown(f"<span class='price'>{price}</span>", unsafe_allow_html=True)
-                c3.markdown(f"<span class='relvol'>🔥 {relvol}</span>", unsafe_allow_html=True)
-                c4.markdown(f"<span class='tp'>🎯 {tp}</span>", unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
 def outcomes_summary(dfh: pd.DataFrame):
     """Render a concise outcomes table with hit/miss statistics."""
     if dfh.empty:
@@ -189,8 +165,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-
-    _render_cards(df_disp)
+    st.dataframe(df_disp)
 
 
 def render_history_tab():
@@ -203,7 +178,12 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            _render_cards(df_last)
+            cols = [
+                c
+                for c in ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
+                if c in df_last.columns
+            ]
+            st.dataframe(df_last[cols] if cols else df_last)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")

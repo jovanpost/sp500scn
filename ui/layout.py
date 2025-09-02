@@ -109,31 +109,6 @@ def setup_page():
             }}
         }}
 
-        /* --- Card grid for ticker displays --- */
-        .cards-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 0.75rem;
-        }}
-        .ticker-card {{
-            border: 1px solid var(--color-secondary);
-            border-radius: 8px;
-            padding: 0.5rem 0.75rem;
-            background: var(--bg-color);
-        }}
-        .ticker-card .price {{
-            color: var(--color-primary);
-            font-weight: 700;
-        }}
-        .ticker-card .relvol {{
-            color: #d97706;
-            font-weight: 600;
-        }}
-        .ticker-card .tp {{
-            color: #1b9e3f;
-            font-weight: 600;
-        }}
-
         @media (max-width: 600px) {{
             :root {{
                 --padding: 0.5rem;
