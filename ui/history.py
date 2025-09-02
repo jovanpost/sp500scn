@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
+from utils.formatting import _usd, _safe
 
 
 def load_history_df() -> pd.DataFrame:
@@ -64,6 +65,30 @@ def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]
 def load_outcomes():
     """Thin wrapper around :func:`utils.outcomes.read_outcomes`."""
     return read_outcomes()
+
+
+def _render_cards(df: pd.DataFrame):
+    """Render DataFrame rows as card-style blocks."""
+    if df is None or df.empty:
+        return
+    with st.container():
+        st.markdown("<div class='cards-grid'>", unsafe_allow_html=True)
+        for _, row in df.iterrows():
+            with st.container():
+                st.markdown("<div class='ticker-card'>", unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                tkr = _safe(row.get("Ticker", ""))
+                price_val = row.get("Price", None)
+                price = _usd(price_val) if price_val is not None else "—"
+                relvol = _safe(row.get("RelVol(TimeAdj63d)", ""))
+                tp_val = row.get("TP", None)
+                tp = _usd(tp_val) if tp_val is not None else "—"
+                c1.markdown(f"**{tkr}**")
+                c2.markdown(f"<span class='price'>{price}</span>", unsafe_allow_html=True)
+                c3.markdown(f"<span class='relvol'>🔥 {relvol}</span>", unsafe_allow_html=True)
+                c4.markdown(f"<span class='tp'>🎯 {tp}</span>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def outcomes_summary(dfh: pd.DataFrame):
@@ -147,6 +172,7 @@ def outcomes_summary(dfh: pd.DataFrame):
         "Ticker",
         "EvalDate",
         "Price",
+        "RelVol(TimeAdj63d)",
         "LastPrice",
         "LastPriceAt",
         "PctToTarget",
@@ -164,24 +190,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     if cols:
         df_disp = df_disp[cols]
 
-    styler = df_disp
-    if "PctToTarget" in df_disp.columns:
-        df_disp["PctToTarget"] = pd.to_numeric(df_disp["PctToTarget"], errors="coerce")
-
-        def _pct_color(val):
-            if pd.isna(val):
-                return ""
-            return "color: green;" if abs(val) <= 0.05 else ""
-
-        styler = (
-            df_disp.style.format({"PctToTarget": "{:.1%}"}).applymap(
-                _pct_color, subset=["PctToTarget"]
-            )
-        )
-
-    st.dataframe(
-        styler, use_container_width=True, height=min(600, 80 + 28 * len(df_disp))
-    )
+    _render_cards(df_disp)
 
 
 def render_history_tab():
@@ -194,7 +203,7 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            st.dataframe(df_last, use_container_width=True)
+            _render_cards(df_last)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")

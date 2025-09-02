@@ -68,6 +68,30 @@ def _render_why_buy_block(df: pd.DataFrame):
             st.markdown(html, unsafe_allow_html=True)
 
 
+def _render_cards(df: pd.DataFrame):
+    """Render DataFrame rows as card-style blocks."""
+    if df is None or df.empty:
+        return
+    with st.container():
+        st.markdown("<div class='cards-grid'>", unsafe_allow_html=True)
+        for _, row in df.iterrows():
+            with st.container():
+                st.markdown("<div class='ticker-card'>", unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                tkr = _safe(row.get("Ticker", ""))
+                price_val = row.get("Price", None)
+                price = _usd(price_val) if price_val is not None else "—"
+                relvol = _safe(row.get("RelVol(TimeAdj63d)", ""))
+                tp_val = row.get("TP", None)
+                tp = _usd(tp_val) if tp_val is not None else "—"
+                c1.markdown(f"**{tkr}**")
+                c2.markdown(f"<span class='price'>{price}</span>", unsafe_allow_html=True)
+                c3.markdown(f"<span class='relvol'>🔥 {relvol}</span>", unsafe_allow_html=True)
+                c4.markdown(f"<span class='tp'>🎯 {tp}</span>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_scanner_tab():
     st.markdown("#### Scanner")
 
@@ -98,17 +122,17 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
-            st.dataframe(df_pass, use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+            _render_cards(df_pass)
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
-                st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+                st.table(_sheet_friendly(df_pass))
 
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.dataframe(df_pass, use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+        _render_cards(df_pass)
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
-            st.dataframe(_sheet_friendly(df_pass), use_container_width=True, height=min(560, 80 + 28*len(df_pass)))
+            st.table(_sheet_friendly(df_pass))
     else:
         st.caption("No results yet. Press **RUN** to scan.")
