@@ -7,3 +7,4 @@ html5lib>=1.1
 tzdata
 requests>=2.31
 streamlit>=1.31
+pandas-market-calendars>=4.3
