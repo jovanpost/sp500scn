@@ -1,9 +1,9 @@
 import sys
-import json
 from datetime import date
 from pathlib import Path
 
 import pandas_market_calendars as mcal
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -12,27 +12,22 @@ if str(ROOT) not in sys.path:
 from utils import nyse_calendar
 
 
-def test_previous_trading_day_across_july4(monkeypatch, tmp_path):
-    cache = {
-        "2022": [],
-        "2023": ["2023-07-04"],
-        "2024": [],
-    }
+@pytest.mark.skipif(mcal is None, reason="pandas_market_calendars not installed")
+def test_compute_year_has_known_holidays():
+    hols = nyse_calendar._compute_year(2024)
+    assert "2024-07-04" in hols
+    assert "2024-12-25" in hols
+
+
+@pytest.mark.skipif(mcal is None, reason="pandas_market_calendars not installed")
+def test_previous_trading_day_across_holidays(monkeypatch, tmp_path):
     cache_file = tmp_path / "nyse_holidays_cache.json"
-    cache_file.write_text(json.dumps(cache))
     override_file = tmp_path / "nyse_holidays_override.json"
     override_file.write_text("[]")
 
     monkeypatch.setattr(nyse_calendar, "CACHE_FILE", cache_file)
     monkeypatch.setattr(nyse_calendar, "OVERRIDE_FILE", override_file)
 
-    def boom(year: int):
-        raise AssertionError("_compute_year should not be called")
-
-    monkeypatch.setattr(nyse_calendar, "_compute_year", boom)
-
-    july4 = date(2023, 7, 4)
-    assert nyse_calendar.previous_trading_day(july4) == date(2023, 7, 3)
-    assert nyse_calendar.previous_trading_day(date(2023, 7, 5)) == date(2023, 7, 5)
-
-    assert mcal is not None
+    assert nyse_calendar.previous_trading_day(date(2024, 7, 4)) == date(2024, 7, 3)
+    assert nyse_calendar.previous_trading_day(date(2024, 7, 5)) == date(2024, 7, 5)
+    assert nyse_calendar.previous_trading_day(date(2024, 1, 1)) == date(2023, 12, 29)

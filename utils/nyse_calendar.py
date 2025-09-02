@@ -53,8 +53,13 @@ def _compute_year(year: int) -> list[str]:
     cal = mcal.get_calendar("NYSE")
     start = f"{year}-01-01"
     end = f"{year}-12-31"
-    hol = cal.holidays(start_date=start, end_date=end)
-    return [d.strftime("%Y-%m-%d") for d in hol.to_pydatetime()]
+    # ``pandas_market_calendars`` can return an offset object containing all
+    # known NYSE holidays.  Filtering locally avoids the need for network
+    # access while still supporting any year included in the library.
+    offset = cal.holidays()
+    hol = offset.holidays  # numpy array of all known holiday dates
+    hol = [d for d in hol if start <= d.astype(str) <= end]
+    return [d.astype(str) for d in hol]
 
 def get_nyse_holidays(start_year: int, end_year: int) -> Set[date]:
     """Return NYSE holidays between ``start_year`` and ``end_year`` inclusive."""
