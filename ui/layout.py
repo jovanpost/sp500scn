@@ -83,11 +83,40 @@ def setup_page():
         }}
         .em {{ font-style: italic; }}
 
-        /* --- Logo header --- */
-        .app-logo {{
-            display: flex;
-            justify-content: center;
+        /* --- Hero header --- */
+        .hero {{
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            background-size: 400% 400%;
+            animation: gradientShift 8s ease infinite;
+            padding: 2rem 1rem;
+            text-align: center;
+            border-radius: 8px;
             margin: 0.5rem 0 1rem;
+        }}
+        .hero img {{ width: 140px; }}
+        @keyframes gradientShift {{
+            0% {{background-position: 0% 50%;}}
+            50% {{background-position: 100% 50%;}}
+            100% {{background-position: 0% 50%;}}
+        }}
+
+        /* --- Responsive tabs --- */
+        .stTabs [role="tablist"] {{
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }}
+        .stTabs [role="tab"] {{
+            padding: 0.5rem 1rem;
+        }}
+        @media (max-width: 600px) {{
+            .stTabs [role="tablist"] {{
+                overflow-x: auto;
+                flex-wrap: nowrap;
+            }}
+            .stTabs [role="tab"] {{
+                flex: 1 0 auto;
+                white-space: nowrap;
+            }}
         }}
 
         /* --- Card grid for ticker displays --- */
@@ -152,7 +181,9 @@ def setup_page():
 
 
 def render_header():
-    st.markdown('<div class="app-logo">', unsafe_allow_html=True)
-    st.image("logo.png", width=140)
-    st.markdown('</div>', unsafe_allow_html=True)
+    """Render animated hero header with logo."""
+    st.markdown(
+        '<div class="hero"><img src="logo.png" alt="Edge500 logo"></div>',
+        unsafe_allow_html=True,
+    )
     st.divider()
