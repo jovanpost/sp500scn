@@ -2,57 +2,124 @@ import streamlit as st
 
 
 def setup_page():
+    if "dark_mode" not in st.session_state:
+        st.session_state["dark_mode"] = False
+
     st.set_page_config(
         page_title="Edge500",     # Title shown in browser tab
         page_icon="logo.png",     # Favicon (logo.png in repo root)
         layout="wide",
     )
 
+    if st.session_state["dark_mode"]:
+        primary = "#ff6b6b"
+        secondary = "#3399ff"
+        background = "#0e1117"
+        text = "#f2f2f2"
+    else:
+        primary = "#ff4b4b"
+        secondary = "#0066cc"
+        background = "#ffffff"
+        text = "#111111"
+
+    # Import Google font
     st.markdown(
-        """
+        "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap' rel='stylesheet'>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"""
         <style>
+        :root {{
+            --color-primary: {primary};
+            --color-secondary: {secondary};
+            --bg-color: {background};
+            --text-color: {text};
+            --padding: 1rem;
+            --font-size-base: 16px;
+            --col-width: 33%;
+        }}
+
+        body {{
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+        }}
+
         /* --- Buttons / general --- */
-        div.stButton > button:first-child {
-            background-color: red !important;
-            color: white !important;
+        div.stButton > button:first-child {{
+            background-color: var(--color-primary) !important;
+            color: var(--color-secondary) !important;
             font-weight: 700 !important;
-        }
+        }}
 
         /* --- WHY BUY text block --- */
-        .whybuy { font-size: 16px; line-height: 1.55; }
+        .whybuy {{ font-size: calc(var(--font-size-base) - 2px); line-height: 1.55; }}
 
         /* --- Debugger layout (HTML) --- */
-        .dbg-wrap { max-width: 1100px; margin-top: 8px; }
-        .dbg-title { font-size: 28px; font-weight: 800; letter-spacing: .2px; margin: 4px 0 12px; }
-        .dbg-badge {
+        .dbg-wrap {{ max-width: 1100px; margin-top: 8px; }}
+        .dbg-title {{ font-size: 28px; font-weight: 800; letter-spacing: .2px; margin: 4px 0 12px; }}
+        .dbg-badge {{
             display:inline-block; padding: 4px 10px; margin-left: 10px;
             border-radius: 999px; font-size: 13px; font-weight: 700;
             vertical-align: middle;
-        }
-        .dbg-badge.fail { background:#ffe6e6; color:#b00020; border:1px solid #ffb3b3; }
-        .dbg-badge.pass { background:#e7f6ec; color:#0a7a35; border:1px solid #bfe6cc; }
-        .dbg-subtle { color:#666; font-size: 14px; margin-bottom: 10px; }
-        .dbg-snapshot {
+        }}
+        .dbg-badge.fail {{ background:#ffe6e6; color:#b00020; border:1px solid #ffb3b3; }}
+        .dbg-badge.pass {{ background:#e7f6ec; color:#0a7a35; border:1px solid #bfe6cc; }}
+        .dbg-subtle {{ color:#666; font-size: 14px; margin-bottom: 10px; }}
+        .dbg-snapshot {{
             background:#f7f7f9; border-left:4px solid #c7c7d1;
             padding:10px 12px; margin: 14px 0 10px; font-size:15px;
-        }
-        .dbg-snap-kv { display:inline-block; margin-right: 14px; }
-        .dbg-snap-kv .k { color:#666; }
-        .dbg-snap-kv .v { font-weight:700; color:#111; }
-        .dbg-json details { margin-top: 10px; }
-        .dbg-json summary { cursor: pointer; font-weight: 700; }
-        .dbg-json pre {
+        }}
+        .dbg-snap-kv {{ display:inline-block; margin-right: 14px; }}
+        .dbg-snap-kv .k {{ color:#666; }}
+        .dbg-snap-kv .v {{ font-weight:700; color:#111; }}
+        .dbg-json details {{ margin-top: 10px; }}
+        .dbg-json summary {{ cursor: pointer; font-weight: 700; }}
+        .dbg-json pre {{
             background:#111; color:#f2f2f2; padding:12px; border-radius:8px;
             overflow:auto; font-size:13px; line-height:1.45;
-        }
-        .em { font-style: italic; }
+        }}
+        .em {{ font-style: italic; }}
 
         /* --- Logo header --- */
-        .app-logo {
+        .app-logo {{
             display: flex;
             justify-content: center;
             margin: 0.5rem 0 1rem;
-        }
+        }}
+
+        @media (max-width: 600px) {{
+            :root {{
+                --padding: 0.5rem;
+                --font-size-base: 14px;
+                --col-width: 100%;
+            }}
+            .dbg-title {{ font-size: 22px; }}
+        }}
+
+        @media (min-width: 600px) and (max-width: 900px) {{
+            :root {{
+                --padding: 0.75rem;
+                --font-size-base: 15px;
+                --col-width: 50%;
+            }}
+            .dbg-title {{ font-size: 24px; }}
+        }}
+
+        @media (min-width: 900px) {{
+            :root {{
+                --padding: 1rem;
+                --font-size-base: 16px;
+                --col-width: 33%;
+            }}
+        }}
+
+        .block-container {{
+            padding-left: var(--padding);
+            padding-right: var(--padding);
+        }}
         </style>
         """,
         unsafe_allow_html=True,
