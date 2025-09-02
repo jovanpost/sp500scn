@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import contextmanager
 
 import pandas as pd
+from pandas.io.formats.style import Styler
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,15 +35,15 @@ def test_outcomes_summary_orders_columns(monkeypatch):
     )
 
     called = {}
-    monkeypatch.setattr(history.st, "dataframe", lambda df_arg: called.setdefault("df", df_arg))
+    monkeypatch.setattr(history.st, "dataframe", lambda df_arg, *a, **k: called.setdefault("df", df_arg))
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
     displayed = called.get("df")
-    assert isinstance(displayed, pd.DataFrame)
-    assert list(displayed.columns) == [
+    assert isinstance(displayed, Styler)
+    assert list(displayed.data.columns) == [
         "Ticker",
         "EvalDate",
         "Price",
@@ -95,8 +96,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     history.render_history_tab()
 
     displayed = calls.get("df")
-    assert isinstance(displayed, pd.DataFrame)
-    assert list(displayed.columns) == [
+    assert isinstance(displayed, Styler)
+    assert list(displayed.data.columns) == [
         "Ticker",
         "EvalDate",
         "run_date",
@@ -120,7 +121,7 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     monkeypatch.setattr(scan.st, "markdown", lambda *a, **k: None)
     monkeypatch.setattr(scan.st, "button", lambda *a, **k: False)
     monkeypatch.setattr(scan.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(scan.st, "dataframe", lambda df_arg: calls.setdefault("df", df_arg))
+    monkeypatch.setattr(scan.st, "dataframe", lambda df_arg, *a, **k: calls.setdefault("df", df_arg))
     monkeypatch.setattr(scan, "_render_why_buy_block", lambda df_arg: None)
     monkeypatch.setattr(scan.st, "table", lambda *a, **k: None)
     monkeypatch.setattr(scan.st, "caption", lambda *a, **k: None)
@@ -134,5 +135,12 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
 
     scan.render_scanner_tab()
 
-    assert isinstance(calls.get("df"), pd.DataFrame)
+    assert isinstance(calls.get("df"), Styler)
+
+
+def test_style_negatives_marks_negatives():
+    df = pd.DataFrame({"PctChange": [1, -2]})
+    styler = scan._style_negatives(df)
+    html = styler.to_html()
+    assert 'neg"' in html
 
