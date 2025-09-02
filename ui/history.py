@@ -175,7 +175,11 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    st.dataframe(_style_negatives(df_disp))
+    st.dataframe(
+        _style_negatives(df_disp).set_properties(
+            border_color="#ccc", border_style="solid", border_width="1px"
+        )
+    )
 
 
 def render_history_tab():
@@ -212,7 +216,12 @@ def render_history_tab():
                     c: st.column_config.Column() for c in df_show.columns
                 }
 
-            st.dataframe(_style_negatives(df_show), **kwargs)
+            st.dataframe(
+                _style_negatives(df_show).set_properties(
+                    border_color="#ccc", border_style="solid", border_width="1px"
+                ),
+                **kwargs,
+            )
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
