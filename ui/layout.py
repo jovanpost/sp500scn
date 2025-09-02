@@ -30,6 +30,10 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
+            --table-bg: #1a1a1a;
+            --table-text: #e0e0e0;
+            --table-border: #2a2a2a;
+            --table-row-alt: #222;
         }}
 
         body {{
@@ -142,20 +146,23 @@ def setup_page():
 
         /* --- DataFrame tables --- */
         div[data-testid="stDataFrame"] table {{
-            color: var(--text-color);
-            background-color: var(--bg-color);
+            background-color: var(--table-bg);
+            color: var(--table-text);
+        }}
+        div[data-testid="stDataFrame"] th,
+        div[data-testid="stDataFrame"] td {{
+            border-color: var(--table-border) !important;
+            color: var(--table-text) !important;
         }}
         div[data-testid="stDataFrame"] th {{
-            background-color: #1a1a1a !important;
-            color: var(--text-color) !important;
+            background-color: #111 !important;
+            font-weight: 700;
         }}
         div[data-testid="stDataFrame"] td {{
-            background-color: #000000 !important;
-            color: var(--text-color) !important;
-            border-color: #333333 !important;
+            background-color: var(--table-bg) !important;
         }}
-        div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: #0d0d0d; }}
-        div[data-testid="stDataFrame"] tr:hover {{ background: #1a1a1a; }}
+        div[data-testid="stDataFrame"] tr:nth-child(even) {{ background: var(--table-row-alt); }}
+        div[data-testid="stDataFrame"] tr:hover {{ background: #2e2e2e; }}
         </style>
         """,
         unsafe_allow_html=True,
