@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from utils.io import list_pass_files, read_csv
+from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 
 
@@ -26,10 +26,38 @@ def load_history_df() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def latest_pass_file():
-    """Return the newest pass_*.csv from either pass_logs/ or history/."""
-    candidates = [p for p in list_pass_files() if p.suffix == ".csv"]
-    return candidates[-1] if candidates else None
+@st.cache_data(show_spinner=False)
+def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    """Return unique tickers for the most recent ``run_date``.
+
+    Parameters
+    ----------
+    df:
+        Outcomes DataFrame to search. The result is cached based on the
+        contents of ``df`` so the table only refreshes after new data is
+        written.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, str | None]
+        The filtered DataFrame and the latest trading-day string
+        (``YYYY-MM-DD``). ``None`` if no valid ``run_date`` exists.
+    """
+    if df.empty or "run_date" not in df.columns:
+        return pd.DataFrame(), None
+
+    df = df.copy()
+    df["run_date"] = pd.to_datetime(df["run_date"], errors="coerce")
+    latest = df["run_date"].dropna().max()
+    if pd.isna(latest):
+        return pd.DataFrame(), None
+
+    df_latest = (
+        df[df["run_date"] == latest]
+        .drop_duplicates(subset=["Ticker"])
+        .reset_index(drop=True)
+    )
+    return df_latest, latest.date().isoformat()
 
 
 def load_outcomes():
@@ -156,19 +184,21 @@ def outcomes_summary(dfh: pd.DataFrame):
 
 
 def render_history_tab():
-    # --- Latest recommendations (most recent run) ---
-    st.subheader("Latest recommendations (most recent run)")
-    lastf = latest_pass_file()
-    if lastf:
-        try:
-            df_last = read_csv(lastf)
+    df_out = load_outcomes()
+
+    # --- Latest recommendations based on most recent run_date ---
+    df_last, date_str = latest_trading_day_recs(df_out)
+    if date_str:
+        st.subheader(f"Trading day {date_str} recommendations")
+        if df_last.empty:
+            st.info("No tickers passed that day.")
+        else:
             st.dataframe(df_last, use_container_width=True)
-        except Exception as e:
-            st.warning(f"Could not read latest pass file: {e}")
     else:
+        st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
 
     # --- Outcomes, sorted by option expiry (oldest → newest) ---
     st.subheader("Outcomes (sorted by option expiry)")
 
-    outcomes_summary(load_outcomes())
+    outcomes_summary(df_out)
