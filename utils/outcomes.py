@@ -22,6 +22,8 @@ OUTCOLS = [
     "Ticker",
     "EvalDate",
     "Price",
+    "Change%",
+    "RelVol(TimeAdj63d)",
     "LastPrice",
     "LastPriceAt",
     "PctToTarget",
@@ -137,6 +139,8 @@ def upsert_and_backfill_outcomes(
         "Ticker",
         "EvalDate",
         "Price",
+        "Change%",
+        "RelVol(TimeAdj63d)",
         "BuyK",
         "SellK",
         "TP",
@@ -151,6 +155,8 @@ def upsert_and_backfill_outcomes(
     df_pass["Ticker"] = df_pass["Ticker"].astype(str).str.upper()
     df_pass["EvalDate"] = df_pass["EvalDate"].apply(_to_date_str)
     df_pass["Price"] = df_pass["Price"].map(safe_float)
+    df_pass["Change%"] = df_pass["Change%"].map(safe_float)
+    df_pass["RelVol(TimeAdj63d)"] = df_pass["RelVol(TimeAdj63d)"].map(safe_float)
     df_pass["BuyK"] = df_pass["BuyK"].map(safe_float)
     df_pass["SellK"] = df_pass["SellK"].map(safe_float)
     df_pass["TP"] = df_pass["TP"].map(safe_float)
