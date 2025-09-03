@@ -158,7 +158,9 @@ def setup_page():
         div[data-testid="stDataFrame"] tbody tr:hover {{
             background-color: var(--table-hover);
         }}
-
+        td.neg {{
+            color: var(--table-neg);
+        }}
         td[data-testid*="col_PctChange"] {{
             color: var(--table-pos);
         }}

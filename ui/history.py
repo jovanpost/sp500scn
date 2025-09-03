@@ -21,26 +21,26 @@ def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
         {
             "selector": "th",
             "props": [
-                ("background-color", "#2A2A3C"),
-                ("color", "#B0B3C5"),
-                ("border", "1px solid #2E2E3E"),
+                ("background-color", "var(--table-header-bg)"),
+                ("color", "var(--table-header-text)"),
+                ("border", "1px solid var(--table-border)"),
             ],
         },
         {
             "selector": "td",
             "props": [
-                ("background-color", "#1E1E2E"),
-                ("color", "#E0E0E0"),
-                ("border", "1px solid #2E2E3E"),
+                ("background-color", "var(--table-bg)"),
+                ("color", "var(--table-text)"),
+                ("border", "1px solid var(--table-border)"),
             ],
         },
         {
             "selector": "tbody tr:nth-child(even)",
-            "props": [("background-color", "#25273A")],
+            "props": [("background-color", "var(--table-row-alt)")],
         },
         {
             "selector": "tbody tr:hover",
-            "props": [("background-color", "#3E4967")],
+            "props": [("background-color", "var(--table-hover)")],
         },
     ])
 
