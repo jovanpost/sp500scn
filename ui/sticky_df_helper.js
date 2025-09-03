@@ -57,20 +57,33 @@ window.__STICKY_DEBUG__ = window.__STICKY_DEBUG__ ?? false;
   }
 
   function apply() {
-    document.querySelectorAll('div[data-testid="stDataFrame"]').forEach((root) => audit(root));
+    document
+      .querySelectorAll('div[data-testid="stDataFrame"]')
+      .forEach((root) => audit(root));
   }
 
   function observe() {
-    const observer = new MutationObserver(() => apply());
-    document.querySelectorAll('div[data-testid="stDataFrame"]').forEach((root) => {
-      observer.observe(root, { childList: true, subtree: true });
+    if (window.__stickyObserver__) return;
+    window.__stickyObserver__ = new MutationObserver(() => {
+      clearTimeout(window.__stickyPending__);
+      window.__stickyPending__ = setTimeout(window.__stickyAudit__, 80);
+    });
+    window.__stickyObserver__.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
     });
   }
 
   window.__stickyAudit__ = apply;
 
-  window.addEventListener('load', () => {
+  function init() {
     apply();
     observe();
-  });
+  }
+
+  init();
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  }
 })();
