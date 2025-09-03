@@ -206,11 +206,34 @@ def setup_page():
         .table-wrapper {{
             overflow-x: auto;
             max-width: 100%;
+            overscroll-behavior: contain;
+            touch-action: pan-x;
         }}
         .table-wrapper table {{
             width: max-content;
         }}
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <script>
+        document.addEventListener('keydown', function(event) {
+            const active = document.activeElement;
+            if (active && active.classList.contains('table-wrapper')) {
+                const scrollAmount = 40;
+                if (event.key === 'ArrowRight') {
+                    active.scrollLeft += scrollAmount;
+                    event.preventDefault();
+                } else if (event.key === 'ArrowLeft') {
+                    active.scrollLeft -= scrollAmount;
+                    event.preventDefault();
+                }
+            }
+        });
+        </script>
         """,
         unsafe_allow_html=True,
     )
