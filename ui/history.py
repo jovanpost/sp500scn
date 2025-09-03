@@ -23,15 +23,18 @@ _row_select_injected = False
 
 
 def _apply_dark_theme(
-    df: pd.DataFrame | Styler, colors: dict[str, str] | None = None
+    df: pd.DataFrame | Styler,
+    colors: dict[str, str] | None = None,
+    hover_color: str = "#2563eb",
+    hover_text_color: str = "#ffffff",
 ) -> Styler:
     """Apply a dark theme with inlined palette and scoped pos/neg styles."""
     palette = {
         "--table-bg": "#1f2937",
         "--table-header-bg": "#374151",
         "--table-row-alt": "#1e293b",
-        "--table-hover": "#2563eb",
-        "--table-hover-text": "#ffffff",
+        "--table-hover": hover_color,
+        "--table-hover-text": hover_text_color,
         "--table-text": "#e5e7eb",
         "--table-header-text": "#f9fafb",
         "--table-border": "#4b5563",
