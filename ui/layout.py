@@ -30,10 +30,11 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
-            --table-bg: #1E1E2E;
+            --table-bg: #14141f;
             --table-header-bg: #2A2A3C;
-            --table-row-alt: #25273A;
-            --table-hover: #3E4967;
+            --table-row-alt: #1b1d2c;
+            --table-hover: #2f498f;
+            --table-hover-text: #ffffff;
             --table-text: #E0E0E0;
             --table-header-text: #B0B3C5;
             --table-border: #2E2E3E;
@@ -157,6 +158,7 @@ def setup_page():
         }}
         div[data-testid="stDataFrame"] tbody tr:hover {{
             background-color: var(--table-hover);
+            color: var(--table-hover-text);
         }}
         td.neg {{
             color: var(--table-neg);

@@ -40,7 +40,10 @@ def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
         },
         {
             "selector": "tbody tr:hover",
-            "props": [("background-color", "var(--table-hover)")],
+            "props": [
+                ("background-color", "var(--table-hover)"),
+                ("color", "var(--table-hover-text)"),
+            ],
         },
     ])
 
