@@ -4,7 +4,7 @@ from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
 from .history import _apply_dark_theme
-from .table_utils import _style_negatives
+from .table_utils import _style_negatives, inject_row_select_js
 
 
 def build_why_buy_html(row: dict) -> str:
@@ -105,6 +105,7 @@ def render_scanner_tab():
                 order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
                 df_pass = df_pass[order]
             table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
+            table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
@@ -116,6 +117,7 @@ def render_scanner_tab():
                     order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                     sf = sf[order]
                 table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
+                table_html = inject_row_select_js(table_html)
                 st.markdown(
                     f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                     unsafe_allow_html=True,
@@ -128,6 +130,7 @@ def render_scanner_tab():
             order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
             df_pass = df_pass[order]
         table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
+        table_html = inject_row_select_js(table_html)
         st.markdown(
             f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
             unsafe_allow_html=True,
@@ -139,6 +142,7 @@ def render_scanner_tab():
                 order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                 sf = sf[order]
             table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
+            table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
