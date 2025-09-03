@@ -6,6 +6,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils import io
+import ui.history as history
 
 
 def test_list_pass_files(tmp_path, monkeypatch):
@@ -33,3 +34,16 @@ def test_list_pass_files(tmp_path, monkeypatch):
     paths = io.list_pass_files()
     assert paths == sorted(paths)
     assert {p.name for p in paths} == {"pass_20230102.csv", "pass_20230101.psv", "pass_20230103.csv"}
+
+
+def test_load_pass_history(tmp_path, monkeypatch):
+    f1 = tmp_path / "pass_20230101.csv"
+    f1.write_text("Ticker,Price\nAAA,1\n")
+    f2 = tmp_path / "pass_20230102.psv"
+    f2.write_text("Ticker|Price\nBBB|2\n")
+
+    monkeypatch.setattr(history, "list_pass_files", lambda: [f1, f2])
+
+    df = history.load_pass_history()
+    assert list(df["Ticker"]) == ["AAA", "BBB"]
+    assert list(df["run_date"]) == ["20230101", "20230102"]

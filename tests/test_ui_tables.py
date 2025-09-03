@@ -70,7 +70,7 @@ def test_outcomes_summary_orders_columns(monkeypatch):
 
 
 def test_render_history_tab_shows_extended_columns(monkeypatch):
-    df_last = pd.DataFrame(
+    df_pass = pd.DataFrame(
         {
             "Ticker": ["AAA"],
             "EvalDate": ["2024-01-01"],
@@ -96,34 +96,21 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     html_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(
         history.st,
         "markdown",
         lambda html_arg, *a, **k: html_calls.append(html_arg),
     )
+    monkeypatch.setattr(history.st, "session_state", {})
 
-    df_outcomes = pd.DataFrame(
-        {
-            "Ticker": ["AAA"],
-            "EvalDate": ["2024-01-01"],
-            "Price": [1],
-            "RelVol(TimeAdj63d)": [1.5],
-            "LastPrice": [1.1],
-            "LastPriceAt": ["2024-01-02"],
-            "PctToTarget": [0.2],
-            "EntryTimeET": ["09:30"],
-            "Status": ["OPEN"],
-            "HitDateET": [pd.NA],
-            "Expiry": ["2024-02-01"],
-            "BuyK": [1],
-            "SellK": [2],
-            "TP": [2],
-            "Notes": [""],
-        }
-    )
-    monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
-    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
+    @contextmanager
+    def dummy_col():
+        yield
+
+    monkeypatch.setattr(history.st, "columns", lambda *a, **k: (dummy_col(), dummy_col()))
+
+    monkeypatch.setattr(history, "load_pass_history", lambda: df_pass)
+    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_pass, "2024-01-02"))
 
     history.render_history_tab()
 
@@ -152,7 +139,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 
 
 def test_render_history_tab_injects_row_select_once(monkeypatch):
-    df_last = pd.DataFrame(
+    df_pass = pd.DataFrame(
         {
             "Ticker": ["AAA"],
             "EvalDate": ["2024-01-01"],
@@ -174,33 +161,19 @@ def test_render_history_tab_injects_row_select_once(monkeypatch):
         }
     )
 
-    df_outcomes = pd.DataFrame(
-        {
-            "Ticker": ["AAA"],
-            "EvalDate": ["2024-01-01"],
-            "Price": [1],
-            "RelVol(TimeAdj63d)": [1.5],
-            "LastPrice": [1.1],
-            "LastPriceAt": ["2024-01-02"],
-            "PctToTarget": [0.2],
-            "EntryTimeET": ["09:30"],
-            "Status": ["OPEN"],
-            "HitDateET": [pd.NA],
-            "Expiry": ["2024-02-01"],
-            "BuyK": [1],
-            "SellK": [2],
-            "TP": [2],
-            "Notes": [""],
-        }
-    )
-
     html_calls: list[str] = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
-    monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "markdown", lambda html, *a, **k: html_calls.append(html))
-    monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
-    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
+    monkeypatch.setattr(history.st, "session_state", {})
+
+    @contextmanager
+    def dummy_col():
+        yield
+
+    monkeypatch.setattr(history.st, "columns", lambda *a, **k: (dummy_col(), dummy_col()))
+    monkeypatch.setattr(history, "load_pass_history", lambda: df_pass)
+    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_pass, "2024-01-02"))
 
     history._row_select_injected = False
     history.render_history_tab()
