@@ -15,6 +15,17 @@ import ui.table_utils as table_utils
 import ui.table_render as table_render
 
 
+def test_apply_dark_theme_sticky_header():
+    df = pd.DataFrame({"A": [1]})
+    styler: Styler = history._apply_dark_theme(df)
+    html = styler.to_html()
+    assert "thead th" in html
+    assert "position: sticky" in html
+    assert "top: 0" in html
+    assert "z-index: 3" in html
+    assert "background-color: var(--table-header-bg)" in html
+
+
 def test_outcomes_summary_orders_columns(monkeypatch):
     df = pd.DataFrame(
         {
