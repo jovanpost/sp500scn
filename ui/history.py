@@ -151,13 +151,15 @@ def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]
         return pd.DataFrame(), None
 
     df = df.copy()
-    df["run_date"] = pd.to_datetime(df["run_date"], errors="coerce")
-    latest = df["run_date"].dropna().max()
+    run_dates = pd.to_datetime(df["run_date"], errors="coerce")
+    latest = run_dates.max()
     if pd.isna(latest):
         return pd.DataFrame(), None
 
-    df_latest = df[df["run_date"] == latest].reset_index(drop=True)
-    return df_latest, latest.date().isoformat()
+    latest_date = latest.date()
+    mask = run_dates.dt.date == latest_date
+    df_latest = df[mask].reset_index(drop=True)
+    return df_latest, latest_date.isoformat()
 
 
 def load_outcomes():
@@ -173,7 +175,8 @@ def load_pass_history() -> pd.DataFrame:
         df = read_csv(path, sep="|" if path.suffix == ".psv" else ",")
         if df.empty:
             continue
-        df["run_date"] = path.stem.replace("pass_", "")
+        run_dt = pd.to_datetime(path.stem.replace("pass_", ""), errors="coerce")
+        df["run_date"] = run_dt.date() if not pd.isna(run_dt) else pd.NaT
         dfs.append(df)
     if not dfs:
         return pd.DataFrame()

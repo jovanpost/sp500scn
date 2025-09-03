@@ -33,7 +33,11 @@ def test_latest_trading_day_recs_filters_without_dedup():
     df = pd.DataFrame(
         {
             "Ticker": ["AAA", "AAA", "BBB"],
-            "run_date": ["2023-01-02", "2023-01-02", "2023-01-01"],
+            "run_date": [
+                "2023-01-02 10:00",
+                "2023-01-02 15:30",
+                "2023-01-01 09:00",
+            ],
         }
     )
 

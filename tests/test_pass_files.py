@@ -7,6 +7,7 @@ if str(ROOT) not in sys.path:
 
 from utils import io
 import ui.history as history
+from datetime import date
 
 
 def test_list_pass_files(tmp_path, monkeypatch):
@@ -46,4 +47,4 @@ def test_load_pass_history(tmp_path, monkeypatch):
 
     df = history.load_pass_history()
     assert list(df["Ticker"]) == ["AAA", "BBB"]
-    assert list(df["run_date"]) == ["20230101", "20230102"]
+    assert list(df["run_date"]) == [date(2023, 1, 1), date(2023, 1, 2)]
