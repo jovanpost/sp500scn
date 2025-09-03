@@ -3,7 +3,7 @@ import streamlit as st
 from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
-from .history import _apply_dark_theme
+from .table_styles import _apply_dark_theme
 
 
 def _style_negatives(df: pd.DataFrame) -> Styler:

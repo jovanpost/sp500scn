@@ -4,6 +4,7 @@ from pandas.io.formats.style import Styler
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 from utils.formatting import _usd, _safe
+from .table_styles import _apply_dark_theme
 
 
 def _style_negatives(df: pd.DataFrame) -> Styler:
@@ -13,39 +14,6 @@ def _style_negatives(df: pd.DataFrame) -> Styler:
     for col in num_cols:
         classes.loc[df[col] < 0, col] = "neg"
     return df.style.set_td_classes(classes)
-
-
-def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
-    base = df.style if isinstance(df, pd.DataFrame) else df
-    return base.set_table_styles([
-        {
-            "selector": "th",
-            "props": [
-                ("background-color", "var(--table-header-bg)"),
-                ("color", "var(--table-header-text)"),
-                ("border", "1px solid var(--table-border)"),
-            ],
-        },
-        {
-            "selector": "td",
-            "props": [
-                ("background-color", "var(--table-bg)"),
-                ("color", "var(--table-text)"),
-                ("border", "1px solid var(--table-border)"),
-            ],
-        },
-        {
-            "selector": "tbody tr:nth-child(even)",
-            "props": [("background-color", "var(--table-row-alt)")],
-        },
-        {
-            "selector": "tbody tr:hover",
-            "props": [
-                ("background-color", "var(--table-hover)"),
-                ("color", "var(--table-hover-text)"),
-            ],
-        },
-    ])
 
 
 def load_history_df() -> pd.DataFrame:
