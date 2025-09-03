@@ -1,10 +1,8 @@
 import pandas as pd
 import streamlit as st
-from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
-from .history import _apply_dark_theme
-from .table_utils import _style_negatives
+from .table_render import render_table
 
 
 def build_why_buy_html(row: dict) -> str:
@@ -104,22 +102,14 @@ def render_scanner_tab():
             if "Ticker" in df_pass.columns:
                 order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
                 df_pass = df_pass[order]
-            table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
-            st.markdown(
-                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(render_table(df_pass), unsafe_allow_html=True)
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
                 sf = _sheet_friendly(df_pass)
                 if "Ticker" in sf.columns:
                     order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                     sf = sf[order]
-                table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
-                st.markdown(
-                    f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(render_table(sf), unsafe_allow_html=True)
 
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
@@ -127,21 +117,13 @@ def render_scanner_tab():
         if "Ticker" in df_pass.columns:
             order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
             df_pass = df_pass[order]
-        table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
-        st.markdown(
-            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_table(df_pass), unsafe_allow_html=True)
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
             sf = _sheet_friendly(df_pass)
             if "Ticker" in sf.columns:
                 order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                 sf = sf[order]
-            table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
-            st.markdown(
-                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(render_table(sf), unsafe_allow_html=True)
     else:
         st.caption("No results yet. Press **RUN** to scan.")

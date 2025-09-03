@@ -1,105 +1,9 @@
 import pandas as pd
 import streamlit as st
-from pandas.io.formats.style import Styler
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 from utils.formatting import _usd, _safe
-from .table_utils import _style_negatives
-
-
-def _apply_dark_theme(
-    df: pd.DataFrame | Styler, colors: dict[str, str] | None = None
-) -> Styler:
-    """Apply a dark theme with inlined palette and scoped pos/neg styles."""
-    palette = {
-        "--table-bg": "#1f2937",
-        "--table-header-bg": "#374151",
-        "--table-row-alt": "#1e293b",
-        "--table-hover": "#2563eb",
-        "--table-hover-text": "#ffffff",
-        "--table-text": "#e5e7eb",
-        "--table-header-text": "#f9fafb",
-        "--table-border": "#4b5563",
-        "--table-pos": "#22c55e",
-        "--table-neg": "#ef4444",
-    }
-    if colors:
-        palette.update(colors)
-
-    base = df.style if isinstance(df, pd.DataFrame) else df
-    styles = [
-        {"selector": ":root", "props": list(palette.items())},
-        {
-            "selector": "th",
-            "props": [
-                ("background-color", "var(--table-header-bg)"),
-                ("color", "var(--table-header-text)"),
-                ("border-bottom", "1px solid var(--table-border)"),
-                ("font-weight", "600"),
-                ("text-align", "center"),
-                ("padding", "8px"),
-            ],
-        },
-        {
-            "selector": "td",
-            "props": [
-                ("background-color", "var(--table-bg)"),
-                ("color", "var(--table-text)"),
-                ("border-bottom", "1px solid var(--table-border)"),
-                ("padding", "8px"),
-            ],
-        },
-        {
-            "selector": "tbody tr:nth-child(even)",
-            "props": [("background-color", "var(--table-row-alt)")],
-        },
-        {
-            "selector": "tbody tr:hover",
-            "props": [
-                ("background-color", "var(--table-hover)"),
-                ("color", "var(--table-hover-text)"),
-            ],
-        },
-        {
-            "selector": "table",
-            "props": [
-                ("border-collapse", "separate"),
-                ("border-spacing", "0"),
-                ("border-radius", "8px"),
-                ("overflow", "hidden"),
-                ("width", "max-content"),
-                ("white-space", "nowrap"),
-            ],
-        },
-        {
-            "selector": "th:first-child",
-            "props": [
-                ("position", "sticky"),
-                ("left", "0"),
-                ("z-index", "2"),
-                ("background-color", "var(--table-header-bg)"),
-            ],
-        },
-        {
-            "selector": "td:first-child",
-            "props": [
-                ("position", "sticky"),
-                ("left", "0"),
-                ("background-color", "var(--table-bg)"),
-                ("z-index", "1"),
-            ],
-        },
-        {
-            "selector": "td.pos",
-            "props": [("color", "var(--table-pos)"), ("font-weight", "600")],
-        },
-        {
-            "selector": "td.neg",
-            "props": [("color", "var(--table-neg)"), ("font-weight", "600")],
-        },
-    ]
-    return base.set_table_styles(styles)
-
+from .table_render import render_table
 
 def load_history_df() -> pd.DataFrame:
     """Return a DataFrame concatenating all historical PASS snapshots."""
@@ -261,11 +165,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
-    st.markdown(
-        f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(render_table(df_disp), unsafe_allow_html=True)
 
 
 def render_history_tab():
@@ -281,11 +181,7 @@ def render_history_tab():
         if "Ticker" in df_hist.columns:
             cols = ["Ticker"] + [c for c in df_hist.columns if c != "Ticker"]
             df_hist = df_hist[cols]
-        table_html = _apply_dark_theme(_style_negatives(df_hist)).to_html()
-        st.markdown(
-            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_table(df_hist), unsafe_allow_html=True)
 
     # --- Latest recommendations based on most recent run_date ---
     df_last, date_str = latest_trading_day_recs(df_out)
@@ -299,11 +195,7 @@ def render_history_tab():
                 df_show = df_last[cols]
             else:
                 df_show = df_last
-            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
-            st.markdown(
-                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(render_table(df_show), unsafe_allow_html=True)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")

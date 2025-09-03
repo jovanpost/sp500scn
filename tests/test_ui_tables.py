@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 import ui.history as history
 import ui.scan as scan
 import ui.table_utils as table_utils
+import ui.table_render as table_render
 
 
 def test_outcomes_summary_orders_columns(monkeypatch):
@@ -181,4 +182,11 @@ def test_style_negatives_marks_both_signs():
     html = styler.to_html()
     assert 'neg"' in html
     assert 'pos"' in html
+
+
+def test_render_table_wraps_html():
+    df = pd.DataFrame({"A": [1]})
+    html = table_render.render_table(df)
+    assert "<div class='table-wrapper'" in html
+    assert "<table" in html
 
