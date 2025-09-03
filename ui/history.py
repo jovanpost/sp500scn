@@ -60,6 +60,7 @@ def _apply_dark_theme(
     ]
     styles = [
         {"selector": "", "props": table_props},
+        # Ensure header row stays visible while scrolling
         {
             "selector": "thead th",
             "props": [
