@@ -18,35 +18,22 @@ name: Scheduled Swing Scan
 on:
   workflow_dispatch: {}
   schedule:
-    # Intraday scans every 30m from ~09:40 ET through 14:10 ET (Mon–Fri).
-    # To align with US Daylight Saving Time changes, cron entries are split
-    # between EDT (UTC-4, roughly Mar–Oct) and EST (UTC-5, roughly Nov–Feb).
+    # Intraday scans every 10m from ~09:31 ET through 15:51 ET with a final run
+    # at 16:01 ET (Mon–Fri). To align with US Daylight Saving Time changes,
+    # cron entries are split between EDT (UTC-4, roughly Mar–Oct) and EST
+    # (UTC-5, roughly Nov–Feb).
 
     # ── EDT: runs Mar–Oct (UTC-4) ───────────────────────────
-    - cron: "40 13 * 3-10 1-5"  # 09:40 ET
-    - cron: "10 14 * 3-10 1-5"  # 10:10 ET
-    - cron: "40 14 * 3-10 1-5"  # 10:40 ET
-    - cron: "10 15 * 3-10 1-5"  # 11:10 ET
-    - cron: "40 15 * 3-10 1-5"  # 11:40 ET
-    - cron: "10 16 * 3-10 1-5"  # 12:10 ET
-    - cron: "40 16 * 3-10 1-5"  # 12:40 ET
-    - cron: "10 17 * 3-10 1-5"  # 13:10 ET
-    - cron: "40 17 * 3-10 1-5"  # 13:40 ET
-    - cron: "10 18 * 3-10 1-5"  # 14:10 ET
+    - cron: "31-59/10 13 * 3-10 1-5"  # 09:31–09:51 ET
+    - cron: "1-59/10 14-19 * 3-10 1-5"  # 10:01–15:51 ET
+    - cron: "1 20 * 3-10 1-5"  # 16:01 ET
     # Nightly outcome check after US close (~19:10 ET = 23:10 UTC)
     - cron: "10 23 * 3-10 1-5"
 
     # ── EST: runs Nov–Feb (UTC-5) ───────────────────────────
-    - cron: "40 14 * 11-12,1-2 1-5"  # 09:40 ET
-    - cron: "10 15 * 11-12,1-2 1-5"  # 10:10 ET
-    - cron: "40 15 * 11-12,1-2 1-5"  # 10:40 ET
-    - cron: "10 16 * 11-12,1-2 1-5"  # 11:10 ET
-    - cron: "40 16 * 11-12,1-2 1-5"  # 11:40 ET
-    - cron: "10 17 * 11-12,1-2 1-5"  # 12:10 ET
-    - cron: "40 17 * 11-12,1-2 1-5"  # 12:40 ET
-    - cron: "10 18 * 11-12,1-2 1-5"  # 13:10 ET
-    - cron: "40 18 * 11-12,1-2 1-5"  # 13:40 ET
-    - cron: "10 19 * 11-12,1-2 1-5"  # 14:10 ET
+    - cron: "31-59/10 14 * 11-12,1-2 1-5"  # 09:31–09:51 ET
+    - cron: "1-59/10 15-20 * 11-12,1-2 1-5"  # 10:01–15:51 ET
+    - cron: "1 21 * 11-12,1-2 1-5"  # 16:01 ET
     # Nightly outcome check (~19:10 ET = 00:10 UTC next day).
     # Runs Tue–Sat in UTC to cover Mon–Fri in New York.
     - cron: "10 0 * 11-12,1-2 2-6"
