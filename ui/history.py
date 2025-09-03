@@ -231,22 +231,6 @@ def outcomes_summary(dfh: pd.DataFrame):
 def render_history_tab():
     df_out = load_outcomes()
 
-    # --- Historical PASS data across all runs ---
-    df_hist = load_history_df()
-    if df_hist.empty:
-        st.subheader("PASS history")
-        st.info("No historical pass files found.")
-    else:
-        st.subheader("PASS history")
-        if "Ticker" in df_hist.columns:
-            cols = ["Ticker"] + [c for c in df_hist.columns if c != "Ticker"]
-            df_hist = df_hist[cols]
-        table_html = _apply_dark_theme(_style_negatives(df_hist)).to_html()
-        st.markdown(
-            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-            unsafe_allow_html=True,
-        )
-
     # --- Latest recommendations based on most recent run_date ---
     df_last, date_str = latest_trading_day_recs(df_out)
     if date_str:

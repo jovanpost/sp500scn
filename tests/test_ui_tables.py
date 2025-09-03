@@ -123,7 +123,6 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     )
     monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
     monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
-    monkeypatch.setattr(history, "load_history_df", lambda: pd.DataFrame())
 
     history.render_history_tab()
 
