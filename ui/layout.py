@@ -30,6 +30,9 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
+        }}
+
+        .dark-table {{
             --table-bg: #1f2937;
             --table-header-bg: #374151;
             --table-row-alt: #1e293b;
@@ -151,15 +154,17 @@ def setup_page():
         }}
 
         /* --- DataFrame tables --- */
-        /* Table container */
-        div[data-testid="stDataFrame"] {{
+        table.dark-table {{
             background-color: var(--table-bg);
             border: 1px solid var(--table-border);
             border-radius: 8px;
+            border-collapse: separate;
+            border-spacing: 0;
             overflow: hidden;
+            width: max-content;
         }}
         /* Header */
-        div[data-testid="stDataFrame"] thead th {{
+        table.dark-table thead th {{
             background-color: var(--table-header-bg);
             color: var(--table-header-text);
             font-weight: 600;
@@ -169,37 +174,30 @@ def setup_page():
             z-index: 1;
         }}
         /* Rows */
-        div[data-testid="stDataFrame"] tbody tr {{
+        table.dark-table tbody tr {{
             background-color: var(--table-bg);
             color: var(--table-text);
         }}
-        div[data-testid="stDataFrame"] tbody tr:nth-child(even) {{
+        table.dark-table tbody tr:nth-child(even) {{
             background-color: var(--table-row-alt);
         }}
         /* Hover effect */
-        div[data-testid="stDataFrame"] tbody tr:hover {{
+        table.dark-table tbody tr:hover {{
             background-color: var(--table-hover);
             color: var(--table-hover-text);
         }}
         /* Borders between cells */
-        div[data-testid="stDataFrame"] td,
-        div[data-testid="stDataFrame"] th {{
+        table.dark-table td,
+        table.dark-table th {{
             border-bottom: 1px solid var(--table-border);
             padding: 8px;
         }}
-        /* Rounded corners on the full table */
-        div[data-testid="stDataFrame"] table {{
-            border-collapse: separate;
-            border-spacing: 0;
-            border-radius: 8px;
-            overflow: hidden;
-        }}
         /* Positive / Negative number coloring */
-        td.pos {{
+        table.dark-table td.pos {{
             color: var(--table-pos) !important;
             font-weight: 600;
         }}
-        td.neg {{
+        table.dark-table td.neg {{
             color: var(--table-neg) !important;
             font-weight: 600;
         }}

@@ -25,8 +25,16 @@ def _apply_dark_theme(
         palette.update(colors)
 
     base = df.style if isinstance(df, pd.DataFrame) else df
+    table_props = list(palette.items()) + [
+        ("border-collapse", "separate"),
+        ("border-spacing", "0"),
+        ("border-radius", "8px"),
+        ("overflow", "hidden"),
+        ("width", "max-content"),
+        ("white-space", "nowrap"),
+    ]
     styles = [
-        {"selector": ":root", "props": list(palette.items())},
+        {"selector": "", "props": table_props},
         {
             "selector": "th",
             "props": [
@@ -59,17 +67,6 @@ def _apply_dark_theme(
             ],
         },
         {
-            "selector": "table",
-            "props": [
-                ("border-collapse", "separate"),
-                ("border-spacing", "0"),
-                ("border-radius", "8px"),
-                ("overflow", "hidden"),
-                ("width", "max-content"),
-                ("white-space", "nowrap"),
-            ],
-        },
-        {
             "selector": "th:first-child",
             "props": [
                 ("position", "sticky"),
@@ -96,7 +93,7 @@ def _apply_dark_theme(
             "props": [("color", "var(--table-neg)"), ("font-weight", "600")],
         },
     ]
-    return base.set_table_styles(styles)
+    return base.set_table_styles(styles).set_table_attributes('class="dark-table"')
 
 
 @st.cache_data(show_spinner=False)
