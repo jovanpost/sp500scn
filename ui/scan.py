@@ -104,7 +104,7 @@ def render_scanner_tab():
             if "Ticker" in df_pass.columns:
                 order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
                 df_pass = df_pass[order]
-            table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
+            table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html(index=False)
             table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
@@ -116,7 +116,7 @@ def render_scanner_tab():
                 if "Ticker" in sf.columns:
                     order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                     sf = sf[order]
-                table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
+                table_html = _apply_dark_theme(_style_negatives(sf)).to_html(index=False)
                 table_html = inject_row_select_js(table_html)
                 st.markdown(
                     f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
@@ -129,7 +129,7 @@ def render_scanner_tab():
         if "Ticker" in df_pass.columns:
             order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
             df_pass = df_pass[order]
-        table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
+        table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html(index=False)
         table_html = inject_row_select_js(table_html)
         st.markdown(
             f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
@@ -141,7 +141,7 @@ def render_scanner_tab():
             if "Ticker" in sf.columns:
                 order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
                 sf = sf[order]
-            table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
+            table_html = _apply_dark_theme(_style_negatives(sf)).to_html(index=False)
             table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",

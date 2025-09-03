@@ -44,7 +44,7 @@ def _apply_dark_theme(
     if colors:
         palette.update(colors)
 
-    base = df.style if isinstance(df, pd.DataFrame) else df
+    base = (df.style if isinstance(df, pd.DataFrame) else df).hide(axis="index")
     table_props = list(palette.items()) + [
         ("border-collapse", "separate"),
         ("border-spacing", "0"),
@@ -266,7 +266,7 @@ def outcomes_summary(dfh: pd.DataFrame):
         if "DTE" in cols and "Expiry" in cols:
             cols.insert(cols.index("Expiry") + 1, cols.pop(cols.index("DTE")))
         df_disp = df_disp[cols]
-    table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+    table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html(index=False)
     table_html = inject_row_select_js(table_html)
     st.markdown(
         f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
@@ -287,7 +287,7 @@ def render_history_tab():
                 df_show = df_last[cols]
             else:
                 df_show = df_last
-            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
+            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html(index=False)
             table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
@@ -305,7 +305,7 @@ def render_history_tab():
         if "Ticker" in df_disp.columns:
             cols = ["Ticker"] + [c for c in df_disp.columns if c != "Ticker"]
             df_disp = df_disp[cols]
-        table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+        table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html(index=False)
         table_html = inject_row_select_js(table_html)
         st.markdown(
             f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",

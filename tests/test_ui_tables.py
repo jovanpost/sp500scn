@@ -48,7 +48,7 @@ def test_outcomes_summary_orders_columns(monkeypatch):
     history.outcomes_summary(df)
 
     assert html_calls
-    parsed = pd.read_html(html_calls[0], index_col=0)[0]
+    parsed = pd.read_html(html_calls[0])[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -115,7 +115,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     history.render_history_tab()
 
     assert len(html_calls) == 2
-    parsed = pd.read_html(html_calls[0], index_col=0)[0]
+    parsed = pd.read_html(html_calls[0])[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -203,7 +203,7 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     scan.render_scanner_tab()
     table_html = next((h for h in html_calls if "<table" in h), None)
     assert table_html is not None
-    parsed = pd.read_html(table_html, index_col=0)[0]
+    parsed = pd.read_html(table_html)[0]
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 
 
