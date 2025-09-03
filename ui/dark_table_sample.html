@@ -13,9 +13,14 @@
   border-collapse: separate;
   border-spacing: 0;
   border-radius: 8px;
-  overflow: hidden;
   width: max-content;
   white-space: nowrap;
+}
+#T_34871 thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background-color: var(--table-header-bg);
 }
 #T_34871 th {
   background-color: var(--table-header-bg);
@@ -41,7 +46,7 @@
 #T_34871 th:first-child {
   position: sticky;
   left: 0;
-  z-index: 2;
+  z-index: 4;
   background-color: var(--table-header-bg);
 }
 #T_34871 td:first-child {

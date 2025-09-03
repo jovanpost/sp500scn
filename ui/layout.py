@@ -162,7 +162,6 @@ def setup_page(
             border-radius: 8px;
             border-collapse: separate;
             border-spacing: 0;
-            overflow: hidden;
             width: max-content;
         }}
         /* Header */
@@ -173,7 +172,13 @@ def setup_page(
             text-align: center;
             position: sticky;
             top: 0;
-            z-index: 1;
+            z-index: 3;
+        }}
+        table.dark-table th:first-child {{
+            position: sticky;
+            left: 0;
+            z-index: 4;
+            background-color: var(--table-header-bg);
         }}
         /* Rows */
         table.dark-table tbody tr {{

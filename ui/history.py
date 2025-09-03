@@ -61,6 +61,15 @@ def _apply_dark_theme(
     styles = [
         {"selector": "", "props": table_props},
         {
+            "selector": "thead th",
+            "props": [
+                ("position", "sticky"),
+                ("top", "0"),
+                ("z-index", "3"),
+                ("background-color", "var(--table-header-bg)"),
+            ],
+        },
+        {
             "selector": "th",
             "props": [
                 ("background-color", "var(--table-header-bg)"),
@@ -96,7 +105,7 @@ def _apply_dark_theme(
             "props": [
                 ("position", "sticky"),
                 ("left", "0"),
-                ("z-index", "2"),
+                ("z-index", "4"),
                 ("background-color", "var(--table-header-bg)"),
             ],
         },
