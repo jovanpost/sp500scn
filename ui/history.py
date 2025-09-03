@@ -7,52 +7,78 @@ from utils.formatting import _usd, _safe
 from .table_utils import _style_negatives
 
 
-def _apply_dark_theme(df: pd.DataFrame | Styler) -> Styler:
+def _apply_dark_theme(
+    df: pd.DataFrame | Styler, colors: dict[str, str] | None = None
+) -> Styler:
+    """Apply a dark theme with inlined palette and scoped pos/neg styles."""
+    palette = {
+        "--table-bg": "#1f2937",
+        "--table-header-bg": "#374151",
+        "--table-row-alt": "#1e293b",
+        "--table-hover": "#2563eb",
+        "--table-hover-text": "#ffffff",
+        "--table-text": "#e5e7eb",
+        "--table-header-text": "#f9fafb",
+        "--table-border": "#4b5563",
+        "--table-pos": "#22c55e",
+        "--table-neg": "#ef4444",
+    }
+    if colors:
+        palette.update(colors)
+
     base = df.style if isinstance(df, pd.DataFrame) else df
-    return base.set_table_styles(
-        [
-            {
-                "selector": "th",
-                "props": [
-                    ("background-color", "var(--table-header-bg)"),
-                    ("color", "var(--table-header-text)"),
-                    ("border-bottom", "1px solid var(--table-border)"),
-                    ("font-weight", "600"),
-                    ("text-align", "center"),
-                    ("padding", "8px"),
-                ],
-            },
-            {
-                "selector": "td",
-                "props": [
-                    ("background-color", "var(--table-bg)"),
-                    ("color", "var(--table-text)"),
-                    ("border-bottom", "1px solid var(--table-border)"),
-                    ("padding", "8px"),
-                ],
-            },
-            {
-                "selector": "tbody tr:nth-child(even)",
-                "props": [("background-color", "var(--table-row-alt)")],
-            },
-            {
-                "selector": "tbody tr:hover",
-                "props": [
-                    ("background-color", "var(--table-hover)"),
-                    ("color", "var(--table-hover-text)"),
-                ],
-            },
-            {
-                "selector": "table",
-                "props": [
-                    ("border-collapse", "separate"),
-                    ("border-spacing", "0"),
-                    ("border-radius", "8px"),
-                    ("overflow", "hidden"),
-                ],
-            },
-        ]
-    )
+    styles = [
+        {"selector": ":root", "props": list(palette.items())},
+        {
+            "selector": "th",
+            "props": [
+                ("background-color", "var(--table-header-bg)"),
+                ("color", "var(--table-header-text)"),
+                ("border-bottom", "1px solid var(--table-border)"),
+                ("font-weight", "600"),
+                ("text-align", "center"),
+                ("padding", "8px"),
+            ],
+        },
+        {
+            "selector": "td",
+            "props": [
+                ("background-color", "var(--table-bg)"),
+                ("color", "var(--table-text)"),
+                ("border-bottom", "1px solid var(--table-border)"),
+                ("padding", "8px"),
+            ],
+        },
+        {
+            "selector": "tbody tr:nth-child(even)",
+            "props": [("background-color", "var(--table-row-alt)")],
+        },
+        {
+            "selector": "tbody tr:hover",
+            "props": [
+                ("background-color", "var(--table-hover)"),
+                ("color", "var(--table-hover-text)"),
+            ],
+        },
+        {
+            "selector": "table",
+            "props": [
+                ("border-collapse", "separate"),
+                ("border-spacing", "0"),
+                ("border-radius", "8px"),
+                ("overflow", "hidden"),
+            ],
+        },
+        {
+            "selector": "td.pos",
+            "props": [("color", "var(--table-pos)"), ("font-weight", "600")],
+        },
+        {
+            "selector": "td.neg",
+            "props": [("color", "var(--table-neg)"), ("font-weight", "600")],
+        },
+    ]
+    return base.set_table_styles(styles)
 
 
 def load_history_df() -> pd.DataFrame:
