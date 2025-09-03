@@ -49,7 +49,7 @@ def _apply_dark_theme(
         ("border-collapse", "separate"),
         ("border-spacing", "0"),
         ("border-radius", "8px"),
-        ("overflow", "hidden"),
+        ("overflow", "visible"),
         ("width", "max-content"),
         ("white-space", "nowrap"),
     ]
