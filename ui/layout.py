@@ -30,9 +30,9 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
-            --table-bg: #14141f;
+            --table-bg: #111827;
             --table-header-bg: #2A2A3C;
-            --table-row-alt: #1b1d2c;
+            --table-row-alt: #0f172a;
             --table-hover: #2f498f;
             --table-hover-text: #ffffff;
             --table-text: #E0E0E0;
