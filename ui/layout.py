@@ -1,4 +1,5 @@
 import streamlit as st
+from pathlib import Path
 
 
 def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"):
@@ -204,67 +205,48 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
 
         /* Streamlit DataFrame styling and sticky headers */
-        div[data-testid="stDataFrame"] > div {{
-            position: relative;
-            overflow-y: auto;
+        /* Reset root overflow so sticky uses inner scroll container */
+        div[data-testid="stDataFrame"] {{
+            overflow: visible !important;
         }}
-        div[data-testid="stDataFrame"] table {{
-            background-color: var(--table-bg);
+
+        /* Actual scroll container (identified by JS helper) */
+        div[data-testid="stDataFrame"] .sticky-scroll {{
+            position: relative;
+            overflow: auto !important;
             border: 1px solid var(--table-border);
-            border-radius: 8px;
+            border-radius: 10px;
+        }}
+
+        /* Ensure table rendering works well with sticky headers */
+        div[data-testid="stDataFrame"] .sticky-scroll table {{
             border-collapse: separate;
             border-spacing: 0;
-            width: max-content;
         }}
+
+        /* Sticky header cells (native <th> and grid role headers) */
         div[data-testid="stDataFrame"] thead th,
-        div[data-testid="stDataFrame"] [role="columnheader"] {{
+        div[data-testid="stDataFrame"] [role="columnheader"],
+        div[data-testid="stDataFrame"] .sticky-header {{
             position: sticky;
             top: 0;
-            z-index: 3;
-            background-color: var(--table-header-bg);
+            z-index: 5; /* above rows and hover backgrounds */
+            background: var(--table-header-bg);
             color: var(--table-header-text);
-            padding: 8px;
+            box-shadow: inset 0 -1px 0 var(--table-border); /* subtle divider line */
         }}
-        div[data-testid="stDataFrame"] tbody td,
-        div[data-testid="stDataFrame"] [role="row"] [role="gridcell"] {{
-            background-color: var(--table-bg);
-            color: var(--table-text);
-            border-bottom: 1px solid var(--table-border);
-            padding: 8px;
+
+        /* Row striping and base background */
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr td {{
+            background: var(--table-bg);
         }}
-        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td,
-        div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"] {{
-            background-color: var(--table-row-alt);
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:nth-child(even) td {{
+            background: var(--table-row-alt);
         }}
-        div[data-testid="stDataFrame"] tbody tr:hover td,
-        div[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"] {{
-            background-color: var(--table-hover);
-            color: var(--table-hover-text);
-        }}
-        /* Sticky first column */
-        div[data-testid="stDataFrame"] tbody td:first-child,
-        div[data-testid="stDataFrame"] thead th:first-child,
-        div[data-testid="stDataFrame"] [role="row"] [role="gridcell"]:first-child,
-        div[data-testid="stDataFrame"] [role="columnheader"]:first-child {{
-            position: sticky;
-            left: 0;
-        }}
-        div[data-testid="stDataFrame"] thead th:first-child,
-        div[data-testid="stDataFrame"] [role="columnheader"]:first-child {{
-            z-index: 4;
-        }}
-        div[data-testid="stDataFrame"] tbody td:first-child,
-        div[data-testid="stDataFrame"] [role="row"] [role="gridcell"]:first-child {{
-            z-index: 2;
-            background-color: var(--table-bg);
-        }}
-        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td:first-child,
-        div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"]:first-child {{
-            background-color: var(--table-row-alt);
-        }}
-        div[data-testid="stDataFrame"] tbody tr:hover td:first-child,
-        div[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"]:first-child {{
-            background-color: var(--table-hover);
+
+        /* Hover highlight that does not cover the header */
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:hover td {{
+            background: var(--table-hover);
             color: var(--table-hover-text);
         }}
 
@@ -316,6 +298,9 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         """,
         unsafe_allow_html=True,
     )
+
+    helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
+    st.markdown(f"<script>{helper_js}</script>", unsafe_allow_html=True)
 
 
 def render_header():
