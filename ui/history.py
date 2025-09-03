@@ -273,43 +273,38 @@ def outcomes_summary(dfh: pd.DataFrame):
 
 def render_history_tab():
     df_pass = load_pass_history()
-
-    col_latest, col_hist = st.columns(2)
-
-    with col_latest:
-        df_last, date_str = latest_trading_day_recs(df_pass)
-        if date_str:
-            st.subheader(f"Trading day {date_str} recommendations")
-            if df_last.empty:
-                st.info("No tickers passed that day.")
+    df_last, date_str = latest_trading_day_recs(df_pass)
+    if date_str:
+        st.subheader(f"Trading day {date_str} recommendations")
+        if df_last.empty:
+            st.info("No tickers passed that day.")
+        else:
+            if "Ticker" in df_last.columns:
+                cols = ["Ticker"] + [c for c in df_last.columns if c != "Ticker"]
+                df_show = df_last[cols]
             else:
-                if "Ticker" in df_last.columns:
-                    cols = ["Ticker"] + [c for c in df_last.columns if c != "Ticker"]
-                    df_show = df_last[cols]
-                else:
-                    df_show = df_last
-                table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
-                table_html = inject_row_select_js(table_html)
-                st.markdown(
-                    f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.subheader("Trading day — recommendations")
-            st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
-
-    with col_hist:
-        st.subheader("Pass history")
-        if df_pass.empty:
-            st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
-        else:
-            df_disp = df_pass.copy()
-            if "Ticker" in df_disp.columns:
-                cols = ["Ticker"] + [c for c in df_disp.columns if c != "Ticker"]
-                df_disp = df_disp[cols]
-            table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+                df_show = df_last
+            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
             table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
+    else:
+        st.subheader("Trading day — recommendations")
+        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
+
+    st.subheader("Pass history")
+    if df_pass.empty:
+        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
+    else:
+        df_disp = df_pass.copy()
+        if "Ticker" in df_disp.columns:
+            cols = ["Ticker"] + [c for c in df_disp.columns if c != "Ticker"]
+            df_disp = df_disp[cols]
+        table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+        table_html = inject_row_select_js(table_html)
+        st.markdown(
+            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
+            unsafe_allow_html=True,
+        )
