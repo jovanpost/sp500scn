@@ -150,6 +150,65 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     ]
 
 
+def test_render_history_tab_injects_row_select_once(monkeypatch):
+    df_last = pd.DataFrame(
+        {
+            "Ticker": ["AAA"],
+            "EvalDate": ["2024-01-01"],
+            "run_date": ["2024-01-02"],
+            "Price": [1],
+            "Change%": [0.05],
+            "RelVol(TimeAdj63d)": [1.5],
+            "LastPrice": [1.1],
+            "LastPriceAt": ["2024-01-02"],
+            "PctToTarget": [0.2],
+            "EntryTimeET": ["09:30"],
+            "HitDateET": [pd.NA],
+            "Expiry": ["2024-02-01"],
+            "DTE": [10],
+            "BuyK": [1],
+            "SellK": [2],
+            "TP": [2],
+            "Notes": [""],
+        }
+    )
+
+    df_outcomes = pd.DataFrame(
+        {
+            "Ticker": ["AAA"],
+            "EvalDate": ["2024-01-01"],
+            "Price": [1],
+            "RelVol(TimeAdj63d)": [1.5],
+            "LastPrice": [1.1],
+            "LastPriceAt": ["2024-01-02"],
+            "PctToTarget": [0.2],
+            "EntryTimeET": ["09:30"],
+            "Status": ["OPEN"],
+            "HitDateET": [pd.NA],
+            "Expiry": ["2024-02-01"],
+            "BuyK": [1],
+            "SellK": [2],
+            "TP": [2],
+            "Notes": [""],
+        }
+    )
+
+    html_calls: list[str] = []
+    monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
+    monkeypatch.setattr(history.st, "markdown", lambda html, *a, **k: html_calls.append(html))
+    monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
+    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
+
+    history._row_select_injected = False
+    history.render_history_tab()
+
+    assert len(html_calls) == 2
+    total = sum(h.count("row-select-js") for h in html_calls)
+    assert total == 1
+
+
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
     df = pd.DataFrame({"Ticker": ["AAA"], "Price": [1], "RelVol(TimeAdj63d)": [1], "TP": [2]})
 
