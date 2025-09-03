@@ -7,11 +7,12 @@ from .history import _apply_dark_theme
 
 
 def _style_negatives(df: pd.DataFrame) -> Styler:
-    """Return a Styler adding class "neg" to negative numeric cells."""
+    """Return a Styler adding classes for positive and negative cells."""
     classes = pd.DataFrame("", index=df.index, columns=df.columns)
     num_cols = df.select_dtypes(include="number").columns
     for col in num_cols:
         classes.loc[df[col] < 0, col] = "neg"
+        classes.loc[df[col] > 0, col] = "pos"
     return df.style.set_td_classes(classes)
 
 

@@ -183,4 +183,5 @@ def test_style_negatives_marks_negatives():
     styler = scan._style_negatives(df)
     html = styler.to_html()
     assert 'neg"' in html
+    assert 'pos"' in html
 

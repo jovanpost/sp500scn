@@ -30,15 +30,16 @@ def setup_page():
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
-            --table-bg: #1E1E2E;
-            --table-header-bg: #2A2A3C;
-            --table-row-alt: #25273A;
-            --table-hover: #3E4967;
-            --table-text: #E0E0E0;
-            --table-header-text: #B0B3C5;
-            --table-border: #2E2E3E;
-            --table-pos: #4ADE80;
-            --table-neg: #F87171;
+            --table-bg: #1f2937;
+            --table-header-bg: #374151;
+            --table-row-alt: #1e293b;
+            --table-hover: #2563eb;
+            --table-hover-text: #ffffff;
+            --table-text: #e5e7eb;
+            --table-header-text: #f9fafb;
+            --table-border: #4b5563;
+            --table-pos: #22c55e;
+            --table-neg: #ef4444;
         }}
 
         body {{
@@ -150,22 +151,50 @@ def setup_page():
         }}
 
         /* --- DataFrame tables --- */
+        div[data-testid="stDataFrame"] {{
+            background-color: var(--table-bg);
+            border: 1px solid var(--table-border);
+            border-radius: 8px;
+            overflow: hidden;
+        }}
         div[data-testid="stDataFrame"] thead th {{
+            background-color: var(--table-header-bg);
+            color: var(--table-header-text);
+            font-weight: 600;
+            text-align: center;
             position: sticky;
             top: 0;
             z-index: 1;
         }}
+        div[data-testid="stDataFrame"] tbody tr {{
+            background-color: var(--table-bg);
+            color: var(--table-text);
+        }}
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) {{
+            background-color: var(--table-row-alt);
+        }}
         div[data-testid="stDataFrame"] tbody tr:hover {{
             background-color: var(--table-hover);
+            color: var(--table-hover-text);
+        }}
+        div[data-testid="stDataFrame"] td,
+        div[data-testid="stDataFrame"] th {{
+            border-bottom: 1px solid var(--table-border);
+            padding: 8px;
+        }}
+        div[data-testid="stDataFrame"] table {{
+            border-collapse: separate;
+            border-spacing: 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        td.pos {{
+            color: var(--table-pos) !important;
+            font-weight: 600;
         }}
         td.neg {{
-            color: var(--table-neg);
-        }}
-        td[data-testid*="col_PctChange"] {{
-            color: var(--table-pos);
-        }}
-        td[data-testid*="col_PctChange"].neg {{
-            color: var(--table-neg);
+            color: var(--table-neg) !important;
+            font-weight: 600;
         }}
         </style>
         """,
