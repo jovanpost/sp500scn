@@ -1,0 +1,5 @@
+Ticker|EvalDate|Price|EntryTimeET|Change%|RelVol(TimeAdj63d)|Resistance|TP|RR_to_Res|RR_to_TP|SupportType|SupportPrice|Risk$|TPReward$|TPReward%|ResReward$|ResReward%|DailyATR|DailyCap|Hist21d_PassCount|Hist21d_Max%|Hist21d_Examples|ResLookbackDays|Prices|Session|EntrySrc|VolSrc|OptExpiry|BuyK|SellK|Width|DebitMid|DebitCons|MaxProfitMid|MaxProfitCons|RR_Spread_Mid|RR_Spread_Cons|BreakevenMid|PricingNote
+TGT|2025-09-03|92.48|2025-09-03 12:59:28 ET|0.04|1.51|107.82|100.15|19.34|9.67|SwingLow21|91.69|0.793|7.67|8.29|15.34|16.59|3.1752|66.6795|14|13.0|2025-06-02:+13.0%; 2025-06-20:+11.51%; 2025-06-23:+11.29%|21|98.69,97.06,99.24,97.13,96.11,97.96,96.81,95.98,92.44,92.48|OPEN|daily_partial_close|daily_partial|2025-10-03|95.0|100.0|5.0|1.26|1.38|3.74|3.62|2.97|2.62|96.26|ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid
+
+Processed at 2025-09-03 13:00:05 ET
+[run_and_log] no new tickers to record today.
