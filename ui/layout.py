@@ -208,8 +208,9 @@ def setup_page(
         .table-wrapper {{
             overflow-x: auto;
             max-width: 100%;
-            overscroll-behavior: contain;
-            touch-action: pan-x;
+            /* Allow vertical scroll chaining while keeping horizontal containment */
+            overscroll-behavior-x: contain;
+            touch-action: pan-x pan-y;
         }}
         .table-wrapper table {{
             width: max-content;
