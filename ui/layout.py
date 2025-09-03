@@ -203,6 +203,15 @@ def setup_page():
             color: var(--table-neg) !important;
             font-weight: 600;
         }}
+
+        /* Scrollable wrapper for custom HTML tables */
+        .table-wrapper {{
+            overflow-x: auto;
+            max-width: 100%;
+        }}
+        .table-wrapper table {{
+            width: max-content;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
