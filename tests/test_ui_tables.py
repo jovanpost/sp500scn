@@ -191,3 +191,12 @@ def test_render_table_injects_script_once(monkeypatch):
     combined = html1 + html2
     assert combined.count('id="row-select-js"') == 1
 
+
+def test_inject_row_select_js_does_not_reinject(monkeypatch):
+    html = "<table></table>"
+    monkeypatch.setattr(table_utils.st, "session_state", {})
+    first = table_utils.inject_row_select_js(html)
+    second = table_utils.inject_row_select_js(html)
+    assert first.count("<script>") == 1
+    assert second.count("<script>") == 0
+
