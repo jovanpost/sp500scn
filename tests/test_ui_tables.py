@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 from contextlib import contextmanager
+import types
 
 import pandas as pd
 from pandas.io.formats.style import Styler
@@ -180,4 +181,21 @@ def test_style_negatives_marks_both_signs():
     html = styler.to_html()
     assert 'neg"' in html
     assert 'pos"' in html
+
+
+def test_inject_row_select_js_does_not_reinject(monkeypatch):
+    dummy_st = types.SimpleNamespace(session_state={})
+    monkeypatch.setattr(table_utils, "st", dummy_st)
+    monkeypatch.setattr(table_utils, "_row_select_js_injected", False)
+
+    html_with_script = "<table></table><script id='row-select-js'></script>"
+    first = table_utils.inject_row_select_js(html_with_script)
+    assert first == html_with_script
+    assert table_utils._row_select_js_injected is True
+    assert dummy_st.session_state["_row_select_js_injected"] is True
+
+    html_without_script = "<table></table>"
+    second = table_utils.inject_row_select_js(html_without_script)
+    assert second == html_without_script
+    assert "row-select-js" not in second
 
