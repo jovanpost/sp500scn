@@ -210,7 +210,7 @@ def setup_page():
             max-width: 100%;
         }}
         .table-wrapper table {{
-            width: max-content;
+            width: 100%;
         }}
         </style>
         """,

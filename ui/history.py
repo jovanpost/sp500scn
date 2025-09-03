@@ -67,7 +67,7 @@ def _apply_dark_theme(
                 ("border-spacing", "0"),
                 ("border-radius", "8px"),
                 ("overflow", "hidden"),
-                ("width", "max-content"),
+                ("width", "100%"),
                 ("white-space", "nowrap"),
             ],
         },

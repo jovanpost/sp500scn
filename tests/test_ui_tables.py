@@ -47,7 +47,8 @@ def test_outcomes_summary_orders_columns(monkeypatch):
     history.outcomes_summary(df)
 
     assert html_calls
-    parsed = pd.read_html(html_calls[0], index_col=0)[0]
+    html = html_calls[0]
+    parsed = pd.read_html(html, index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -66,6 +67,7 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         "TP",
         "Notes",
     ]
+    assert "width: 100%" in html
 
 
 def test_render_history_tab_shows_extended_columns(monkeypatch):
@@ -128,7 +130,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     history.render_history_tab()
 
     assert len(html_calls) >= 2
-    parsed = pd.read_html(html_calls[0], index_col=0)[0]
+    html = html_calls[0]
+    parsed = pd.read_html(html, index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -149,6 +152,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         "Notes",
         "Extra",
     ]
+    assert "width: 100%" in html
 
 
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
@@ -173,6 +177,7 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     assert table_html is not None
     parsed = pd.read_html(table_html, index_col=0)[0]
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
+    assert "width: 100%" in table_html
 
 
 def test_style_negatives_marks_both_signs():
