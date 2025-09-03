@@ -179,9 +179,10 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 
 
-def test_style_negatives_marks_negatives():
-    df = pd.DataFrame({"PctChange": [1, -2]})
+def test_style_negatives_marks_both_signs():
+    df = pd.DataFrame({"PctChange": [1, -2, 0]})
     styler = table_utils._style_negatives(df)
     html = styler.to_html()
     assert 'neg"' in html
+    assert 'pos"' in html
 
