@@ -202,11 +202,7 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         .table-wrapper {{
             position: relative;
             overflow-x: auto;
-            overflow-y: visible; /* avoid new scrolling context so headers stay sticky */
-            max-width: 100%;
-            /* Allow vertical scroll chaining while keeping horizontal containment */
-            overscroll-behavior-x: contain;
-            touch-action: pan-x pan-y;
+            overflow-y: visible;
         }}
         .table-wrapper table {{
             width: max-content;
