@@ -1,12 +1,10 @@
 import streamlit as st
 
 
-def setup_page(
-    *, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"
-):
+def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"):
     st.set_page_config(
-        page_title="Edge500",     # Title shown in browser tab
-        page_icon="logo.png",     # Favicon (logo.png in repo root)
+        page_title="Edge500",  # Title shown in browser tab
+        page_icon="logo.png",  # Favicon (logo.png in repo root)
         layout="wide",
     )
 
@@ -165,15 +163,6 @@ def setup_page(
             width: max-content;
         }}
         /* Header */
-        table.dark-table thead th {{
-            background-color: var(--table-header-bg);
-            color: var(--table-header-text);
-            font-weight: 600;
-            text-align: center;
-            position: sticky;
-            top: 0;
-            z-index: 3;
-        }}
         table.dark-table th:first-child {{
             position: sticky;
             left: 0;
@@ -211,7 +200,9 @@ def setup_page(
 
         /* Scrollable wrapper for custom HTML tables */
         .table-wrapper {{
+            position: relative;
             overflow-x: auto;
+            overflow-y: visible;
             max-width: 100%;
             /* Allow vertical scroll chaining while keeping horizontal containment */
             overscroll-behavior-x: contain;
@@ -261,5 +252,5 @@ def render_header():
     with header:
         st.markdown('<div class="hero">', unsafe_allow_html=True)
         st.image("logo.png", width=140)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.divider()
