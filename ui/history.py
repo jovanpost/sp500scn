@@ -40,11 +40,16 @@ def _apply_dark_theme(
         "--table-border": "#4b5563",
         "--table-pos": "#22c55e",
         "--table-neg": "#ef4444",
-    }
+    } 
     if colors:
         palette.update(colors)
 
-    base = (df.style if isinstance(df, pd.DataFrame) else df).hide(axis="index")
+    if isinstance(df, pd.DataFrame):
+        base_df = df.reset_index(drop=True)
+        base = base_df.style.hide(axis="index")
+    else:
+        df.data = df.data.reset_index(drop=True)
+        base = df.hide(axis="index")
     table_props = list(palette.items()) + [
         ("border-collapse", "separate"),
         ("border-spacing", "0"),

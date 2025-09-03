@@ -115,7 +115,10 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
     history.render_history_tab()
 
     assert len(html_calls) == 2
-    parsed = pd.read_html(html_calls[0])[0]
+    table_html = html_calls[0]
+    assert '<th class="blank level0"' not in table_html
+    assert 'row_heading' not in table_html
+    parsed = pd.read_html(table_html)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -203,6 +206,8 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     scan.render_scanner_tab()
     table_html = next((h for h in html_calls if "<table" in h), None)
     assert table_html is not None
+    assert '<th class="blank level0"' not in table_html
+    assert 'row_heading' not in table_html
     parsed = pd.read_html(table_html)[0]
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 
@@ -213,6 +218,19 @@ def test_style_negatives_marks_both_signs():
     html = styler.to_html()
     assert 'neg"' in html
     assert 'pos"' in html
+
+
+def test_apply_dark_theme_drops_index_and_stickies_first_column():
+    df = pd.DataFrame({"Ticker": ["AAA"], "Price": [1]})
+    styler = table_utils._style_negatives(df)
+    history._row_select_injected = False
+    html = history._apply_dark_theme(styler).to_html()
+    assert '<th class="blank level0"' not in html
+    assert 'row_heading' not in html
+    parsed = pd.read_html(html)[0]
+    assert list(parsed.columns)[0] == "Ticker"
+    assert "th:first-child" in html and "position: sticky" in html
+    assert "td:first-child" in html and "position: sticky" in html
 
 
 def test_render_table_injects_script_once(monkeypatch):
