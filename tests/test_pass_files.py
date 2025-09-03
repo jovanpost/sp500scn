@@ -5,7 +5,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import ui.history as history
 from utils import io
 
 
@@ -34,15 +33,3 @@ def test_list_pass_files(tmp_path, monkeypatch):
     paths = io.list_pass_files()
     assert paths == sorted(paths)
     assert {p.name for p in paths} == {"pass_20230102.csv", "pass_20230101.psv", "pass_20230103.csv"}
-
-
-def test_load_history_df_uses_list_pass_files(monkeypatch, tmp_path):
-    psv = tmp_path / "pass_1.psv"
-    psv.write_text("a|b\n1|2\n")
-    csv = tmp_path / "pass_2.csv"
-    csv.write_text("a,b\n3,4\n")
-    monkeypatch.setattr(history, "list_pass_files", lambda: [psv, csv])
-    df = history.load_history_df()
-    assert df["__source_file"].tolist() == ["pass_1.psv", "pass_2.csv"]
-    assert df["a"].tolist() == [1, 3]
-    assert df["b"].tolist() == [2, 4]
