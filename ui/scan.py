@@ -1,10 +1,8 @@
 import pandas as pd
 import streamlit as st
-from pandas.io.formats.style import Styler
 from utils.formatting import _bold, _usd, _pct, _safe
 from utils.scan import safe_run_scan
-from .history import _apply_dark_theme
-from .table_utils import _style_negatives
+from .history import render_table
 
 
 def build_why_buy_html(row: dict) -> str:
@@ -101,32 +99,22 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
-            st.markdown(
-                _apply_dark_theme(_style_negatives(df_pass)).to_html(),
-                unsafe_allow_html=True,
-            )
+            st.markdown(render_table(df_pass), unsafe_allow_html=True)
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
                 st.markdown(
-                    _apply_dark_theme(
-                        _style_negatives(_sheet_friendly(df_pass))
-                    ).to_html(),
+                    render_table(_sheet_friendly(df_pass)),
                     unsafe_allow_html=True,
                 )
 
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
-        st.markdown(
-            _apply_dark_theme(_style_negatives(df_pass)).to_html(),
-            unsafe_allow_html=True,
-        )
+        st.markdown(render_table(df_pass), unsafe_allow_html=True)
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
             st.markdown(
-                _apply_dark_theme(
-                    _style_negatives(_sheet_friendly(df_pass))
-                ).to_html(),
+                render_table(_sheet_friendly(df_pass)),
                 unsafe_allow_html=True,
             )
     else:

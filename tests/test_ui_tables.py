@@ -35,21 +35,19 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         }
     )
 
-    df_calls = []
+    html_calls = []
     monkeypatch.setattr(
         history.st,
-        "dataframe",
-        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
+        "markdown",
+        lambda html_arg, *a, **k: html_calls.append(html_arg),
     )
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
-    assert df_calls
-    df_shown, kwargs = df_calls[0]
-    assert kwargs.get("use_container_width") is True
-    html = df_shown.to_html()
+    assert html_calls
+    html = html_calls[0]
     parsed = pd.read_html(html, index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
@@ -69,6 +67,10 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         "TP",
         "Notes",
     ]
+    assert 'class="dark-table"' in html
+    assert 'tbody tr:hover td' in html
+    assert 'tbody tr.selected td' in html
+    assert '<script>' in html
 
 
 def test_render_history_tab_shows_extended_columns(monkeypatch):
@@ -95,14 +97,14 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         }
     )
 
-    df_calls = []
+    html_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(
         history.st,
-        "dataframe",
-        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
+        "markdown",
+        lambda html_arg, *a, **k: html_calls.append(html_arg),
     )
 
     df_outcomes = pd.DataFrame(
@@ -129,10 +131,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 
     history.render_history_tab()
 
-    assert len(df_calls) >= 2
-    df_shown, kwargs = df_calls[0]
-    assert kwargs.get("use_container_width") is True
-    html = df_shown.to_html()
+    assert len(html_calls) >= 2
+    html = html_calls[0]
     parsed = pd.read_html(html, index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
@@ -153,6 +153,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         "TP",
         "Notes",
     ]
+    assert 'class="dark-table"' in html
+    assert '<script>' in html
 
 
 def test_render_scanner_tab_shows_dataframe(monkeypatch):
@@ -177,6 +179,8 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     assert table_html is not None
     parsed = pd.read_html(table_html, index_col=0)[0]
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
+    assert 'class="dark-table"' in table_html
+    assert 'tbody tr.selected td' in table_html
 
 
 def test_style_negatives_marks_both_signs():

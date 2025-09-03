@@ -54,7 +54,18 @@ def _apply_dark_theme(
             "props": [("background-color", "var(--table-row-alt)")],
         },
         {
-            "selector": "tbody tr:hover",
+            "selector": "tbody tr",
+            "props": [("cursor", "pointer")],
+        },
+        {
+            "selector": "tbody tr:hover td, tbody tr:hover th",
+            "props": [
+                ("background-color", "var(--table-hover)"),
+                ("color", "var(--table-hover-text)"),
+            ],
+        },
+        {
+            "selector": "tbody tr.selected td, tbody tr.selected th",
             "props": [
                 ("background-color", "var(--table-hover)"),
                 ("color", "var(--table-hover-text)"),
@@ -67,6 +78,7 @@ def _apply_dark_theme(
                 ("border-spacing", "0"),
                 ("border-radius", "8px"),
                 ("overflow", "hidden"),
+                ("width", "100%"),
             ],
         },
         {
@@ -79,6 +91,31 @@ def _apply_dark_theme(
         },
     ]
     return base.set_table_styles(styles)
+
+
+ROW_SELECT_JS = """
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('table.dark-table').forEach(function(table) {
+    table.querySelectorAll('tbody tr').forEach(function(row) {
+      row.addEventListener('click', function() {
+        table.querySelectorAll('tbody tr').forEach(function(r) {
+          r.classList.remove('selected');
+        });
+        row.classList.add('selected');
+      });
+    });
+  });
+});
+</script>
+"""
+
+
+def render_table(df: pd.DataFrame) -> str:
+    """Return dark-themed HTML with hover and click-to-select rows."""
+    styler = _apply_dark_theme(_style_negatives(df))
+    styler = styler.set_table_attributes('class="dark-table"')
+    return styler.to_html() + ROW_SELECT_JS
 
 
 def load_history_df() -> pd.DataFrame:
@@ -241,10 +278,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
-    st.dataframe(
-        _apply_dark_theme(_style_negatives(df_disp)),
-        use_container_width=True,
-    )
+    st.markdown(render_table(df_disp), unsafe_allow_html=True)
 
 
 def render_history_tab():
@@ -278,10 +312,7 @@ def render_history_tab():
             ]
             cols = [c for c in preferred if c in df_last.columns]
             df_show = df_last[cols] if cols else df_last  # fall back to full frame
-            st.dataframe(
-                _apply_dark_theme(_style_negatives(df_show)),
-                use_container_width=True,
-            )
+            st.markdown(render_table(df_show), unsafe_allow_html=True)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
