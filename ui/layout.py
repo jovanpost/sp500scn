@@ -32,7 +32,8 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
             --col-width: 33%;
         }}
 
-        .dark-table {{
+        .dark-table,
+        div[data-testid="stDataFrame"] {{
             --table-bg: #1f2937;
             --table-header-bg: #374151;
             --table-row-alt: #1e293b;
@@ -196,6 +197,58 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         table.dark-table td.neg {{
             color: var(--table-neg) !important;
             font-weight: 600;
+        }}
+
+        /* Streamlit DataFrame styling and sticky headers */
+        div[data-testid="stDataFrame"] > div:first-child {{
+            position: relative;
+        }}
+        div[data-testid="stDataFrame"] th[role="columnheader"] {{
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            background-color: var(--table-header-bg);
+            color: var(--table-header-text);
+            padding: 8px;
+        }}
+        div[data-testid="stDataFrame"] td,
+        div[data-testid="stDataFrame"] th {{
+            border-bottom: 1px solid var(--table-border);
+        }}
+        div[data-testid="stDataFrame"] td {{
+            background-color: var(--table-bg);
+            color: var(--table-text);
+            padding: 8px;
+        }}
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td {{
+            background-color: var(--table-row-alt);
+        }}
+        div[data-testid="stDataFrame"] tbody tr:hover td {{
+            background-color: var(--table-hover);
+            color: var(--table-hover-text);
+        }}
+        /* Sticky first column */
+        div[data-testid="stDataFrame"] th[role="rowheader"],
+        div[data-testid="stDataFrame"] td:first-child {{
+            position: sticky;
+            left: 0;
+        }}
+        div[data-testid="stDataFrame"] th[role="rowheader"] {{
+            z-index: 4;
+            background-color: var(--table-header-bg);
+            color: var(--table-header-text);
+            padding: 8px;
+        }}
+        div[data-testid="stDataFrame"] td:first-child {{
+            z-index: 2;
+            background-color: var(--table-bg);
+        }}
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td:first-child {{
+            background-color: var(--table-row-alt);
+        }}
+        div[data-testid="stDataFrame"] tbody tr:hover td:first-child {{
+            background-color: var(--table-hover);
+            color: var(--table-hover-text);
         }}
 
         /* Scrollable wrapper for custom HTML tables */
