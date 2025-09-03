@@ -215,6 +215,14 @@ def setup_page(
         .table-wrapper table {{
             width: max-content;
         }}
+        .table-wrapper tbody tr:hover {{
+            background-color: var(--table-hover);
+            color: var(--table-hover-text);
+        }}
+        .table-wrapper tbody tr:hover td:first-child {{
+            background-color: var(--table-hover);
+            z-index: 1;
+        }}
         </style>
         """,
         unsafe_allow_html=True,

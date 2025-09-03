@@ -105,6 +105,13 @@ def _apply_dark_theme(
             ],
         },
         {
+            "selector": "tbody tr:hover td:first-child",
+            "props": [
+                ("background-color", "var(--table-hover)"),
+                ("z-index", "1"),
+            ],
+        },
+        {
             "selector": "td.pos",
             "props": [("color", "var(--table-pos)"), ("font-weight", "600")],
         },
