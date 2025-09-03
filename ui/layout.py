@@ -164,11 +164,16 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
             width: max-content;
         }}
         /* Header */
-        table.dark-table th:first-child {{
+        table.dark-table thead th {{
+            position: -webkit-sticky;
             position: sticky;
-            left: 0;
-            z-index: 4;
+            top: 0;
+            z-index: 3;
             background-color: var(--table-header-bg);
+        }}
+        table.dark-table thead th:first-child {{
+            left: 0;
+            z-index: 5;
         }}
         /* Rows */
         table.dark-table tbody tr {{
@@ -203,6 +208,8 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         div[data-testid="stDataFrame"] > div {{
             position: relative;
             overflow-y: auto;
+            max-height: 70vh;
+            -webkit-overflow-scrolling: touch;
         }}
         div[data-testid="stDataFrame"] table {{
             background-color: var(--table-bg);
@@ -214,6 +221,7 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
         div[data-testid="stDataFrame"] thead th,
         div[data-testid="stDataFrame"] [role="columnheader"] {{
+            position: -webkit-sticky;
             position: sticky;
             top: 0;
             z-index: 3;
@@ -242,6 +250,7 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         div[data-testid="stDataFrame"] thead th:first-child,
         div[data-testid="stDataFrame"] [role="row"] [role="gridcell"]:first-child,
         div[data-testid="stDataFrame"] [role="columnheader"]:first-child {{
+            position: -webkit-sticky;
             position: sticky;
             left: 0;
         }}
@@ -268,10 +277,19 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         .table-wrapper {{
             position: relative;
             overflow-x: auto;
-            overflow-y: visible;
+            overflow-y: auto;
+            max-height: 70vh;
+            -webkit-overflow-scrolling: touch;
         }}
         .table-wrapper table {{
             width: max-content;
+        }}
+        .table-wrapper thead th {{
+            position: -webkit-sticky;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background-color: var(--table-header-bg);
         }}
         .table-wrapper tbody tr:hover {{
             background-color: var(--table-hover);

@@ -8,5 +8,7 @@ def test_setup_page_includes_sticky_dataframe_css(monkeypatch):
     css_call = next((c for c in calls if '<style>' in c), '')
     assert 'div[data-testid="stDataFrame"] [role="columnheader"]' in css_call
     assert 'overflow-y: auto' in css_call
+    assert '-webkit-overflow-scrolling: touch' in css_call
     assert 'position: sticky' in css_call
+    assert 'position: -webkit-sticky' in css_call
     assert '[role="row"] [role="gridcell"]:first-child' in css_call
