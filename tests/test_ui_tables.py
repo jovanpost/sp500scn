@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 import ui.history as history
 import ui.scan as scan
+import ui.table_utils as table_utils
 
 
 def test_outcomes_summary_orders_columns(monkeypatch):
@@ -180,7 +181,7 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
 
 def test_style_negatives_marks_negatives():
     df = pd.DataFrame({"PctChange": [1, -2]})
-    styler = scan._style_negatives(df)
+    styler = table_utils._style_negatives(df)
     html = styler.to_html()
     assert 'neg"' in html
 
