@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 import ui.history as history
 import ui.scan as scan
 import ui.table_utils as table_utils
+import ui.table_render as table_render
 
 
 def test_outcomes_summary_orders_columns(monkeypatch):
@@ -180,4 +181,13 @@ def test_style_negatives_marks_both_signs():
     html = styler.to_html()
     assert 'neg"' in html
     assert 'pos"' in html
+
+
+def test_render_table_injects_script_once(monkeypatch):
+    df = pd.DataFrame({"Ticker": ["AAA"], "Price": [1]})
+    monkeypatch.setattr(table_render, "_script_emitted", False)
+    html1 = table_render.render_table(df)
+    html2 = table_render.render_table(df)
+    combined = html1 + html2
+    assert combined.count('id="row-select-js"') == 1
 
