@@ -67,7 +67,26 @@ def _apply_dark_theme(
                 ("border-spacing", "0"),
                 ("border-radius", "8px"),
                 ("overflow", "hidden"),
-                ("width", "100%"),
+                ("width", "max-content"),
+                ("white-space", "nowrap"),
+            ],
+        },
+        {
+            "selector": "th:first-child",
+            "props": [
+                ("position", "sticky"),
+                ("left", "0"),
+                ("z-index", "2"),
+                ("background-color", "var(--table-header-bg)"),
+            ],
+        },
+        {
+            "selector": "td:first-child",
+            "props": [
+                ("position", "sticky"),
+                ("left", "0"),
+                ("background-color", "var(--table-bg)"),
+                ("z-index", "1"),
             ],
         },
         {
@@ -242,14 +261,31 @@ def outcomes_summary(dfh: pd.DataFrame):
     cols = [c for c in preferred if c in df_disp.columns]
     if cols:
         df_disp = df_disp[cols]
+    table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
     st.markdown(
-        _apply_dark_theme(_style_negatives(df_disp)).to_html(),
+        f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
         unsafe_allow_html=True,
     )
 
 
 def render_history_tab():
     df_out = load_outcomes()
+
+    # --- Historical PASS data across all runs ---
+    df_hist = load_history_df()
+    if df_hist.empty:
+        st.subheader("PASS history")
+        st.info("No historical pass files found.")
+    else:
+        st.subheader("PASS history")
+        if "Ticker" in df_hist.columns:
+            cols = ["Ticker"] + [c for c in df_hist.columns if c != "Ticker"]
+            df_hist = df_hist[cols]
+        table_html = _apply_dark_theme(_style_negatives(df_hist)).to_html()
+        st.markdown(
+            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
+            unsafe_allow_html=True,
+        )
 
     # --- Latest recommendations based on most recent run_date ---
     df_last, date_str = latest_trading_day_recs(df_out)
@@ -258,29 +294,14 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            preferred = [
-                "Ticker",
-                "EvalDate",
-                "run_date",
-                "Price",
-                "Change%",
-                "RelVol(TimeAdj63d)",
-                "LastPrice",
-                "LastPriceAt",
-                "PctToTarget",
-                "EntryTimeET",
-                "HitDateET",
-                "Expiry",
-                "DTE",
-                "BuyK",
-                "SellK",
-                "TP",
-                "Notes",
-            ]
-            cols = [c for c in preferred if c in df_last.columns]
-            df_show = df_last[cols] if cols else df_last  # fall back to full frame
+            if "Ticker" in df_last.columns:
+                cols = ["Ticker"] + [c for c in df_last.columns if c != "Ticker"]
+                df_show = df_last[cols]
+            else:
+                df_show = df_last
+            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
             st.markdown(
-                _apply_dark_theme(_style_negatives(df_show)).to_html(),
+                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
     else:

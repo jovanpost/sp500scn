@@ -101,32 +101,46 @@ def render_scanner_tab():
             st.warning("No tickers passed the filters.")
         else:
             st.success(f"Found {len(df_pass)} passing tickers (latest run).")
+            if "Ticker" in df_pass.columns:
+                order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
+                df_pass = df_pass[order]
+            table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
             st.markdown(
-                _apply_dark_theme(_style_negatives(df_pass)).to_html(),
+                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
             _render_why_buy_block(df_pass)
             with st.expander("Google-Sheet style view (optional)", expanded=False):
+                sf = _sheet_friendly(df_pass)
+                if "Ticker" in sf.columns:
+                    order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
+                    sf = sf[order]
+                table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
                 st.markdown(
-                    _apply_dark_theme(
-                        _style_negatives(_sheet_friendly(df_pass))
-                    ).to_html(),
+                    f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                     unsafe_allow_html=True,
                 )
 
     elif isinstance(st.session_state.get("last_pass"), pd.DataFrame) and not st.session_state["last_pass"].empty:
         df_pass: pd.DataFrame = st.session_state["last_pass"]
         st.info(f"Showing last run in this session • {len(df_pass)} tickers")
+        if "Ticker" in df_pass.columns:
+            order = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
+            df_pass = df_pass[order]
+        table_html = _apply_dark_theme(_style_negatives(df_pass)).to_html()
         st.markdown(
-            _apply_dark_theme(_style_negatives(df_pass)).to_html(),
+            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
             unsafe_allow_html=True,
         )
         _render_why_buy_block(df_pass)
         with st.expander("Google-Sheet style view (optional)", expanded=False):
+            sf = _sheet_friendly(df_pass)
+            if "Ticker" in sf.columns:
+                order = ["Ticker"] + [c for c in sf.columns if c != "Ticker"]
+                sf = sf[order]
+            table_html = _apply_dark_theme(_style_negatives(sf)).to_html()
             st.markdown(
-                _apply_dark_theme(
-                    _style_negatives(_sheet_friendly(df_pass))
-                ).to_html(),
+                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
     else:
