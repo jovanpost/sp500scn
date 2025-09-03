@@ -5,6 +5,22 @@ from utils.outcomes import read_outcomes
 from .table_utils import _style_negatives, inject_row_select_js
 
 
+# --- Row select helper -----------------------------------------------------
+
+ROW_SELECT_JS = """<script id="row-select-js">
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('.table-wrapper tr').forEach(function (row) {
+    row.addEventListener('click', function () {
+      row.classList.toggle('selected');
+    });
+  });
+});
+</script>
+"""
+
+_row_select_injected = False
+
+
 def _apply_dark_theme(
     df: pd.DataFrame | Styler, colors: dict[str, str] | None = None
 ) -> Styler:
@@ -93,7 +109,21 @@ def _apply_dark_theme(
             "props": [("color", "var(--table-neg)"), ("font-weight", "600")],
         },
     ]
-    return base.set_table_styles(styles).set_table_attributes('class="dark-table"')
+
+    styler = base.set_table_styles(styles).set_table_attributes('class="dark-table"')
+
+    orig_to_html = styler.to_html
+
+    def _to_html(*args, **kwargs):
+        html = orig_to_html(*args, **kwargs)
+        global _row_select_injected
+        if not _row_select_injected:
+            _row_select_injected = True
+            html = ROW_SELECT_JS + html
+        return html
+
+    styler.to_html = _to_html  # type: ignore[attr-defined]
+    return styler
 
 
 @st.cache_data(show_spinner=False)
