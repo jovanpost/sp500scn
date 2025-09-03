@@ -23,13 +23,18 @@ def setup_page():
         f"""
         <style>
         :root {{
+            /* Color palette */
             --color-primary: {primary};
             --color-secondary: {secondary};
             --bg-color: {background};
             --text-color: {text};
+
+            /* Layout */
             --padding: 1rem;
             --font-size-base: 16px;
             --col-width: 33%;
+
+            /* Table styling */
             --table-bg: #14141f;
             --table-header-bg: #2A2A3C;
             --table-row-alt: #1b1d2c;
