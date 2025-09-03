@@ -1,0 +1,5 @@
+Ticker|EvalDate|Price|EntryTimeET|Change%|RelVol(TimeAdj63d)|Resistance|TP|RR_to_Res|RR_to_TP|SupportType|SupportPrice|Risk$|TPReward$|TPReward%|ResReward$|ResReward%|DailyATR|DailyCap|Hist21d_PassCount|Hist21d_Max%|Hist21d_Examples|ResLookbackDays|Prices|Session|EntrySrc|VolSrc|OptExpiry|BuyK|SellK|Width|DebitMid|DebitCons|MaxProfitMid|MaxProfitCons|RR_Spread_Mid|RR_Spread_Cons|BreakevenMid|PricingNote
+COO|2025-09-03|66.48|2025-09-03 11:41:59 ET|1.76|1.57|75.54|71.01|2.35|1.17|ATR1.5x|62.62|3.8555|4.53|6.81|9.06|13.63|2.5704|53.9775|9|15.97|2025-04-08:+15.97%; 2025-04-10:+12.03%; 2025-04-07:+10.83%|21|73.5,73.04,75.22,73.48,73.66,74.11,64.58,67.4,65.33,66.48|OPEN|daily_partial_close|daily_partial|2025-09-19|65.0|70.0|5.0|2.42|2.65|2.58|2.35|1.06|0.89|67.42|ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid
+
+Processed at 2025-09-03 11:45:46 ET
+[run_and_log] no new tickers to record today.
