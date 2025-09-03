@@ -69,7 +69,7 @@ def test_outcomes_summary_orders_columns(monkeypatch):
 
 
 def test_render_history_tab_shows_extended_columns(monkeypatch):
-    df_last = pd.DataFrame(
+    df_pass = pd.DataFrame(
         {
             "Ticker": ["AAA"],
             "EvalDate": ["2024-01-01"],
@@ -77,17 +77,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
             "Price": [1],
             "Change%": [0.05],
             "RelVol(TimeAdj63d)": [1.5],
-            "LastPrice": [1.1],
-            "LastPriceAt": ["2024-01-02"],
-            "PctToTarget": [0.2],
-            "EntryTimeET": ["09:30"],
-            "HitDateET": [pd.NA],
-            "Expiry": ["2024-02-01"],
-            "DTE": [10],
-            "BuyK": [1],
-            "SellK": [2],
-            "TP": [2],
-            "Notes": [""],
+            "RR_to_Res": [0.5],
+            "Hist21d_PassCount": [2],
             "Extra": [3],
         }
     )
@@ -122,7 +113,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         }
     )
     monkeypatch.setattr(history, "load_outcomes", lambda: df_outcomes)
-    monkeypatch.setattr(history, "latest_trading_day_recs", lambda _df: (df_last, "2024-01-01"))
+    monkeypatch.setattr(history, "load_latest_pass", lambda: (df_pass, "2024-01-01"))
 
     history.render_history_tab()
 
@@ -135,17 +126,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         "Price",
         "Change%",
         "RelVol(TimeAdj63d)",
-        "LastPrice",
-        "LastPriceAt",
-        "PctToTarget",
-        "EntryTimeET",
-        "HitDateET",
-        "Expiry",
-        "DTE",
-        "BuyK",
-        "SellK",
-        "TP",
-        "Notes",
+        "RR_to_Res",
+        "Hist21d_PassCount",
         "Extra",
     ]
 

@@ -24,6 +24,39 @@ OUTCOLS = [
     "Price",
     "Change%",
     "RelVol(TimeAdj63d)",
+    "Resistance",
+    "TP",
+    "RR_to_Res",
+    "RR_to_TP",
+    "SupportType",
+    "SupportPrice",
+    "Risk$",
+    "TPReward$",
+    "TPReward%",
+    "ResReward$",
+    "ResReward%",
+    "DailyATR",
+    "DailyCap",
+    "Hist21d_PassCount",
+    "Hist21d_Max%",
+    "Hist21d_Examples",
+    "ResLookbackDays",
+    "Prices",
+    "Session",
+    "EntrySrc",
+    "VolSrc",
+    "OptExpiry",
+    "BuyK",
+    "SellK",
+    "Width",
+    "DebitMid",
+    "DebitCons",
+    "MaxProfitMid",
+    "MaxProfitCons",
+    "RR_Spread_Mid",
+    "RR_Spread_Cons",
+    "BreakevenMid",
+    "PricingNote",
     "LastPrice",
     "LastPriceAt",
     "PctToTarget",
@@ -32,9 +65,6 @@ OUTCOLS = [
     "result_status",
     "HitDateET",
     "Expiry",
-    "BuyK",
-    "SellK",
-    "TP",
     "Notes",
     "run_date",
 ]
@@ -112,7 +142,7 @@ def parse_date(s: Any) -> date | None:
 
 def _parse_expiry_from_passrow(row: pd.Series) -> str | None:
     raw = _first_nonempty(row.get("OptExpiry"), row.get("Expiry"))
-    if raw:
+    if raw is not None and not pd.isna(raw):
         return _to_date_str(raw)
     ev = _to_date_str(row.get("EvalDate"))
     if ev:
@@ -141,9 +171,39 @@ def upsert_and_backfill_outcomes(
         "Price",
         "Change%",
         "RelVol(TimeAdj63d)",
+        "Resistance",
+        "TP",
+        "RR_to_Res",
+        "RR_to_TP",
+        "SupportType",
+        "SupportPrice",
+        "Risk$",
+        "TPReward$",
+        "TPReward%",
+        "ResReward$",
+        "ResReward%",
+        "DailyATR",
+        "DailyCap",
+        "Hist21d_PassCount",
+        "Hist21d_Max%",
+        "Hist21d_Examples",
+        "ResLookbackDays",
+        "Prices",
+        "Session",
+        "EntrySrc",
+        "VolSrc",
+        "OptExpiry",
         "BuyK",
         "SellK",
-        "TP",
+        "Width",
+        "DebitMid",
+        "DebitCons",
+        "MaxProfitMid",
+        "MaxProfitCons",
+        "RR_Spread_Mid",
+        "RR_Spread_Cons",
+        "BreakevenMid",
+        "PricingNote",
         "EntryTimeET",
         "HitDateET",
         "Notes",
@@ -154,12 +214,39 @@ def upsert_and_backfill_outcomes(
 
     df_pass["Ticker"] = df_pass["Ticker"].astype(str).str.upper()
     df_pass["EvalDate"] = df_pass["EvalDate"].apply(_to_date_str)
-    df_pass["Price"] = df_pass["Price"].map(safe_float)
-    df_pass["Change%"] = df_pass["Change%"].map(safe_float)
-    df_pass["RelVol(TimeAdj63d)"] = df_pass["RelVol(TimeAdj63d)"].map(safe_float)
-    df_pass["BuyK"] = df_pass["BuyK"].map(safe_float)
-    df_pass["SellK"] = df_pass["SellK"].map(safe_float)
-    df_pass["TP"] = df_pass["TP"].map(safe_float)
+    num_cols = [
+        "Price",
+        "Change%",
+        "RelVol(TimeAdj63d)",
+        "Resistance",
+        "TP",
+        "RR_to_Res",
+        "RR_to_TP",
+        "SupportPrice",
+        "Risk$",
+        "TPReward$",
+        "TPReward%",
+        "ResReward$",
+        "ResReward%",
+        "DailyATR",
+        "DailyCap",
+        "Hist21d_PassCount",
+        "Hist21d_Max%",
+        "ResLookbackDays",
+        "BuyK",
+        "SellK",
+        "Width",
+        "DebitMid",
+        "DebitCons",
+        "MaxProfitMid",
+        "MaxProfitCons",
+        "RR_Spread_Mid",
+        "RR_Spread_Cons",
+        "BreakevenMid",
+    ]
+    for c in num_cols:
+        df_pass[c] = df_pass[c].map(safe_float)
+
     today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     df_pass["run_date"] = df_pass["run_date"].apply(_to_date_str).fillna(today_str)
 

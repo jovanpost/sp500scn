@@ -41,3 +41,19 @@ def test_latest_trading_day_recs_filters_and_dedupes():
     assert date_str == "2023-01-02"
     assert set(latest["Ticker"]) == {"AAA", "BBB"}
     assert len(latest) == 2
+
+
+def test_load_latest_pass_returns_newest(tmp_path, monkeypatch):
+    hist_dir = tmp_path / "history"
+    hist_dir.mkdir()
+    old = hist_dir / "pass_20240101.csv"
+    old.write_text("Ticker,run_date\nAAA,2024-01-01\n")
+    new = hist_dir / "pass_20240102.csv"
+    new.write_text("Ticker,run_date\nBBB,2024-01-02\n")
+
+    monkeypatch.setattr(history, "HISTORY_DIR", hist_dir)
+    history.load_latest_pass.clear()
+    df, date_str = history.load_latest_pass()
+
+    assert list(df["Ticker"]) == ["BBB"]
+    assert date_str == "2024-01-02"

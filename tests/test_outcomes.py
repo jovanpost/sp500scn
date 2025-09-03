@@ -28,6 +28,7 @@ def test_upsert_assigns_run_date_and_dedupes(tmp_path):
             "Price": 3.0,
             "Change%": 4.5,
             "RelVol(TimeAdj63d)": 1.2,
+            "Hist21d_PassCount": 5,
         },
     ])
 
@@ -42,6 +43,7 @@ def test_upsert_assigns_run_date_and_dedupes(tmp_path):
     msft_row = result[result["Ticker"] == "MSFT"].iloc[0]
     assert msft_row["Change%"] == 4.5
     assert msft_row["RelVol(TimeAdj63d)"] == 1.2
+    assert msft_row["Hist21d_PassCount"] == 5
     # Ensure only one entry per ticker per run_date
     assert (
         result.groupby(["Ticker", "run_date"]).size().max() == 1

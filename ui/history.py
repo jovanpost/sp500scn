@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 from pandas.io.formats.style import Styler
 from utils.outcomes import read_outcomes
+from utils.io import HISTORY_DIR
 from .table_utils import _style_negatives
 
 
@@ -130,6 +131,26 @@ def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]
     return df_latest, latest.date().isoformat()
 
 
+@st.cache_data(show_spinner=False)
+def load_latest_pass() -> tuple[pd.DataFrame, str | None]:
+    """Return the newest ``pass_*.csv`` from the history directory."""
+    paths = sorted(HISTORY_DIR.glob("pass_*.csv"))
+    if not paths:
+        return pd.DataFrame(), None
+
+    latest = paths[-1]
+    df = pd.read_csv(latest)
+
+    date_str = None
+    if "run_date" in df.columns:
+        run_dates = pd.to_datetime(df["run_date"], errors="coerce")
+        latest_dt = run_dates.dropna().max()
+        if pd.notna(latest_dt):
+            date_str = latest_dt.date().isoformat()
+
+    return df, date_str
+
+
 def load_outcomes():
     """Thin wrapper around :func:`utils.outcomes.read_outcomes`."""
     return read_outcomes()
@@ -226,28 +247,30 @@ def outcomes_summary(dfh: pd.DataFrame):
 
 
 def render_history_tab():
+    df_pass, date_str = load_latest_pass()
     df_out = load_outcomes()
 
-    # --- Latest recommendations based on most recent run_date ---
-    df_last, date_str = latest_trading_day_recs(df_out)
+    # --- Latest recommendations from most recent pass file ---
     if date_str:
         st.subheader(f"Trading day {date_str} recommendations")
-        if df_last.empty:
-            st.info("No tickers passed that day.")
-        else:
-            if "Ticker" in df_last.columns:
-                cols = ["Ticker"] + [c for c in df_last.columns if c != "Ticker"]
-                df_show = df_last[cols]
-            else:
-                df_show = df_last
-            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
-            st.markdown(
-                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
-                unsafe_allow_html=True,
-            )
     else:
         st.subheader("Trading day — recommendations")
-        st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
+
+    if df_pass.empty:
+        st.info(
+            "No pass files yet. Run the scanner (or wait for the next scheduled run)."
+        )
+    else:
+        if "Ticker" in df_pass.columns:
+            cols = ["Ticker"] + [c for c in df_pass.columns if c != "Ticker"]
+            df_show = df_pass[cols]
+        else:
+            df_show = df_pass
+        table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
+        st.markdown(
+            f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
+            unsafe_allow_html=True,
+        )
 
     # --- Outcomes, sorted by option expiry (oldest → newest) ---
     st.subheader("Outcomes (sorted by option expiry)")
