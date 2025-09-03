@@ -1,7 +1,9 @@
 import streamlit as st
 
 
-def setup_page():
+def setup_page(
+    *, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"
+):
     st.set_page_config(
         page_title="Edge500",     # Title shown in browser tab
         page_icon="logo.png",     # Favicon (logo.png in repo root)
@@ -36,8 +38,8 @@ def setup_page():
             --table-bg: #1f2937;
             --table-header-bg: #374151;
             --table-row-alt: #1e293b;
-            --table-hover: #2563eb;
-            --table-hover-text: #ffffff;
+            --table-hover: {table_hover};
+            --table-hover-text: {table_hover_text};
             --table-text: #e5e7eb;
             --table-header-text: #f9fafb;
             --table-border: #4b5563;
