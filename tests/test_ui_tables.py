@@ -35,22 +35,19 @@ def test_outcomes_summary_orders_columns(monkeypatch):
         }
     )
 
-    df_calls = []
+    html_calls = []
     monkeypatch.setattr(
         history.st,
-        "dataframe",
-        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
+        "markdown",
+        lambda html_arg, *a, **k: html_calls.append(html_arg),
     )
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
 
     history.outcomes_summary(df)
 
-    assert df_calls
-    df_shown, kwargs = df_calls[0]
-    assert kwargs.get("use_container_width") is True
-    html = df_shown.to_html()
-    parsed = pd.read_html(html, index_col=0)[0]
+    assert html_calls
+    parsed = pd.read_html(html_calls[0], index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
@@ -95,14 +92,14 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         }
     )
 
-    df_calls = []
+    html_calls = []
     monkeypatch.setattr(history.st, "subheader", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "info", lambda *a, **k: None)
     monkeypatch.setattr(history.st, "caption", lambda *a, **k: None)
     monkeypatch.setattr(
         history.st,
-        "dataframe",
-        lambda df_arg, *a, **k: df_calls.append((df_arg, k)),
+        "markdown",
+        lambda html_arg, *a, **k: html_calls.append(html_arg),
     )
 
     df_outcomes = pd.DataFrame(
@@ -129,11 +126,8 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 
     history.render_history_tab()
 
-    assert len(df_calls) >= 2
-    df_shown, kwargs = df_calls[0]
-    assert kwargs.get("use_container_width") is True
-    html = df_shown.to_html()
-    parsed = pd.read_html(html, index_col=0)[0]
+    assert len(html_calls) >= 2
+    parsed = pd.read_html(html_calls[0], index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
         "EvalDate",
