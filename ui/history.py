@@ -1,9 +1,7 @@
 import pandas as pd
 import streamlit as st
 from pandas.io.formats.style import Styler
-from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
-from utils.formatting import _usd, _safe
 from .table_utils import _style_negatives
 
 
@@ -67,7 +65,26 @@ def _apply_dark_theme(
                 ("border-spacing", "0"),
                 ("border-radius", "8px"),
                 ("overflow", "hidden"),
-                ("width", "100%"),
+                ("width", "max-content"),
+                ("white-space", "nowrap"),
+            ],
+        },
+        {
+            "selector": "th:first-child",
+            "props": [
+                ("position", "sticky"),
+                ("left", "0"),
+                ("z-index", "2"),
+                ("background-color", "var(--table-header-bg)"),
+            ],
+        },
+        {
+            "selector": "td:first-child",
+            "props": [
+                ("position", "sticky"),
+                ("left", "0"),
+                ("background-color", "var(--table-bg)"),
+                ("z-index", "1"),
             ],
         },
         {
@@ -80,29 +97,6 @@ def _apply_dark_theme(
         },
     ]
     return base.set_table_styles(styles)
-
-
-def load_history_df() -> pd.DataFrame:
-    """Return a DataFrame concatenating all historical PASS snapshots."""
-    paths = [p for p in list_pass_files() if p.suffix in {".psv", ".csv"}]
-
-    if not paths:
-        return pd.DataFrame()
-
-    frames = []
-    for p in paths:
-        try:
-            sep = "|" if p.suffix == ".psv" else ","
-            df = pd.read_csv(p, sep=sep)
-            df["__source_file"] = p.name
-            frames.append(df)
-        except Exception:
-            continue
-
-    if not frames:
-        return pd.DataFrame()
-
-    return pd.concat(frames, ignore_index=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -221,29 +215,15 @@ def outcomes_summary(dfh: pd.DataFrame):
         "%Y-%m-%d"
     )
 
-    preferred = [
-        "Ticker",
-        "EvalDate",
-        "Price",
-        "RelVol(TimeAdj63d)",
-        "LastPrice",
-        "LastPriceAt",
-        "PctToTarget",
-        "EntryTimeET",
-        status_col if status_col else "Status",
-        "HitDateET",
-        "Expiry",
-        "DTE",
-        "BuyK",
-        "SellK",
-        "TP",
-        "Notes",
-    ]
-    cols = [c for c in preferred if c in df_disp.columns]
-    if cols:
+    df_disp = df_disp.drop(columns=["Expiry_parsed", "EvalDate_parsed"], errors="ignore")
+    if "Ticker" in df_disp.columns:
+        cols = ["Ticker"] + [c for c in df_disp.columns if c != "Ticker"]
+        if "DTE" in cols and "Expiry" in cols:
+            cols.insert(cols.index("Expiry") + 1, cols.pop(cols.index("DTE")))
         df_disp = df_disp[cols]
+    table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
     st.markdown(
-        _apply_dark_theme(_style_negatives(df_disp)).to_html(),
+        f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
         unsafe_allow_html=True,
     )
 
@@ -258,29 +238,14 @@ def render_history_tab():
         if df_last.empty:
             st.info("No tickers passed that day.")
         else:
-            preferred = [
-                "Ticker",
-                "EvalDate",
-                "run_date",
-                "Price",
-                "Change%",
-                "RelVol(TimeAdj63d)",
-                "LastPrice",
-                "LastPriceAt",
-                "PctToTarget",
-                "EntryTimeET",
-                "HitDateET",
-                "Expiry",
-                "DTE",
-                "BuyK",
-                "SellK",
-                "TP",
-                "Notes",
-            ]
-            cols = [c for c in preferred if c in df_last.columns]
-            df_show = df_last[cols] if cols else df_last  # fall back to full frame
+            if "Ticker" in df_last.columns:
+                cols = ["Ticker"] + [c for c in df_last.columns if c != "Ticker"]
+                df_show = df_last[cols]
+            else:
+                df_show = df_last
+            table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
             st.markdown(
-                _apply_dark_theme(_style_negatives(df_show)).to_html(),
+                f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
     else:

@@ -126,7 +126,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
 
     history.render_history_tab()
 
-    assert len(html_calls) >= 2
+    assert len(html_calls) == 2
     parsed = pd.read_html(html_calls[0], index_col=0)[0]
     assert list(parsed.columns) == [
         "Ticker",
@@ -146,6 +146,7 @@ def test_render_history_tab_shows_extended_columns(monkeypatch):
         "SellK",
         "TP",
         "Notes",
+        "Extra",
     ]
 
 
