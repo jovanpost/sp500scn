@@ -98,7 +98,7 @@ def _apply_dark_theme(
 
 @st.cache_data(show_spinner=False)
 def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
-    """Return unique tickers for the most recent ``run_date``.
+    """Return all rows for the most recent ``run_date``.
 
     Parameters
     ----------
@@ -122,11 +122,7 @@ def latest_trading_day_recs(df: pd.DataFrame) -> tuple[pd.DataFrame, str | None]
     if pd.isna(latest):
         return pd.DataFrame(), None
 
-    df_latest = (
-        df[df["run_date"] == latest]
-        .drop_duplicates(subset=["Ticker"])
-        .reset_index(drop=True)
-    )
+    df_latest = df[df["run_date"] == latest].reset_index(drop=True)
     return df_latest, latest.date().isoformat()
 
 
