@@ -1,0 +1,5 @@
+Ticker|EvalDate|Price|EntryTimeET|Change%|RelVol(TimeAdj63d)|Resistance|TP|RR_to_Res|RR_to_TP|SupportType|SupportPrice|Risk$|TPReward$|TPReward%|ResReward$|ResReward%|DailyATR|DailyCap|Hist21d_PassCount|Hist21d_Max%|Hist21d_Examples|ResLookbackDays|Prices|Session|EntrySrc|VolSrc|OptExpiry|BuyK|SellK|Width|DebitMid|DebitCons|MaxProfitMid|MaxProfitCons|RR_Spread_Mid|RR_Spread_Cons|BreakevenMid|PricingNote
+TGT|2025-09-03|92.57|2025-09-03 12:53:19 ET|0.14|1.54|107.82|100.19|17.27|8.64|SwingLow21|91.69|0.883|7.625|8.24|15.25|16.47|3.1752|66.6795|14|13.0|2025-06-02:+13.0%; 2025-06-20:+11.51%; 2025-06-23:+11.29%|21|98.69,97.06,99.24,97.13,96.11,97.96,96.81,95.98,92.44,92.57|OPEN|daily_partial_close|daily_partial|2025-10-03|95.0|100.0|5.0|1.26|1.35|3.74|3.65|2.97|2.7|96.26|ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid
+
+Processed at 2025-09-03 12:53:52 ET
+[run_and_log] wrote /home/runner/work/sp500scn/sp500scn/data/history/pass_20250903-165352.csv
