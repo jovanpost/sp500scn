@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 from pandas.io.formats.style import Styler
 from utils.outcomes import read_outcomes
-from .table_utils import _style_negatives
+from .table_utils import _style_negatives, inject_row_select_js
 
 
 def _apply_dark_theme(
@@ -215,6 +215,7 @@ def outcomes_summary(dfh: pd.DataFrame):
             cols.insert(cols.index("Expiry") + 1, cols.pop(cols.index("DTE")))
         df_disp = df_disp[cols]
     table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+    table_html = inject_row_select_js(table_html)
     st.markdown(
         f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
         unsafe_allow_html=True,
@@ -237,6 +238,7 @@ def render_history_tab():
             else:
                 df_show = df_last
             table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
+            table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
