@@ -4,7 +4,7 @@ from pandas.io.formats.style import Styler
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 from utils.formatting import _usd, _safe
-from .table_utils import _style_negatives
+from .table_utils import _style_negatives, ROW_CLICK_JS
 
 
 def _apply_dark_theme(
@@ -61,6 +61,13 @@ def _apply_dark_theme(
             ],
         },
         {
+            "selector": "tbody tr.selected",
+            "props": [
+                ("background-color", "var(--table-hover)"),
+                ("color", "var(--table-hover-text)"),
+            ],
+        },
+        {
             "selector": "table",
             "props": [
                 ("border-collapse", "separate"),
@@ -98,7 +105,7 @@ def _apply_dark_theme(
             "props": [("color", "var(--table-neg)"), ("font-weight", "600")],
         },
     ]
-    return base.set_table_styles(styles)
+    return base.set_table_styles(styles).set_table_attributes('class="dark-table"')
 
 
 def load_history_df() -> pd.DataFrame:
@@ -266,6 +273,7 @@ def outcomes_summary(dfh: pd.DataFrame):
         f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
         unsafe_allow_html=True,
     )
+    st.markdown(ROW_CLICK_JS, unsafe_allow_html=True)
 
 
 def render_history_tab():
@@ -286,6 +294,7 @@ def render_history_tab():
             f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
             unsafe_allow_html=True,
         )
+        st.markdown(ROW_CLICK_JS, unsafe_allow_html=True)
 
     # --- Latest recommendations based on most recent run_date ---
     df_last, date_str = latest_trading_day_recs(df_out)
@@ -304,6 +313,7 @@ def render_history_tab():
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
             )
+            st.markdown(ROW_CLICK_JS, unsafe_allow_html=True)
     else:
         st.subheader("Trading day — recommendations")
         st.info("No pass files yet. Run the scanner (or wait for the next scheduled run).")
