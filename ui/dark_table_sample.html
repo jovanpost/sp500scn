@@ -1,0 +1,85 @@
+<style type="text/css">
+#T_34871  {
+  --table-bg: #1f2937;
+  --table-header-bg: #374151;
+  --table-row-alt: #1e293b;
+  --table-hover: #2563eb;
+  --table-hover-text: #ffffff;
+  --table-text: #e5e7eb;
+  --table-header-text: #f9fafb;
+  --table-border: #4b5563;
+  --table-pos: #22c55e;
+  --table-neg: #ef4444;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  width: max-content;
+  white-space: nowrap;
+}
+#T_34871 th {
+  background-color: var(--table-header-bg);
+  color: var(--table-header-text);
+  border-bottom: 1px solid var(--table-border);
+  font-weight: 600;
+  text-align: center;
+  padding: 8px;
+}
+#T_34871 td {
+  background-color: var(--table-bg);
+  color: var(--table-text);
+  border-bottom: 1px solid var(--table-border);
+  padding: 8px;
+}
+#T_34871 tbody tr:nth-child(even) {
+  background-color: var(--table-row-alt);
+}
+#T_34871 tbody tr:hover {
+  background-color: var(--table-hover);
+  color: var(--table-hover-text);
+}
+#T_34871 th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background-color: var(--table-header-bg);
+}
+#T_34871 td:first-child {
+  position: sticky;
+  left: 0;
+  background-color: var(--table-bg);
+  z-index: 1;
+}
+#T_34871 td.pos {
+  color: var(--table-pos);
+  font-weight: 600;
+}
+#T_34871 td.neg {
+  color: var(--table-neg);
+  font-weight: 600;
+}
+</style>
+<table id="T_34871" class="dark-table">
+  <thead>
+    <tr>
+      <th class="blank level0" >&nbsp;</th>
+      <th id="T_34871_level0_col0" class="col_heading level0 col0" >Ticker</th>
+      <th id="T_34871_level0_col1" class="col_heading level0 col1" >Change%</th>
+      <th id="T_34871_level0_col2" class="col_heading level0 col2" >Price</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th id="T_34871_level0_row0" class="row_heading level0 row0" >0</th>
+      <td id="T_34871_row0_col0" class="data row0 col0" >AAA</td>
+      <td id="T_34871_row0_col1" class="data row0 col1 pos" >0.050000</td>
+      <td id="T_34871_row0_col2" class="data row0 col2 pos" >10</td>
+    </tr>
+    <tr>
+      <th id="T_34871_level0_row1" class="row_heading level0 row1" >1</th>
+      <td id="T_34871_row1_col0" class="data row1 col0" >BBB</td>
+      <td id="T_34871_row1_col1" class="data row1 col1 neg" >-0.070000</td>
+      <td id="T_34871_row1_col2" class="data row1 col2 pos" >11</td>
+    </tr>
+  </tbody>
+</table>
