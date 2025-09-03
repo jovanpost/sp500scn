@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import pandas as pd
 from pandas.io.formats.style import Styler
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -12,6 +13,11 @@ if str(ROOT) not in sys.path:
 import ui.history as history
 import ui.scan as scan
 import ui.table_utils as table_utils
+
+
+@pytest.fixture(autouse=True)
+def reset_row_select_flag(monkeypatch):
+    monkeypatch.setattr(table_utils, "_row_select_script_injected", False)
 
 
 def test_outcomes_summary_orders_columns(monkeypatch):
@@ -171,6 +177,8 @@ def test_render_scanner_tab_shows_dataframe(monkeypatch):
     scan.render_scanner_tab()
     table_html = next((h for h in html_calls if "<table" in h), None)
     assert table_html is not None
+    # Ensure row-selection script is injected only once across all tables
+    assert sum("row-select-js" in h for h in html_calls) == 1
     parsed = pd.read_html(table_html, index_col=0)[0]
     assert list(parsed.columns) == ["Ticker", "Price", "RelVol(TimeAdj63d)", "TP"]
 

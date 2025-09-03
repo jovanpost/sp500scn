@@ -4,7 +4,7 @@ from pandas.io.formats.style import Styler
 from utils.io import list_pass_files
 from utils.outcomes import read_outcomes
 from utils.formatting import _usd, _safe
-from .table_utils import _style_negatives
+from .table_utils import _style_negatives, inject_row_select_js
 
 
 def _apply_dark_theme(
@@ -262,6 +262,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     if cols:
         df_disp = df_disp[cols]
     table_html = _apply_dark_theme(_style_negatives(df_disp)).to_html()
+    table_html = inject_row_select_js(table_html)
     st.markdown(
         f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
         unsafe_allow_html=True,
@@ -282,6 +283,7 @@ def render_history_tab():
             cols = ["Ticker"] + [c for c in df_hist.columns if c != "Ticker"]
             df_hist = df_hist[cols]
         table_html = _apply_dark_theme(_style_negatives(df_hist)).to_html()
+        table_html = inject_row_select_js(table_html)
         st.markdown(
             f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
             unsafe_allow_html=True,
@@ -300,6 +302,7 @@ def render_history_tab():
             else:
                 df_show = df_last
             table_html = _apply_dark_theme(_style_negatives(df_show)).to_html()
+            table_html = inject_row_select_js(table_html)
             st.markdown(
                 f"<div class='table-wrapper' tabindex='0'>{table_html}</div>",
                 unsafe_allow_html=True,
