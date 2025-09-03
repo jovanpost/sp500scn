@@ -29,15 +29,15 @@ def test_load_outcomes_missing_file(tmp_path, monkeypatch):
     assert list(df.columns) == outcomes.OUTCOLS
 
 
-def test_latest_trading_day_recs_filters_and_dedupes():
+def test_latest_trading_day_recs_filters_without_dedup():
     df = pd.DataFrame(
         {
-            "Ticker": ["AAA", "BBB", "AAA"],
-            "run_date": ["2023-01-01", "2023-01-02", "2023-01-02"],
+            "Ticker": ["AAA", "AAA", "BBB"],
+            "run_date": ["2023-01-02", "2023-01-02", "2023-01-01"],
         }
     )
 
-    latest, date_str = history.latest_trading_day_recs(df)
+    df_latest, date_str = history.latest_trading_day_recs(df)
     assert date_str == "2023-01-02"
-    assert set(latest["Ticker"]) == {"AAA", "BBB"}
-    assert len(latest) == 2
+    assert list(df_latest["Ticker"]) == ["AAA", "AAA"]
+    assert len(df_latest) == 2
