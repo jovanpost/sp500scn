@@ -1,0 +1,5 @@
+Ticker|EvalDate|Price|EntryTimeET|Change%|RelVol(TimeAdj63d)|Resistance|TP|RR_to_Res|RR_to_TP|SupportType|SupportPrice|Risk$|TPReward$|TPReward%|ResReward$|ResReward%|DailyATR|DailyCap|Hist21d_PassCount|Hist21d_Max%|Hist21d_Examples|ResLookbackDays|Prices|Session|EntrySrc|VolSrc|OptExpiry|BuyK|SellK|Width|DebitMid|DebitCons|MaxProfitMid|MaxProfitCons|RR_Spread_Mid|RR_Spread_Cons|BreakevenMid|PricingNote
+ISRG|2025-09-04|452.12|2025-09-04 12:40:51 ET|2.48|2.45|487.2|469.66|2.11|1.05|ATR1.5x|435.48|16.6436|17.5375|3.88|35.075|7.76|11.0957|233.0101|81|18.97|2025-04-21:+18.97%; 2025-04-08:+17.6%; 2025-04-04:+17.47%|21|469.88,476.16,468.44,474.26,471.15,473.84,473.3,469.07,441.18,452.12|OPEN|daily_partial_close|daily_partial|2025-10-03|465.0|470.0|5.0|1.55|2.3|3.45|2.7|2.23|1.17|466.55|ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid
+
+Processed at 2025-09-04 12:43:25 ET
+[run_and_log] no new tickers to record today.
