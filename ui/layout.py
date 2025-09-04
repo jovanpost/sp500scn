@@ -278,6 +278,11 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         unsafe_allow_html=True,
     )
 
+    if "_sticky_js_injected" not in st.session_state:
+        helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
+        st.markdown(f"<script>{helper_js}</script>", unsafe_allow_html=True)
+        st.session_state["_sticky_js_injected"] = True
+
     st.markdown(
         """
         <script>
@@ -298,9 +303,6 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         """,
         unsafe_allow_html=True,
     )
-
-    helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
-    st.markdown(f"<script>{helper_js}</script>", unsafe_allow_html=True)
 
 
 def render_header():
