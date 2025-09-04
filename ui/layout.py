@@ -275,25 +275,14 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
 
         /* Scrollable wrapper for custom HTML tables */
-        .table-wrapper {{
-            position: relative;
-            overflow-x: auto;
-            overflow-y: auto;
-        }}
-        .table-wrapper table {{
+        .table-wrap table {{
             width: max-content;
         }}
-        .table-wrapper thead th {{
-            position: sticky;
-            top: 0;
-            z-index: 2;
-            background-color: var(--table-header-bg);
-        }}
-        .table-wrapper tbody tr:hover {{
+        .table-wrap tbody tr:hover {{
             background-color: var(--table-hover);
             color: var(--table-hover-text);
         }}
-        .table-wrapper tbody tr:hover td:first-child {{
+        .table-wrap tbody tr:hover td:first-child {{
             background-color: var(--table-hover);
             z-index: 1;
         }}
@@ -307,18 +296,9 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
     st.markdown(
         """
         <script>
-          try { window.parent.__stickyAudit__?.(); } catch (e) {}
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <script>
         document.addEventListener('keydown', function(event) {
             const active = document.activeElement;
-            if (active && active.classList.contains('table-wrapper')) {
+            if (active && active.classList.contains('table-wrap')) {
                 const scrollAmount = 40;
                 if (event.key === 'ArrowRight') {
                     active.scrollLeft += scrollAmount;
