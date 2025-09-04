@@ -89,8 +89,4 @@ window.__STICKY_DEBUG__ = window.__STICKY_DEBUG__ ?? false;
   }
 
   init();
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init, { once: true });
-  }
 })();

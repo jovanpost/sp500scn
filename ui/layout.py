@@ -205,29 +205,27 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
 
         /* Streamlit DataFrame styling and sticky headers */
-        /* Reset root overflow so sticky uses inner scroll container */
+        /* Root container override for scroll behavior */
         div[data-testid="stDataFrame"] {{
-            overflow: visible !important;
+            position: relative;
+            overflow: auto !important;
         }}
 
         /* Actual scroll container (identified by JS helper) */
-        div[data-testid="stDataFrame"] .sticky-scroll {{
-            position: relative;
-            overflow: auto !important;
+        div[data-testid="stDataFrame"].sticky-scroll {{
             border: 1px solid var(--table-border);
             border-radius: 10px;
         }}
 
         /* Ensure table rendering works well with sticky headers */
-        div[data-testid="stDataFrame"] .sticky-scroll table {{
+        div[data-testid="stDataFrame"].sticky-scroll table {{
             border-collapse: separate;
             border-spacing: 0;
         }}
 
         /* Sticky header cells (native <th> and grid role headers) */
         div[data-testid="stDataFrame"] thead th,
-        div[data-testid="stDataFrame"] [role="columnheader"],
-        div[data-testid="stDataFrame"] .sticky-header {{
+        div[data-testid="stDataFrame"] [role="columnheader"] {{
             position: sticky;
             top: 0;
             z-index: 5; /* above rows and hover backgrounds */
@@ -237,15 +235,15 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
 
         /* Row striping and base background */
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr td {{
             background: var(--table-bg);
         }}
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:nth-child(even) td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr:nth-child(even) td {{
             background: var(--table-row-alt);
         }}
 
         /* Hover highlight that does not cover the header */
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:hover td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr:hover td {{
             background: var(--table-hover);
             color: var(--table-hover-text);
         }}
@@ -278,10 +276,8 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         unsafe_allow_html=True,
     )
 
-    if "_sticky_js_injected" not in st.session_state:
-        helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
-        st.markdown(f"<script>{helper_js}</script>", unsafe_allow_html=True)
-        st.session_state["_sticky_js_injected"] = True
+    helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
+    st.markdown(f"<script>{helper_js}</script>", unsafe_allow_html=True)
 
     st.markdown(
         """
