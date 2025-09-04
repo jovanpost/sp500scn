@@ -49,26 +49,49 @@
       });
     }
 
-    function collectTables() {
-      // Streamlit DF containers + any plain tables your app renders
-      const roots = DOC.querySelectorAll('div[data-testid="stDataFrame"], .table-wrapper, table.dark-table, table');
-      const tables = [];
-      roots.forEach((r) => {
-        if (r.tagName?.toLowerCase() === "table") {
-          tables.push(r);
-        } else {
-          r.querySelectorAll("table").forEach((t) => tables.push(t));
-        }
+    function collectRoots() {
+      // Streamlit DataFrame containers + our own HTML tables
+      return [...DOC.querySelectorAll(
+        'div[data-testid="stDataFrame"], .table-wrapper, table.dark-table, table'
+      )];
+    }
+
+    function auditStreamlitDF(root) {
+      if (!root || !(root instanceof PWIN.Element)) return;
+      // tag the scrollable wrapper so our CSS picks it up
+      (findScrollNode(root) || root).classList.add('sticky-scroll');
+
+      // virtualized headers in Streamlit: <div role="columnheader">
+      const headers = root.querySelectorAll('[role="columnheader"]');
+      headers.forEach((h) => {
+        const cs = PWIN.getComputedStyle(h);
+        h.style.position = 'sticky';
+        h.style.top = '0px';
+        h.style.zIndex = '3';
+        h.style.background = cs.backgroundColor || PWIN.getComputedStyle(h.parentElement || root).backgroundColor || 'inherit';
       });
-      return tables;
     }
 
     function apply() {
       ensureCSS();
-      const tables = collectTables();
-      tables.forEach(auditTable);
-      log("[sticky] processed tables:", tables.length);
-      return tables.length;
+      const roots = collectRoots();
+      let count = 0;
+
+      roots.forEach((r) => {
+        if (r.tagName?.toLowerCase() === 'table') {
+          auditTable(r); count++;
+        } else {
+          const innerTables = r.querySelectorAll('table');
+          if (innerTables.length) {
+            innerTables.forEach((t) => { auditTable(t); count++; });
+          } else {
+            auditStreamlitDF(r); count++;
+          }
+        }
+      });
+
+      log('[sticky] processed roots:', count);
+      return count;
     }
 
     // Debounced observer across the whole parent page
