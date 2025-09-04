@@ -1,35 +1,32 @@
+import json
 from pathlib import Path
 from streamlit import components
 import streamlit as st
 
 
-def _inject_sticky_helper():
-    """Append sticky helper JS to the *parent* document so it can see real DataFrames."""
+def _inject_sticky_helper() -> None:
+    """Append the sticky helper <script> into the PARENT Streamlit page."""
     helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
     components.v1.html(
         f"""
         <script>
-        (function() {{
+        (function (P) {{
           try {{
-            // Use the parent page if we are in a component iframe; fallback to current window.
-            var P = window.parent || window;
-            var D = (P.document || document);
-
-            // Parent-side idempotence: only append once per page load.
-            if (P.__STICKY_SCRIPT_APPENDED__) return;
-            P.__STICKY_SCRIPT_APPENDED__ = true;
-
-            var s = D.createElement('script');
+            if (!P) return;
+            if (P.__STICKY_HELPER_TAG__) return;   // idempotent in parent
+            var s = P.document.createElement('script');
+            s.id = 'sticky-helper-bundle';
             s.type = 'text/javascript';
-            s.text = {helper_js!r};   // inline the sticky helper source
-            D.head.appendChild(s);
+            s.text = {json.dumps(helper_js)};
+            P.document.head.appendChild(s);
+            P.__STICKY_HELPER_TAG__ = true;
           }} catch (e) {{
-            console.warn('[sticky] parent injection failed', e);
+            console.log('[sticky] parent inject failed', e);
           }}
-        }})();
+        }})(window.parent);
         </script>
         """,
-        height=0, width=0, scrolling=False
+        height=0,
     )
 
 
@@ -83,6 +80,9 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
             background: var(--bg-color);
             color: var(--text-color);
         }}
+
+        /* helper relies on this class for scroll wrappers */
+        .sticky-scroll {{ overflow: auto; }}
 
         /* --- Buttons / general --- */
         div.stButton > button:first-child {{
@@ -303,6 +303,15 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
     )
 
     _inject_sticky_helper()
+
+    st.markdown(
+        """
+        <script>
+          try { window.parent.__stickyAudit__?.(); } catch (e) {}
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         """
