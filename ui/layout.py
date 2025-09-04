@@ -1,11 +1,36 @@
-import streamlit as st
 from pathlib import Path
 from streamlit import components
+import streamlit as st
 
 
 def _inject_sticky_helper():
+    """Append sticky helper JS to the *parent* document so it can see real DataFrames."""
     helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
-    components.v1.html(f"<script>{helper_js}</script>", height=0, width=0, scrolling=False)
+    components.v1.html(
+        f"""
+        <script>
+        (function() {{
+          try {{
+            // Use the parent page if we are in a component iframe; fallback to current window.
+            var P = window.parent || window;
+            var D = (P.document || document);
+
+            // Parent-side idempotence: only append once per page load.
+            if (P.__STICKY_SCRIPT_APPENDED__) return;
+            P.__STICKY_SCRIPT_APPENDED__ = true;
+
+            var s = D.createElement('script');
+            s.type = 'text/javascript';
+            s.text = {helper_js!r};   // inline the sticky helper source
+            D.head.appendChild(s);
+          }} catch (e) {{
+            console.warn('[sticky] parent injection failed', e);
+          }}
+        }})();
+        </script>
+        """,
+        height=0, width=0, scrolling=False
+    )
 
 
 def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"):
@@ -210,53 +235,43 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
             font-weight: 600;
         }}
 
-        /* Streamlit DataFrame styling and sticky headers */
-        /* Make the DataFrame root the scroll container */
+        /* DataFrame root must scroll for sticky to engage */
         div[data-testid="stDataFrame"] {{
-            position: relative;
-            overflow: auto !important; /* override Streamlit’s overflow: hidden */
-            border-radius: 10px;
+          position: relative;
+          overflow: auto !important;
+          background: transparent;
         }}
 
-        /* Ensure table rendering works well with sticky headers */
-        div[data-testid="stDataFrame"] table {{
-            border-collapse: separate;
-            border-spacing: 0;
-        }}
-
-        /* Sticky header cells (native <th> and grid role headers) */
-        div[data-testid="stDataFrame"] thead th,
-        div[data-testid="stDataFrame"] [role="columnheader"] {{
-            position: sticky;
-            top: 0;
-            z-index: 5; /* above rows and hover backgrounds */
-            background: var(--table-header-bg);
-            color: var(--table-header-text);
-            box-shadow: inset 0 -1px 0 var(--table-border); /* subtle divider line */
-        }}
-
-        /* Row striping and base background */
-        div[data-testid="stDataFrame"].sticky-scroll tbody tr td,
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr td {{
-            background: var(--table-bg);
-        }}
-        div[data-testid="stDataFrame"].sticky-scroll tbody tr:nth-child(even) td,
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:nth-child(even) td {{
-            background: var(--table-row-alt);
-        }}
-
-        /* Hover highlight that does not cover the header */
-        div[data-testid="stDataFrame"].sticky-scroll tbody tr:hover td,
-        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:hover td {{
-            background: var(--table-hover);
-            color: var(--table-hover-text);
-        }}
-
-        /* Optional: subtle border around the scrolling frame so it reads as a card */
+        /* Allow styling when either the root or the inner scroll div has the marker */
         div[data-testid="stDataFrame"].sticky-scroll,
         div[data-testid="stDataFrame"] .sticky-scroll {{
-            border: 1px solid var(--table-border);
-            border-radius: 10px;
+          background-color: var(--table-bg);
+          border: 1px solid var(--table-border);
+          border-radius: 10px;
+        }}
+
+        /* Table and header visuals */
+        div[data-testid="stDataFrame"] table {{
+          border-collapse: separate;
+          border-spacing: 0;
+        }}
+
+        div[data-testid="stDataFrame"] thead th,
+        div[data-testid="stDataFrame"] [role="columnheader"] {{
+          position: sticky;
+          top: 0;
+          z-index: 3;
+          background-color: var(--table-header-bg);
+          color: var(--table-header-text);
+          backdrop-filter: blur(2px);
+        }}
+
+        /* Rows: zebra + hover */
+        div[data-testid="stDataFrame"] tbody tr:nth-child(odd) {{ background-color: var(--table-bg); }}
+        div[data-testid="stDataFrame"] tbody tr:nth-child(even) {{ background-color: var(--table-row-alt); }}
+        div[data-testid="stDataFrame"] tbody tr:hover {{
+          background-color: var(--table-hover);
+          color: var(--table-hover-text);
         }}
 
         /* Scrollable wrapper for custom HTML tables */
