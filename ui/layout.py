@@ -1,4 +1,11 @@
 import streamlit as st
+from pathlib import Path
+from streamlit import components
+
+
+def _inject_sticky_helper():
+    helper_js = Path(__file__).with_name("sticky_df_helper.js").read_text()
+    components.v1.html(f"<script>{helper_js}</script>", height=0, width=0, scrolling=False)
 
 
 def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff"):
@@ -229,21 +236,25 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         }}
 
         /* Row striping and base background */
-        div[data-testid="stDataFrame"] tbody tr td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr td,
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr td {{
             background: var(--table-bg);
         }}
-        div[data-testid="stDataFrame"] tbody tr:nth-child(even) td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr:nth-child(even) td,
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:nth-child(even) td {{
             background: var(--table-row-alt);
         }}
 
         /* Hover highlight that does not cover the header */
-        div[data-testid="stDataFrame"] tbody tr:hover td {{
+        div[data-testid="stDataFrame"].sticky-scroll tbody tr:hover td,
+        div[data-testid="stDataFrame"] .sticky-scroll tbody tr:hover td {{
             background: var(--table-hover);
             color: var(--table-hover-text);
         }}
 
         /* Optional: subtle border around the scrolling frame so it reads as a card */
-        div[data-testid="stDataFrame"] > div {{
+        div[data-testid="stDataFrame"].sticky-scroll,
+        div[data-testid="stDataFrame"] .sticky-scroll {{
             border: 1px solid var(--table-border);
             border-radius: 10px;
         }}
@@ -275,6 +286,8 @@ def setup_page(*, table_hover: str = "#2563eb", table_hover_text: str = "#ffffff
         """,
         unsafe_allow_html=True,
     )
+
+    _inject_sticky_helper()
 
     st.markdown(
         """
