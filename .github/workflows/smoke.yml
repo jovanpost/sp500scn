@@ -19,11 +19,29 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
       - name: Install minimal deps (smoke)
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_DEFAULT_TIMEOUT: "60"
         run: |
+          set -e
           python -m pip install --upgrade pip
-          for i in 1 2 3; do
-            pip install --only-binary=:all: -r requirements-smoke.txt && break || sleep 5
+          tries=3
+          ok=0
+          for i in $(seq 1 $tries); do
+            echo "Attempt $i/$tries: wheel-only install"
+            if pip install --only-binary=:all: -r requirements-smoke.txt; then
+              ok=1; break
+            fi
+            echo "Wheel-only failed; fallback resolver"
+            if pip install -r requirements-smoke.txt; then
+              ok=1; break
+            fi
+            sleep 5
           done
+          if [ "$ok" -ne 1 ]; then
+            echo "Dependency install failed after $tries attempts"; exit 1
+          fi
+          python -c "import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests; print('deps-ok')"
       - name: Import check
         run: |
           python - <<'PY'
