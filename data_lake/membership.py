@@ -43,7 +43,15 @@ def _scrape_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     current = None
     changes = None
     for t in tables:
-        cols = {c.lower() for c in t.columns}
+        # Normalize columns to simple, lowercased strings
+        if isinstance(t.columns, pd.MultiIndex):
+            t.columns = [
+                " ".join([str(x) for x in tup if x is not None]).strip()
+                for tup in t.columns
+            ]
+        else:
+            t.columns = [str(c).strip() for c in t.columns]
+        cols = {str(c).lower() for c in t.columns}
         if {"symbol", "security"} <= cols:
             current = t
         if {"date", "added", "removed"} <= cols:
@@ -52,7 +60,7 @@ def _scrape_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
         return current, changes
     soup = BeautifulSoup(html, "lxml")
     for table in soup.find_all("table"):
-        headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+        headers = [str(th.get_text(strip=True)).lower() for th in table.find_all("th")]
         if current is None and "symbol" in headers and "security" in headers:
             current = pd.read_html(str(table))[0]
         elif changes is None and {"date", "added", "removed"} <= set(headers):
