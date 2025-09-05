@@ -10,7 +10,8 @@ from ui.debugger import render_debugger_tab
 
 # Dynamically import the data lake tab from ui/pages/90_Data_Lake_Phase1.py
 _spec = importlib.util.spec_from_file_location(
-    "ui.pages.data_lake_phase1", Path("ui/pages/90_Data_Lake_Phase1.py")
+    "ui.pages.data_lake_phase1",
+    Path(__file__).with_name("ui") / "pages" / "90_Data_Lake_Phase1.py",
 )
 _module = importlib.util.module_from_spec(_spec)
 assert _spec and _spec.loader
