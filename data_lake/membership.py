@@ -161,6 +161,12 @@ def build_membership(storage: Storage) -> str:
     df = pd.DataFrame(rows)
 
     overrides = _load_overrides()
+    if not overrides.empty:
+        overrides["ticker"] = overrides["ticker"].apply(_normalize_ticker)
+        if "replace_ticker" in overrides.columns:
+            overrides["replace_ticker"] = overrides["replace_ticker"].apply(
+                lambda t: _normalize_ticker(t) if isinstance(t, str) else t
+            )
     for ov in overrides.itertuples():
         mask = df["ticker"] == ov.ticker
         if pd.notna(getattr(ov, "replace_ticker", None)):
