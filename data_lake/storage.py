@@ -33,7 +33,15 @@ class Storage:
         if self.mode == "supabase":
             url, key = creds  # type: ignore
             self.client = create_client(url, key)
-            self.bucket = self.client.storage.from_("lake")  # Expect a public bucket named 'lake'
+            # Ensure a public bucket named 'lake' exists; create if missing.
+            try:
+                names = {b.get("name") for b in self.client.storage.list_buckets() or []}
+                if "lake" not in names:
+                    self.client.storage.create_bucket("lake", public=True)
+            except Exception:
+                # Ignore errors from older SDKs or insufficient permissions
+                pass
+            self.bucket = self.client.storage.from_("lake")
         else:
             LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
 
