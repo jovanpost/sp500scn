@@ -46,11 +46,15 @@ def _scrape_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
         # Flatten MultiIndex headers and normalize to simple strings for matching
         t.columns = [
             " ".join(
-                [str(x) for x in (col if isinstance(col, tuple) else (col,)) if x is not None]
+                [
+                    str(x)
+                    for x in (col if isinstance(col, tuple) else (col,))
+                    if x is not None
+                ]
             ).strip()
             for col in t.columns
         ]
-        cols = {c.lower() for c in t.columns}
+        cols = {str(c).lower() for c in t.columns}
         if {"symbol", "security"} <= cols:
             current = t
         if {"date", "added", "removed"} <= cols:
@@ -93,7 +97,9 @@ def _load_overrides() -> pd.DataFrame:
     path = Path(__file__).with_name("manual_overrides.csv")
     if path.exists():
         return pd.read_csv(path)
-    return pd.DataFrame(columns=["ticker", "replace_ticker", "start_date", "end_date", "notes"])
+    return pd.DataFrame(
+        columns=["ticker", "replace_ticker", "start_date", "end_date", "notes"]
+    )
 
 
 def load_membership(storage: Storage | None = None) -> pd.DataFrame:
@@ -134,7 +140,9 @@ def build_membership(storage: Storage) -> str:
     added_candidates = [c for c, s in norm.items() if "add" in s]
     removed_candidates = [c for c, s in norm.items() if "remov" in s]
     if not added_candidates or not removed_candidates:
-        raise RuntimeError("membership 'changes' table missing Added/Removed-like columns")
+        raise RuntimeError(
+            "membership 'changes' table missing Added/Removed-like columns"
+        )
     added_col, removed_col = added_candidates[0], removed_candidates[0]
     changes = changes.rename(columns={added_col: "Added", removed_col: "Removed"})[
         ["Date", "Added", "Removed"]
@@ -147,7 +155,14 @@ def build_membership(storage: Storage) -> str:
         add_t = _extract_ticker(row["Added"])
         rem_t = _extract_ticker(row["Removed"])
         if add_t:
-            records.append({"action": "add", "ticker": add_t, "name": _extract_name(row["Added"]), "date": d})
+            records.append(
+                {
+                    "action": "add",
+                    "ticker": add_t,
+                    "name": _extract_name(row["Added"]),
+                    "date": d,
+                }
+            )
         if rem_t:
             records.append({"action": "remove", "ticker": rem_t, "date": d})
     records.sort(key=lambda r: r["date"])
@@ -158,7 +173,9 @@ def build_membership(storage: Storage) -> str:
         t = rec["ticker"]
         if rec["action"] == "add":
             names[t] = rec.get("name", names.get(t, ""))
-            membership.setdefault(t, []).append({"start_date": rec["date"], "end_date": None})
+            membership.setdefault(t, []).append(
+                {"start_date": rec["date"], "end_date": None}
+            )
         else:
             intervals = membership.get(t)
             if intervals:
@@ -204,7 +221,11 @@ def build_membership(storage: Storage) -> str:
             df.loc[mask, "end_date"] = ov.end_date
 
     df["ticker"] = df["ticker"].apply(_normalize_ticker)
-    df = df.sort_values(["ticker", "start_date", "end_date"]).drop_duplicates().reset_index(drop=True)
+    df = (
+        df.sort_values(["ticker", "start_date", "end_date"])
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
 
     cleaned: List[MemberRow] = []
     for t, grp in df.groupby("ticker"):
@@ -213,7 +234,11 @@ def build_membership(storage: Storage) -> str:
         for row in grp.to_dict("records"):
             if row["end_date"] and row["end_date"] < row["start_date"]:
                 row["end_date"] = row["start_date"]
-            if prev and prev["end_date"] == row["start_date"] and prev["name"] == row["name"]:
+            if (
+                prev
+                and prev["end_date"] == row["start_date"]
+                and prev["name"] == row["name"]
+            ):
                 prev["end_date"] = row["end_date"]
             else:
                 if prev:
@@ -231,6 +256,10 @@ def build_membership(storage: Storage) -> str:
     df.head(100).to_csv(preview_path, index=False)
 
     start = df["start_date"].min()
-    end = df["end_date"].dropna().max() if not df["end_date"].dropna().empty else "present"
+    end = (
+        df["end_date"].dropna().max()
+        if not df["end_date"].dropna().empty
+        else "present"
+    )
     summary = f"{len(df)} rows from {start} to {end}"
     return summary
