@@ -4,6 +4,6 @@ pandas==2.2.2
 numpy==1.26.4
 pyarrow==16.1.0
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml>=4.9,<5
 requests==2.32.3
 # Optional; guarded imports in code:
