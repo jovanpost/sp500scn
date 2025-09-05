@@ -35,7 +35,12 @@ class Storage:
             self.client = create_client(url, key)
             # Ensure a public bucket named 'lake' exists; create if missing.
             try:
-                names = {b.get("name") for b in self.client.storage.list_buckets() or []}
+                resp = self.client.storage.list_buckets()
+                data = getattr(resp, "data", None) or []
+                names = {
+                    (getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None))
+                    for b in data
+                }
                 if "lake" not in names:
                     self.client.storage.create_bucket("lake", public=True)
             except Exception:
