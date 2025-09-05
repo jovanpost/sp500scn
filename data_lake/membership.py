@@ -43,15 +43,14 @@ def _scrape_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     current = None
     changes = None
     for t in tables:
-        # Normalize columns to simple, lowercased strings
-        if isinstance(t.columns, pd.MultiIndex):
-            t.columns = [
-                " ".join([str(x) for x in tup if x is not None]).strip()
-                for tup in t.columns
-            ]
-        else:
-            t.columns = [str(c).strip() for c in t.columns]
-        cols = {str(c).lower() for c in t.columns}
+        # Flatten MultiIndex headers and normalize to simple strings for matching
+        t.columns = [
+            " ".join(
+                [str(x) for x in (col if isinstance(col, tuple) else (col,)) if x is not None]
+            ).strip()
+            for col in t.columns
+        ]
+        cols = {c.lower() for c in t.columns}
         if {"symbol", "security"} <= cols:
             current = t
         if {"date", "added", "removed"} <= cols:
@@ -120,29 +119,26 @@ def build_membership(storage: Storage) -> str:
     current["ticker"] = current["Symbol"].apply(_normalize_ticker)
     current["name"] = current["Security"].astype(str)
 
-    # Ensure unique columns and a canonical 'Date'
+    # Ensure unique columns and locate date/added/removed headers by substring
     changes = changes.loc[:, ~changes.columns.duplicated()]
-    date_cols = [c for c in changes.columns if str(c).strip().lower().startswith("date")]
-    if not date_cols:
+    norm = {c: str(c).strip().lower() for c in changes.columns}
+    date_candidates = [c for c, s in norm.items() if "date" in s]
+    if not date_candidates:
         raise RuntimeError("membership 'changes' table missing a Date column")
-    if len(date_cols) > 1:
+    if len(date_candidates) > 1:
         # unify by taking the first non-null across date-like columns
-        changes["Date"] = changes[date_cols].bfill(axis=1).iloc[:, 0]
+        changes["Date"] = changes[date_candidates].bfill(axis=1).iloc[:, 0]
     else:
-        if date_cols[0] != "Date":
-            changes = changes.rename(columns={date_cols[0]: "Date"})
-    # Tolerate slight header variants for Added/Removed
-    added_col = next(
-        (c for c in changes.columns if str(c).strip().lower().startswith("added")),
-        "Added",
-    )
-    removed_col = next(
-        (c for c in changes.columns if str(c).strip().lower().startswith("removed")),
-        "Removed",
-    )
-    changes = changes[["Date", added_col, removed_col]].rename(
-        columns={added_col: "Added", removed_col: "Removed"}
-    )
+        if date_candidates[0] != "Date":
+            changes = changes.rename(columns={date_candidates[0]: "Date"})
+    added_candidates = [c for c, s in norm.items() if "add" in s]
+    removed_candidates = [c for c, s in norm.items() if "remov" in s]
+    if not added_candidates or not removed_candidates:
+        raise RuntimeError("membership 'changes' table missing Added/Removed-like columns")
+    added_col, removed_col = added_candidates[0], removed_candidates[0]
+    changes = changes.rename(columns={added_col: "Added", removed_col: "Removed"})[
+        ["Date", "Added", "Removed"]
+    ]
     changes["Date"] = pd.to_datetime(changes["Date"], errors="coerce")
     changes = changes.dropna(subset=["Date"])
     records: List[dict] = []
