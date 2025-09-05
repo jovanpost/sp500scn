@@ -2,7 +2,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas_market_calendars as mcal
+try:  # pragma: no cover - optional dependency
+    import pandas_market_calendars as mcal  # type: ignore
+except Exception:  # pragma: no cover - library missing
+    mcal = None
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
