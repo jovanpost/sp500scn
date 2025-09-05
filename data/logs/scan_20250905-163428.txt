@@ -1,0 +1,6 @@
+Ticker|EvalDate|Price|EntryTimeET|Change%|RelVol(TimeAdj63d)|Resistance|TP|RR_to_Res|RR_to_TP|SupportType|SupportPrice|Risk$|TPReward$|TPReward%|ResReward$|ResReward%|DailyATR|DailyCap|Hist21d_PassCount|Hist21d_Max%|Hist21d_Examples|ResLookbackDays|Prices|Session|EntrySrc|VolSrc|OptExpiry|BuyK|SellK|Width|DebitMid|DebitCons|MaxProfitMid|MaxProfitCons|RR_Spread_Mid|RR_Spread_Cons|BreakevenMid|PricingNote
+SBAC|2025-09-05|198.56|2025-09-05 12:37:30 ET|1.74|2.11|225.33|211.94|4.77|2.39|SwingLow21|192.95|5.61|13.385|6.74|26.77|13.48|5.7136|119.985|24|13.45|2025-04-08:+13.45%; 2025-04-09:+12.99%; 2025-04-07:+12.07%|21|222.87,221.57,218.84,208.13,206.04,204.85,202.0,199.31,195.17,198.56|OPEN|daily_partial_close|daily_partial||||||||||||no_lower_strike
+AMT|2025-09-05|198.66|2025-09-05 12:34:43 ET|1.83|1.83|214.79|206.72|2.88|1.44|SwingLow21|193.05|5.61|8.065|4.06|16.13|8.12|4.4321|93.075|51|13.63|2025-02-19:+13.63%; 2025-02-14:+13.46%; 2025-02-05:+13.25%|21|211.88,211.12,207.45,203.27,202.56,203.85,200.49,196.26,195.09,198.66|OPEN|daily_partial_close|daily_partial|2025-10-17|200.0|210.0|10.0|3.77|4.1|6.23|5.9|1.65|1.44|203.78|ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid
+
+Processed at 2025-09-05 12:38:05 ET
+[run_and_log] no new tickers to record today.
