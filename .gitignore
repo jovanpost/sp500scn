@@ -1,0 +1,5 @@
+.lake/
+*.parquet
+manifests/
+__pycache__/
+.streamlit/secrets.toml

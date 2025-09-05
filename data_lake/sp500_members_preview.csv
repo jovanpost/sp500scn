@@ -1,0 +1,6 @@
+ticker,name,start_date,end_date,source,notes
+AAPL,Apple Inc.,1982-11-30,,wikipedia,
+MSFT,Microsoft Corp.,1994-06-01,,wikipedia,
+AMZN,Amazon.com Inc.,2005-11-18,,wikipedia,
+GOOGL,Alphabet Inc. (Class A),2014-03-27,,wikipedia,
+TSLA,Tesla Inc.,2020-12-21,,wikipedia,
