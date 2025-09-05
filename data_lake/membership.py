@@ -44,17 +44,14 @@ def _scrape_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     changes = None
     for t in tables:
         # Flatten MultiIndex headers and normalize to simple strings for matching
-        t.columns = [
+        flat_cols = [
             " ".join(
-                [
-                    str(x)
-                    for x in (col if isinstance(col, tuple) else (col,))
-                    if x is not None
-                ]
+                [str(x) for x in (col if isinstance(col, tuple) else (col,)) if x is not None]
             ).strip()
             for col in t.columns
         ]
-        cols = {str(c).lower() for c in t.columns}
+        t.columns = flat_cols
+        cols = {c.lower() for c in flat_cols}
         if {"symbol", "security"} <= cols:
             current = t
         if {"date", "added", "removed"} <= cols:
