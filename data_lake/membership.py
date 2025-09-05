@@ -120,8 +120,31 @@ def build_membership(storage: Storage) -> str:
     current["ticker"] = current["Symbol"].apply(_normalize_ticker)
     current["name"] = current["Security"].astype(str)
 
-    changes = changes[["Date", "Added", "Removed"]]
-    changes["Date"] = pd.to_datetime(changes["Date"])
+    # Ensure unique columns and a canonical 'Date'
+    changes = changes.loc[:, ~changes.columns.duplicated()]
+    date_cols = [c for c in changes.columns if str(c).strip().lower().startswith("date")]
+    if not date_cols:
+        raise RuntimeError("membership 'changes' table missing a Date column")
+    if len(date_cols) > 1:
+        # unify by taking the first non-null across date-like columns
+        changes["Date"] = changes[date_cols].bfill(axis=1).iloc[:, 0]
+    else:
+        if date_cols[0] != "Date":
+            changes = changes.rename(columns={date_cols[0]: "Date"})
+    # Tolerate slight header variants for Added/Removed
+    added_col = next(
+        (c for c in changes.columns if str(c).strip().lower().startswith("added")),
+        "Added",
+    )
+    removed_col = next(
+        (c for c in changes.columns if str(c).strip().lower().startswith("removed")),
+        "Removed",
+    )
+    changes = changes[["Date", added_col, removed_col]].rename(
+        columns={added_col: "Added", removed_col: "Removed"}
+    )
+    changes["Date"] = pd.to_datetime(changes["Date"], errors="coerce")
+    changes = changes.dropna(subset=["Date"])
     records: List[dict] = []
     for _, row in changes.iterrows():
         d = row["Date"].date()
