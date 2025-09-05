@@ -18,32 +18,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
-      - name: Install deps (wheel-first with retries)
-        env:
-          PIP_DISABLE_PIP_VERSION_CHECK: "1"
-          PIP_DEFAULT_TIMEOUT: "60"
+      - name: Install minimal deps (smoke)
         run: |
-          python -m pip install -U pip
-          set -e
-          tries=3
-          for i in $(seq 1 $tries); do
-            echo "Attempt $i/$tries: installing requirements"
-            if pip install --only-binary=:all: -r requirements.txt; then
-              break
-            fi
-            echo "Wheel-only failed, falling back to normal resolver"
-            if pip install -r requirements.txt; then
-              break
-            fi
-            if [ "$i" -eq "$tries" ]; then
-              echo "Dependency install failed after $tries attempts"
-              exit 1
-            fi
-            sleep 5
+          python -m pip install --upgrade pip
+          for i in 1 2 3; do
+            pip install --only-binary=:all: -r requirements-smoke.txt && break || sleep 5
           done
-      - name: Import smoke
+      - name: Import check
         run: |
           python - <<'PY'
           import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests
+          import data_lake.ingest, data_lake.membership, data_lake.storage, data_lake.provider
           print("ok")
           PY
