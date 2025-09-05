@@ -7,7 +7,3 @@ beautifulsoup4==4.12.3
 lxml==5.2.2
 requests==2.32.3
 # Optional; guarded imports in code:
-supabase==2.6.0
-postgrest==0.14.9
-gotrue==2.6.1
-storage3==0.7.7
