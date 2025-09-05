@@ -31,16 +31,18 @@ def _fetch(job: IngestJob) -> pd.DataFrame:
             if attempt + 1 == MAX_RETRIES:
                 raise
             time.sleep(RATE_LIMIT_SECONDS * (attempt + 1))
+    # Ensure we always have a uniform schema, including a 'date' column.
     if df.empty:
-        df = pd.DataFrame(columns=[
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-            "Dividends",
-            "Stock Splits",
-        ])
+        df = pd.DataFrame({
+            # yfinance's canonical column names
+            "Open": pd.Series(dtype="float64"),
+            "High": pd.Series(dtype="float64"),
+            "Low": pd.Series(dtype="float64"),
+            "Close": pd.Series(dtype="float64"),
+            "Volume": pd.Series(dtype="int64"),
+            "Dividends": pd.Series(dtype="float64"),
+            "Stock Splits": pd.Series(dtype="float64"),
+        })
     for col in ["Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]:
         if col not in df.columns:
             df[col] = 0.0 if col in {"Dividends", "Stock Splits"} else 0
@@ -56,7 +58,15 @@ def _fetch(job: IngestJob) -> pd.DataFrame:
             "Stock Splits": "stock_splits",
         }
     )
-    df = df.reset_index().rename(columns={"Date": "date"})
+    # yfinance uses a DatetimeIndex named 'Date' for history; after reset we rename to 'date'.
+    # If there is no index (empty case), create a proper 'date' column with datetime dtype.
+    df = df.reset_index()
+    if "Date" in df.columns:
+        df = df.rename(columns={"Date": "date"})
+    if "date" not in df.columns:
+        df["date"] = pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
+    else:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = ticker
     return df
 
