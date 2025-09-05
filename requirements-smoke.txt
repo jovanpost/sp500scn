@@ -1,0 +1,9 @@
+# minimal, relaxed deps just for smoke CI
+pandas>=2.2,<2.3
+numpy>=1.26,<2.1
+pyarrow>=14,<18
+yfinance>=0.2.40,<0.3
+streamlit>=1.33,<1.40
+beautifulsoup4>=4.12
+lxml>=4.9
+requests>=2.31
