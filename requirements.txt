@@ -1,10 +1,13 @@
-yfinance>=0.2.40
-pandas>=2.2
-numpy>=1.26
-lxml>=5.0
-beautifulsoup4>=4.12
-html5lib>=1.1
-tzdata
-requests>=2.31
-streamlit>=1.31
-pandas-market-calendars>=4.3
+streamlit>=1.36,<2
+yfinance>=0.2.40,<0.3
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==16.1.0
+beautifulsoup4==4.12.3
+lxml==5.2.2
+requests==2.32.3
+# Optional; guarded imports in code:
+supabase==2.6.0
+postgrest==0.14.9
+gotrue==2.6.1
+storage3==0.7.7
