@@ -19,11 +19,7 @@ def render_data_lake_tab() -> None:
         st.caption(storage.info())
         if st.button("Run Supabase self-test"):
             st.json(storage.selftest())
-    if storage.mode == "supabase" and storage.key_info.get("kind") in {
-        "publishable",
-        "not_jwt",
-        "invalid_jwt",
-    }:
+    if storage.key_info.get("kind") in {"publishable", "not_jwt", "invalid_jwt"}:
         st.error(
             "Supabase key is not a valid JWT (service_role/anon). Use Legacy API Keys. Skipping remote writes."
         )
