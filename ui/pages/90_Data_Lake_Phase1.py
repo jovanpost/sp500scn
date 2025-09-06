@@ -15,26 +15,21 @@ from data_lake.schemas import IngestJob
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
     storage = Storage()
-    st.info(storage.info())
-    if storage.mode == "local" and storage.key_role in {
+    with st.expander("Diagnostics"):
+        st.caption(storage.info())
+        if st.button("Run Supabase self-test"):
+            st.json(storage.selftest())
+    if storage.mode == "supabase" and storage.key_info.get("kind") in {
         "publishable",
         "not_jwt",
         "invalid_jwt",
     }:
         st.error(
-            "Supabase key is not a JWT. Use Legacy → service_role (or anon with policies)."
+            "Supabase key is not a valid JWT (service_role/anon). Use Legacy API Keys. Skipping remote writes."
         )
         return
     if storage.mode == "local":
         st.caption("Using local .lake/ fallback")
-    with st.expander("Diagnostics"):
-        st.write(
-            {
-                "storage_mode": storage.mode,
-                "bucket_exists": getattr(storage, "bucket_exists", False),
-                "supabase_secrets": storage.creds_present,
-            }
-        )
 
     if st.button("Build membership parquet"):
         try:
