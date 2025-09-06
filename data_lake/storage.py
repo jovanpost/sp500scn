@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, io, json, base64, pathlib, tempfile
+import os, io, json, base64, pathlib, tempfile, logging
 from typing import Optional, Tuple
 
 try:
@@ -13,6 +13,8 @@ import streamlit as st
 from .schemas import StorageMode
 
 LOCAL_ROOT = pathlib.Path(".lake").resolve()
+
+log = logging.getLogger(__name__)
 
 
 def _supabase_creds() -> Optional[Tuple[str, str]]:
@@ -43,10 +45,27 @@ def _classify_key(k: str) -> str:
         return "invalid_jwt"
 
 
+def _classify_jwt(k: str) -> dict:
+    if not k:
+        return {"valid": False, "kind": "missing"}
+    if k.startswith("sb_"):
+        return {"valid": False, "kind": "publishable"}
+    parts = k.split(".")
+    if len(parts) != 3:
+        return {"valid": False, "kind": "not_jwt"}
+    try:
+        hdr = json.loads(base64.urlsafe_b64decode(parts[0] + "==").decode("utf-8"))
+        pl = json.loads(base64.urlsafe_b64decode(parts[1] + "==").decode("utf-8"))
+        return {"valid": True, "kind": "jwt", "role": pl.get("role"), "alg": hdr.get("alg")}
+    except Exception as e:
+        return {"valid": False, "kind": "invalid_jwt", "error": str(e)}
+
+
 class Storage:
     def __init__(self) -> None:
         creds = _supabase_creds()
         key = creds[1] if creds else ""
+        self.key_info = _classify_jwt(key or "")
         self.key_role = _classify_key(key)
         self.creds_present = bool(creds)
         self.error: Optional[str] = None
@@ -124,3 +143,31 @@ class Storage:
             except Exception:
                 return False
         return (LOCAL_ROOT / path).exists()
+
+    def selftest(self) -> dict:
+        info = {"mode": self.mode, "key_info": self.key_info, "bucket": "lake"}
+        try:
+            if self.mode != "supabase":
+                info["note"] = "local mode"
+                return info
+            resp = self.client.storage.list_buckets()
+            names = {getattr(b, "name", None) for b in (resp.data or [])}
+            info["buckets"] = sorted([n for n in names if n])
+            info["lake_exists"] = "lake" in names
+            if not info["lake_exists"]:
+                self.client.storage.create_bucket("lake", public=True)
+                info["created_lake"] = True
+            bkt = self.client.storage.from_("lake")
+            opts = {"cache-control": "60", "content-type": "text/plain", "x-upsert": "true"}
+            tmp = tempfile.NamedTemporaryFile(delete=False)
+            tmp.write(b"ping")
+            tmp.flush()
+            tmp.close()
+            path = "diagnostics/ping.txt"
+            bkt.upload(path, tmp.name, opts)
+            read = bkt.download(path)
+            bkt.remove([path])
+            info["write_read_ok"] = read == b"ping"
+        except Exception as e:
+            info["error"] = f"{type(e).__name__}: {e}"
+        return info
