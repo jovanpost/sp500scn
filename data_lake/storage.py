@@ -105,14 +105,14 @@ class Storage:
     def write_bytes(self, path: str, data: bytes) -> str:
         if self.mode == "supabase":
             # storage3 expects string option values; bools break httpx header building.
-            file_opts = {"upsert": "true", "content-type": "application/octet-stream"}
+            opts = {"upsert": "true", "contentType": "application/octet-stream"}
             # Upload via temp file path (API accepts str path or file-like)
             tmp = tempfile.NamedTemporaryFile(delete=False)
             try:
                 tmp.write(data)
                 tmp.flush()
                 tmp.close()
-                self.bucket.upload(path, tmp.name, file_options=file_opts)
+                self.bucket.upload(path, tmp.name, file_options=opts)
             finally:
                 try:
                     os.unlink(tmp.name)
@@ -154,13 +154,13 @@ class Storage:
                 self.client.storage.create_bucket("lake", public=True)
                 info["created_lake"] = True
             bkt = self.client.storage.from_("lake")
-            file_opts = {"upsert": "true", "content-type": "text/plain"}
+            opts = {"upsert": "true", "contentType": "text/plain"}
             tmp = tempfile.NamedTemporaryFile(delete=False)
             tmp.write(b"ping")
             tmp.flush()
             tmp.close()
             path = "diagnostics/ping.txt"
-            bkt.upload(path, tmp.name, file_options=file_opts)
+            bkt.upload(path, tmp.name, file_options=opts)
             read = bkt.download(path)
             bkt.remove([path])
             info["write_read_ok"] = read == b"ping"
