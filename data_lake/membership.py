@@ -175,15 +175,31 @@ def build_membership(storage: Storage) -> str:
     ]
     records: List[dict] = []
     for _, row in changes.iterrows():
-        d = row["Date"].date()
-        add_t = _extract_ticker(row["Added"])
-        rem_t = _extract_ticker(row["Removed"])
+        # ``row`` can contain Series objects if upstream parsing produced
+        # duplicate column names.  Normalize each field to a scalar timestamp
+        # before extracting tickers.
+        date_val = row["Date"]
+        if isinstance(date_val, pd.Series):
+            date_val = date_val.iloc[0]
+        d_ts = pd.to_datetime(date_val, errors="coerce")
+        if pd.isna(d_ts):
+            continue
+        d = d_ts.date()
+
+        added_val = row["Added"]
+        if isinstance(added_val, pd.Series):
+            added_val = added_val.iloc[0]
+        removed_val = row["Removed"]
+        if isinstance(removed_val, pd.Series):
+            removed_val = removed_val.iloc[0]
+        add_t = _extract_ticker(added_val)
+        rem_t = _extract_ticker(removed_val)
         if add_t:
             records.append(
                 {
                     "action": "add",
                     "ticker": add_t,
-                    "name": _extract_name(row["Added"]),
+                    "name": _extract_name(added_val),
                     "date": d,
                 }
             )
