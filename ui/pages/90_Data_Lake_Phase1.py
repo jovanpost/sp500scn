@@ -34,7 +34,16 @@ def render_data_lake_tab() -> None:
                 summary = build_membership(storage)
                 progress.progress(100)
             st.success(summary)
-            st.dataframe(load_membership(storage).head(20))
+            df = load_membership(storage)
+            st.write(
+                {
+                    "rows": len(df),
+                    "tickers": df["ticker"].nunique(),
+                    "current": df["end_date"].isna().sum(),
+                    "source": "github",
+                }
+            )
+            st.dataframe(df.head(20))
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
 
