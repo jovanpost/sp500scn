@@ -41,7 +41,7 @@ jobs:
           if [ "$ok" -ne 1 ]; then
             echo "Dependency install failed after $tries attempts"; exit 1
           fi
-          python -c "import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests; print('deps-ok')"
+          python -c "import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests; print('ok')"
       - name: Import check
         run: |
           python - <<'PY'
