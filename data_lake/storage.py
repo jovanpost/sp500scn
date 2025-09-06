@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, io, json, pathlib
+import os, io, json, pathlib, tempfile
 from typing import Optional, Tuple
 
 try:
@@ -62,12 +62,24 @@ class Storage:
 
     def write_bytes(self, path: str, data: bytes) -> str:
         if self.mode == "supabase":
-            import tempfile
-
-            with tempfile.NamedTemporaryFile() as tmp:
+            # storage3 expects string header values; bools break httpx header building.
+            opts = {
+                "cache-control": "3600",
+                "content-type": "application/octet-stream",
+                "upsert": "true",
+            }
+            # Upload via temp file path (API accepts str path or file-like)
+            tmp = tempfile.NamedTemporaryFile(delete=False)
+            try:
                 tmp.write(data)
                 tmp.flush()
-                self.bucket.upload(path, tmp.name, {"upsert": True})
+                tmp.close()
+                self.bucket.upload(path, tmp.name, opts)
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
             return path
         p = (LOCAL_ROOT / path)
         p.parent.mkdir(parents=True, exist_ok=True)
