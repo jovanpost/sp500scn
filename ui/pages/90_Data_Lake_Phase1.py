@@ -16,6 +16,15 @@ def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
     storage = Storage()
     st.info(storage.info())
+    if storage.mode == "local" and storage.key_role in {
+        "publishable",
+        "not_jwt",
+        "invalid_jwt",
+    }:
+        st.error(
+            "Supabase key is not a JWT. Use Legacy → service_role (or anon with policies)."
+        )
+        return
     if storage.mode == "local":
         st.caption("Using local .lake/ fallback")
     with st.expander("Diagnostics"):
