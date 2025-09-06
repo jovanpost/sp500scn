@@ -151,6 +151,8 @@ def build_membership(storage: Storage) -> str:
                 {"year": changes[y], "month": changes[m], "day": changes[d]},
                 errors="coerce",
             )
+    if "Date" not in changes.columns:
+        raise RuntimeError("membership 'changes' table missing a parsable Date column")
     changes = changes.dropna(subset=["Date"])
     added_candidates = [c for c, s in norm.items() if "add" in s]
     removed_candidates = [c for c, s in norm.items() if "remov" in s]
