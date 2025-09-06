@@ -16,13 +16,27 @@ LOCAL_ROOT = pathlib.Path(".lake").resolve()
 
 
 def _supabase_creds() -> Optional[Tuple[str, str]]:
-    try:
+    """Return Supabase credentials from Streamlit secrets or env vars.
+
+    The original implementation only checked ``st.secrets`` which works when
+    running under ``streamlit`` but makes local debugging harder.  In merged
+    branches the base code also supports ``SUPABASE_URL`` and ``SUPABASE_KEY``
+    environment variables.  Resolving the merge requires us to combine both
+    behaviours so that either source can provide credentials.
+    """
+
+    url = key = None
+    try:  # Prefer Streamlit secrets when available
         cfg = st.secrets.get("supabase", {})
         url, key = cfg.get("url"), cfg.get("key")
-        if url and key:
-            return url, key
     except Exception:
-        pass
+        url = key = None
+
+    # Fallback to environment variables if secrets are missing
+    url = url or os.getenv("SUPABASE_URL")
+    key = key or os.getenv("SUPABASE_KEY")
+    if url and key:
+        return url, key
     return None
 
 
