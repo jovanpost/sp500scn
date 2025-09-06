@@ -126,7 +126,12 @@ def build_membership(storage: Storage) -> str:
     current["name"] = current["Security"].astype(str)
 
     # Ensure unique columns and locate date/added/removed headers by substring
-    changes = changes.loc[:, ~changes.columns.duplicated()]
+    # Drop any duplicate headers and work on a copy so subsequent column
+    # assignments are applied to the DataFrame we operate on.  Using ``copy``
+    # avoids pandas' ``SettingWithCopyWarning`` which previously could leave
+    # the expected "Date" column absent and lead to KeyError when dropping
+    # missing values.
+    changes = changes.loc[:, ~changes.columns.duplicated()].copy()
     norm = {c: str(c).strip().lower() for c in changes.columns}
     date_candidates = [c for c, s in norm.items() if "date" in s]
     if not date_candidates:
@@ -153,7 +158,15 @@ def build_membership(storage: Storage) -> str:
             )
     if "Date" not in changes.columns:
         raise RuntimeError("membership 'changes' table missing a parsable Date column")
-    changes = changes.dropna(subset=["Date"])
+    # Drop rows lacking a parsable date.  Guard against unexpected "Date"
+    # column absence which previously surfaced as a ``KeyError`` when running
+    # the build step in the UI.
+    try:
+        changes = changes.dropna(subset=["Date"])
+    except KeyError as exc:  # pragma: no cover - defensive programming
+        raise RuntimeError(
+            "membership 'changes' table missing a parsable Date column"
+        ) from exc
     added_candidates = [c for c, s in norm.items() if "add" in s]
     removed_candidates = [c for c, s in norm.items() if "remov" in s]
     if not added_candidates or not removed_candidates:
