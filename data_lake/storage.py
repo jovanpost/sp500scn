@@ -62,7 +62,12 @@ class Storage:
 
     def write_bytes(self, path: str, data: bytes) -> str:
         if self.mode == "supabase":
-            self.bucket.upload(path, io.BytesIO(data), {"upsert": True})
+            import tempfile
+
+            with tempfile.NamedTemporaryFile() as tmp:
+                tmp.write(data)
+                tmp.flush()
+                self.bucket.upload(path, tmp.name, {"upsert": True})
             return path
         p = (LOCAL_ROOT / path)
         p.parent.mkdir(parents=True, exist_ok=True)
