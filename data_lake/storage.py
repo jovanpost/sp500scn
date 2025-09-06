@@ -69,7 +69,11 @@ class Storage:
                 try:
                     resp = self.client.storage.list_buckets()
                     data = resp.data or []
-                    names = {b.name for b in data}
+                    names = set()
+                    for b in data:
+                        name = b.get("name") if isinstance(b, dict) else getattr(b, "name", None)
+                        if name:
+                            names.add(name)
                     self.bucket_exists = "lake" in names
                     if not self.bucket_exists:
                         self.client.storage.create_bucket("lake", public=True)
