@@ -23,14 +23,18 @@ def get_daily_adjusted(
     if df.empty:
         df = pd.DataFrame(
             {
-                "Open": pd.Series(dtype="float64"),
-                "High": pd.Series(dtype="float64"),
-                "Low": pd.Series(dtype="float64"),
-                "Close": pd.Series(dtype="float64"),
-                "Adj Close": pd.Series(dtype="float64"),
-                "Volume": pd.Series(dtype="int64"),
+                "date": pd.Series(dtype="datetime64[ns]"),
+                "open": pd.Series(dtype="float64"),
+                "high": pd.Series(dtype="float64"),
+                "low": pd.Series(dtype="float64"),
+                "close": pd.Series(dtype="float64"),
+                "adj_close": pd.Series(dtype="float64"),
+                "volume": pd.Series(dtype="int64"),
+                "ticker": pd.Series(dtype="object"),
             }
         )
+        df["ticker"] = ticker
+        return df[["date", "open", "high", "low", "close", "adj_close", "volume", "ticker"]]
     df = df.reset_index()
     if "Date" in df.columns:
         df = df.rename(columns={"Date": "date"})
