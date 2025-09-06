@@ -29,7 +29,9 @@ def _supabase_creds() -> Optional[Tuple[str, str]]:
 class Storage:
     def __init__(self) -> None:
         creds = _supabase_creds()
+        self.creds_present = bool(creds)
         self.mode: StorageMode = "supabase" if (create_client and creds) else "local"
+        self.bucket_exists = False
         if self.mode == "supabase":
             url, key = creds  # type: ignore
             self.client = create_client(url, key)
@@ -41,17 +43,22 @@ class Storage:
                     (getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None))
                     for b in data
                 }
-                if "lake" not in names:
+                self.bucket_exists = "lake" in names
+                if not self.bucket_exists:
                     self.client.storage.create_bucket("lake", public=True)
+                    self.bucket_exists = True
             except Exception:
                 # Ignore errors from older SDKs or insufficient permissions
-                pass
+                self.bucket_exists = False
             self.bucket = self.client.storage.from_("lake")
         else:
             LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
 
     def info(self) -> str:
-        return f"storage: {self.mode}"
+        bucket_status = "n/a"
+        if self.mode == "supabase":
+            bucket_status = "ok" if self.bucket_exists else "missing"
+        return f"storage: {self.mode} (bucket: {bucket_status})"
 
     def write_bytes(self, path: str, data: bytes) -> str:
         if self.mode == "supabase":

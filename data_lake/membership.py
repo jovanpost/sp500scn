@@ -131,34 +131,15 @@ def build_membership(storage: Storage) -> str:
     date_candidates = [c for c, s in norm.items() if "date" in s]
     if not date_candidates:
         raise RuntimeError("membership 'changes' table missing a Date column")
-    if len(date_candidates) > 1:
-        # unify by taking the first non-null across date-like columns
-        changes["Date"] = changes[date_candidates].bfill(axis=1).iloc[:, 0]
-    else:
-        if date_candidates[0] != "Date":
-            changes = changes.rename(columns={date_candidates[0]: "Date"})
-    added_candidates = [c for c, s in norm.items() if "add" in s]
-    removed_candidates = [c for c, s in norm.items() if "remov" in s]
-    if not added_candidates or not removed_candidates:
-        raise RuntimeError(
-            "membership 'changes' table missing Added/Removed-like columns"
-        )
-    added_col, removed_col = added_candidates[0], removed_candidates[0]
-    changes = changes.rename(columns={added_col: "Added", removed_col: "Removed"})[
-        ["Date", "Added", "Removed"]
-    ]
-    # Build a single 'Date' series even if there are duplicate date-like columns
-    date_like = changes.loc[
-        :,
-        [c for c in changes.columns if re.search(r"(?<![a-z])date(?![a-z])", str(c).lower())]
-    ]
-    if date_like.shape[1] == 0:
-        raise RuntimeError("membership 'changes' table missing a Date column")
-    cleaned = date_like.apply(
-        lambda s: s.astype(str).str.replace(r"\[.*?\]", "", regex=True).str.strip()
+    cleaned = (
+        changes[date_candidates]
+        .apply(lambda s: s.astype(str).str.replace(r"\[.*?\]", "", regex=True).str.strip())
     )
     date_series = cleaned.bfill(axis=1).iloc[:, 0]
-    changes["Date"] = pd.to_datetime(date_series, errors="coerce", infer_datetime_format=True)
+    changes = changes.drop(columns=date_candidates)
+    changes["Date"] = pd.to_datetime(
+        date_series, errors="coerce", infer_datetime_format=True
+    )
     if changes["Date"].isna().all():
         # Fallback: separate year/month/day columns if present
         norm_cols = {c: re.sub(r"\s+", " ", str(c)).strip().lower() for c in changes.columns}
@@ -171,6 +152,16 @@ def build_membership(storage: Storage) -> str:
                 errors="coerce",
             )
     changes = changes.dropna(subset=["Date"])
+    added_candidates = [c for c, s in norm.items() if "add" in s]
+    removed_candidates = [c for c, s in norm.items() if "remov" in s]
+    if not added_candidates or not removed_candidates:
+        raise RuntimeError(
+            "membership 'changes' table missing Added/Removed-like columns"
+        )
+    added_col, removed_col = added_candidates[0], removed_candidates[0]
+    changes = changes.rename(columns={added_col: "Added", removed_col: "Removed"})[
+        ["Date", "Added", "Removed"]
+    ]
     records: List[dict] = []
     for _, row in changes.iterrows():
         d = row["Date"].date()
