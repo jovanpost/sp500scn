@@ -79,17 +79,36 @@ class Storage:
             else:
                 url = creds[0]  # type: ignore
                 self.client = create_client(url, key)
-                # Ensure a public bucket named 'lake' exists; create if missing.
+                # Ensure a public bucket named 'lake'; handle storage3 variants.
+                def _bucket_names() -> set[str]:
+                    try:
+                        resp = self.client.storage.list_buckets()
+                    except Exception:
+                        return set()
+                    items = getattr(resp, "data", resp)
+                    names: set[str] = set()
+                    if items:
+                        for b in items:
+                            if isinstance(b, dict):
+                                name = b.get("name")
+                            else:
+                                name = getattr(b, "name", None)
+                            if name:
+                                names.add(name)
+                    return names
+
                 try:
-                    resp = self.client.storage.list_buckets()
-                    data = resp.data or []
-                    names = {b.name for b in data}
+                    names = _bucket_names()
                     self.bucket_exists = "lake" in names
                     if not self.bucket_exists:
+                        # Create as public; re-check to avoid race in concurrent boots.
                         self.client.storage.create_bucket("lake", public=True)
-                        self.bucket_exists = True
-                except Exception:
-                    # Ignore errors from older SDKs or insufficient permissions
+                        names = _bucket_names()
+                        self.bucket_exists = "lake" in names
+                    if not self.bucket_exists:
+                        raise RuntimeError("Supabase storage bucket 'lake' not available")
+                except Exception as e:
+                    self.error = f"Failed to ensure Supabase bucket 'lake': {e}"
                     self.bucket_exists = False
                 self.bucket = self.client.storage.from_("lake")
         else:
@@ -104,7 +123,7 @@ class Storage:
 
     def write_bytes(self, path: str, data: bytes) -> str:
         if self.mode == "supabase":
-            # storage3 expects string option values; bools break httpx header building.
+            # storage3 expects header 'x-upsert' as string; it converts file_options internally.
             opts = {"upsert": "true", "contentType": "application/octet-stream"}
             # Upload via temp file path (API accepts str path or file-like)
             tmp = tempfile.NamedTemporaryFile(delete=False)
