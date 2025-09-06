@@ -156,17 +156,13 @@ def build_membership(storage: Storage) -> str:
                 {"year": changes[y], "month": changes[m], "day": changes[d]},
                 errors="coerce",
             )
-    if "Date" not in changes.columns:
+    date_col = changes.get("Date")
+    if date_col is None:
         raise RuntimeError("membership 'changes' table missing a parsable Date column")
-    # Drop rows lacking a parsable date.  Guard against unexpected "Date"
-    # column absence which previously surfaced as a ``KeyError`` when running
-    # the build step in the UI.
-    try:
-        changes = changes.dropna(subset=["Date"])
-    except KeyError as exc:  # pragma: no cover - defensive programming
-        raise RuntimeError(
-            "membership 'changes' table missing a parsable Date column"
-        ) from exc
+    # Drop rows lacking a parsable date.  Using boolean indexing avoids the
+    # ``KeyError`` previously seen when the "Date" column was unexpectedly
+    # absent due to upstream parsing quirks.
+    changes = changes[date_col.notna()]
     added_candidates = [c for c, s in norm.items() if "add" in s]
     removed_candidates = [c for c, s in norm.items() if "remov" in s]
     if not added_candidates or not removed_candidates:
