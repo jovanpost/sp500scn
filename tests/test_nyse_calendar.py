@@ -2,8 +2,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas_market_calendars as mcal
 import pytest
+pytest.importorskip("pandas_market_calendars", reason="optional dependency")
+import pandas_market_calendars as mcal  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
