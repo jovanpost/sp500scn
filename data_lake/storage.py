@@ -61,6 +61,22 @@ def _classify_jwt(k: str) -> dict:
         return {"valid": False, "kind": "invalid_jwt", "error": str(e)}
 
 
+def _bucket_names(client) -> set[str]:
+    """Return set of bucket names, handling APIResponse vs list."""
+    try:
+        resp = client.storage.list_buckets()
+        buckets = getattr(resp, "data", resp) or []
+        names = []
+        for b in buckets:
+            if isinstance(b, dict):
+                names.append(b.get("name"))
+            else:
+                names.append(getattr(b, "name", None))
+        return {n for n in names if n}
+    except Exception:
+        return set()
+
+
 class Storage:
     def __init__(self) -> None:
         creds = _supabase_creds()
@@ -80,30 +96,13 @@ class Storage:
                 url = creds[0]  # type: ignore
                 self.client = create_client(url, key)
                 # Ensure a public bucket named 'lake'; handle storage3 variants.
-                def _bucket_names() -> set[str]:
-                    try:
-                        resp = self.client.storage.list_buckets()
-                    except Exception:
-                        return set()
-                    items = getattr(resp, "data", resp)
-                    names: set[str] = set()
-                    if items:
-                        for b in items:
-                            if isinstance(b, dict):
-                                name = b.get("name")
-                            else:
-                                name = getattr(b, "name", None)
-                            if name:
-                                names.add(name)
-                    return names
-
                 try:
-                    names = _bucket_names()
+                    names = _bucket_names(self.client)
                     self.bucket_exists = "lake" in names
                     if not self.bucket_exists:
                         # Create as public; re-check to avoid race in concurrent boots.
                         self.client.storage.create_bucket("lake", public=True)
-                        names = _bucket_names()
+                        names = _bucket_names(self.client)
                         self.bucket_exists = "lake" in names
                     if not self.bucket_exists:
                         raise RuntimeError("Supabase storage bucket 'lake' not available")
@@ -165,9 +164,8 @@ class Storage:
             if self.mode != "supabase":
                 info["note"] = "local mode"
                 return info
-            resp = self.client.storage.list_buckets()
-            names = {getattr(b, "name", None) for b in (resp.data or [])}
-            info["buckets"] = sorted([n for n in names if n])
+            names = _bucket_names(self.client)
+            info["buckets"] = sorted(names)
             info["lake_exists"] = "lake" in names
             if not info["lake_exists"]:
                 self.client.storage.create_bucket("lake", public=True)
@@ -183,6 +181,6 @@ class Storage:
             read = bkt.download(path)
             bkt.remove([path])
             info["write_read_ok"] = read == b"ping"
+            return info
         except Exception as e:
-            info["error"] = f"{type(e).__name__}: {e}"
-        return info
+            return {"error": str(e)}
