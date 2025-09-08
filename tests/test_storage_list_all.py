@@ -13,3 +13,25 @@ def test_list_all_local_paginates(tmp_path, monkeypatch):
     items = st.list_all("prices")
     assert len(items) == 150
     assert Path(items[-1]).suffix == ".parquet"
+
+
+def test_list_all_handles_apiresponse():
+    """Ensure list_all unwraps APIResponse-style results."""
+
+    st = storage.Storage()
+    st.mode = "supabase"
+
+    class APIResp:
+        def __init__(self, data):
+            self.data = data
+
+    class Bucket:
+        def list(self, *args, **kwargs):
+            return APIResp([
+                {"name": "a.parquet"},
+                {"name": "b.parquet"},
+            ])
+
+    st.bucket = Bucket()
+    items = st.list_all("prices")
+    assert items == ["prices/a.parquet", "prices/b.parquet"]
