@@ -95,31 +95,16 @@ class Storage:
             else:
                 url = creds[0]  # type: ignore
                 self.client = create_client(url, key)
-                # Ensure a public bucket named 'lake'; handle storage3 variants.
+                # Ensure a bucket named 'lake' exists (support APIResponse or list returns)
                 try:
-                    try:
-                        self.client.storage.create_bucket("lake")
-                    except TypeError:
-                        # Older SDKs require the 'public' flag on create
-                        try:
-                            self.client.storage.create_bucket("lake", public=True)
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        # Ignore if already exists
-                        if "already" not in str(e).lower():
-                            raise
-                    # Attempt to mark bucket public if supported
-                    try:
-                        self.client.storage.update_bucket("lake", public=True)
-                    except Exception:
-                        pass
                     names = _bucket_names(self.client)
+                    if "lake" not in names:
+                        # Create without SDK-specific kwargs to avoid signature mismatches.
+                        self.client.storage.create_bucket("lake")
+                        names.add("lake")
                     self.bucket_exists = "lake" in names
-                    if not self.bucket_exists:
-                        raise RuntimeError("Supabase storage bucket 'lake' not available")
-                except Exception as e:
-                    self.error = f"Failed to ensure Supabase bucket 'lake': {e}"
+                except Exception:
+                    # Non-fatal: if listing/creating fails here, uploads will surface a clear error later.
                     self.bucket_exists = False
                 self.bucket = self.client.storage.from_("lake")
         else:
