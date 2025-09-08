@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from datetime import date
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -68,18 +69,16 @@ def render_data_lake_tab() -> None:
                 cur["ticker"].astype(str).str.upper().str.strip().unique().tolist()
             )
 
-        names = storage.list_prefix("prices")
-        present = set(
-            n.split("/", 1)[1].split(".")[0].upper()
-            for n in names if n.startswith("prices/") and "." in n
-        )
+        files = storage.list_all("prices")
+        present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
 
         total_set = set(total)
         missing = sorted(total_set - present)
 
         st.write(
-            f"Coverage: **{len(total_set) - len(missing)} / {len(total_set)}** tickers with price files"
+            f"Coverage: **{len(present)} / {len(total_set)}** tickers with price files"
         )
+        st.caption(f"files discovered {len(files)} | coverage {len(present)} unique tickers")
         if missing:
             with st.expander("Show first 25 missing tickers"):
                 st.code(", ".join(missing[:25]))
@@ -97,6 +96,13 @@ def render_data_lake_tab() -> None:
             )
             st.success(f"ok {summary['ok']}, failed {summary['failed']}")
             st.write(f"manifest: {summary['manifest_path']}")
+            st.cache_data.clear()
+            files = storage.list_all("prices")
+            present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
+            missing = sorted(total_set - present)
+            st.info(
+                f"post-run coverage {len(present)} / {len(total_set)}; {len(missing)} remaining"
+            )
 
         batch_size = st.number_input(
             "batch size", 1, 200, 50, key="auto_batch_size"
@@ -126,7 +132,7 @@ def render_data_lake_tab() -> None:
             f"ok {last['ok']}, failed {last['failed']}" if isinstance(last, dict) else "n/a"
         )
         st.info(
-            f"present {len(total_set) - len(missing)} / {len(total_set)} | remaining {len(missing)} | "
+            f"present {len(present)} / {len(total_set)} | remaining {len(missing)} | "
             f"iters {meta.get('iters', 0)} | elapsed {elapsed_str} | last batch {last_str}"
         )
 
@@ -158,12 +164,9 @@ def render_data_lake_tab() -> None:
                 meta["iters"] = meta.get("iters", 0) + 1
                 meta["last"] = summary
                 st.session_state.auto_meta = meta
-                names = storage.list_prefix("prices")
-                present = set(
-                    n.split("/", 1)[1].split(".")[0].upper()
-                    for n in names
-                    if n.startswith("prices/") and "." in n
-                )
+                st.cache_data.clear()
+                files = storage.list_all("prices")
+                present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
                 missing = sorted(total_set - present)
                 st.info(
                     f"Batch {meta['iters']} ok {summary['ok']} failed {summary['failed']}; {len(missing)} remaining"

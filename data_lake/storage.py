@@ -155,6 +155,46 @@ class Storage:
                 return False
         return (LOCAL_ROOT / path).exists()
 
+    def list_all(self, prefix: str) -> list[str]:
+        """Return all object names under prefix handling pagination."""
+
+        if self.mode != "supabase":
+            base = (LOCAL_ROOT / prefix)
+            return [
+                str(p.relative_to(LOCAL_ROOT)).replace("\\", "/")
+                for p in base.rglob("*")
+                if p.is_file()
+            ]
+
+        items: list[str] = []
+        offset = 0
+        while True:
+            try:
+                batch = self.bucket.list(
+                    prefix,
+                    {
+                        "limit": 1000,
+                        "offset": offset,
+                        "sortBy": {"column": "name", "order": "asc"},
+                    },
+                )
+            except TypeError:
+                batch = self.bucket.list(
+                    path=prefix,
+                    limit=1000,
+                    offset=offset,
+                    sortBy={"column": "name", "order": "asc"},
+                )
+            if not batch:
+                break
+            items.extend(
+                [f"{prefix.rstrip('/')}/{obj['name']}" for obj in batch if "name" in obj]
+            )
+            if len(batch) < 1000:
+                break
+            offset += len(batch)
+        return items
+
     def list_prefix(self, prefix: str) -> list[str]:
         """Return list of object names under a prefix."""
 
