@@ -56,35 +56,40 @@ def _load_github() -> pd.DataFrame:
 
 
 def load_membership(storage: Storage | None = None) -> pd.DataFrame:
-    """Load the membership parquet returning ticker intervals.
-
-    The returned DataFrame always contains the columns
-    ``['ticker', 'start_date', 'end_date']`` regardless of any extra
-    metadata that may be present in the parquet/preview files.
-    """
-
     if storage is None:
         storage = Storage()
     try:
         data = storage.read_bytes("membership/sp500_members.parquet")
-        df = pd.read_parquet(io.BytesIO(data))
+        return pd.read_parquet(io.BytesIO(data))
     except Exception:
         preview_path = Path(__file__).with_name("sp500_members_preview.csv")
         if preview_path.exists():
-            df = pd.read_csv(preview_path)
-        else:
-            raise
-    cols = [c for c in ["ticker", "start_date", "end_date"] if c in df.columns]
-    return df[cols]
+            return pd.read_csv(preview_path)
+        raise
 
 
-def historical_tickers(storage: Storage | None = None) -> list[str]:
-    """Return sorted unique tickers across the full membership history."""
+# --- New: small helper used by the UI tab ---
+def historical_tickers(
+    storage: Storage | None = None, limit: int | None = None
+) -> list[str]:
+    """
+    Return normalized unique tickers from the membership table.
+    Used by the UI to decide which symbols to ingest.
+    """
 
     df = load_membership(storage)
-    if "ticker" not in df.columns:
+    if df is None or df.empty:
         return []
-    return sorted(df["ticker"].dropna().unique())
+    tickers = (
+        df["ticker"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    return tickers[:limit] if limit is not None else tickers
 
 
 def build_membership(storage: Storage) -> str:
