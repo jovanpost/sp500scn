@@ -170,7 +170,7 @@ class Storage:
         offset = 0
         while True:
             try:
-                batch = self.bucket.list(
+                resp = self.bucket.list(
                     prefix,
                     {
                         "limit": 1000,
@@ -179,12 +179,13 @@ class Storage:
                     },
                 )
             except TypeError:
-                batch = self.bucket.list(
+                resp = self.bucket.list(
                     path=prefix,
                     limit=1000,
                     offset=offset,
                     sortBy={"column": "name", "order": "asc"},
                 )
+            batch = getattr(resp, "data", resp) or []
             if not batch:
                 break
             items.extend(
