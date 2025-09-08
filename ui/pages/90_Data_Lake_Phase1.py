@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import date
+import time
 
 import pandas as pd
 import streamlit as st
@@ -14,6 +15,10 @@ from data_lake.schemas import IngestJob
 
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
+    if "auto_run" not in st.session_state:
+        st.session_state.auto_run = False
+    if "auto_meta" not in st.session_state:
+        st.session_state.auto_meta = {}
     storage = Storage()
     with st.expander("Diagnostics"):
         st.caption(storage.info())
@@ -92,6 +97,79 @@ def render_data_lake_tab() -> None:
             )
             st.success(f"ok {summary['ok']}, failed {summary['failed']}")
             st.write(f"manifest: {summary['manifest_path']}")
+
+        batch_size = st.number_input(
+            "batch size", 1, 200, 50, key="auto_batch_size"
+        )
+        max_minutes = st.number_input(
+            "max minutes", 1, 120, 15, key="auto_max_minutes"
+        )
+        max_iters = st.number_input(
+            "max iters", 1, 1000, 50, key="auto_max_iters"
+        )
+        pause_seconds_between_batches = st.number_input(
+            "pause seconds between batches", 0, 60, 5, key="auto_pause_seconds"
+        )
+
+        col_run, col_stop = st.columns(2)
+        if col_run.button("Run until target coverage"):
+            st.session_state.auto_run = True
+            st.session_state.auto_meta = {"start_ts": time.time(), "iters": 0}
+        if col_stop.button("Stop"):
+            st.session_state.auto_run = False
+
+        meta = st.session_state.get("auto_meta", {})
+        elapsed = time.time() - meta.get("start_ts", time.time())
+        elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+        last = meta.get("last")
+        last_str = (
+            f"ok {last['ok']}, failed {last['failed']}" if isinstance(last, dict) else "n/a"
+        )
+        st.info(
+            f"present {len(total_set) - len(missing)} / {len(total_set)} | remaining {len(missing)} | "
+            f"iters {meta.get('iters', 0)} | elapsed {elapsed_str} | last batch {last_str}"
+        )
+
+        if st.session_state.auto_run:
+            if not missing or meta.get("iters", 0) >= int(max_iters) or elapsed >= int(max_minutes) * 60:
+                st.session_state.auto_run = False
+                if not missing:
+                    st.success("Coverage complete")
+                else:
+                    st.info("Auto run stopped (limits reached)")
+            else:
+                chunk = missing[: int(batch_size)]
+                jobs = [
+                    {
+                        "ticker": t,
+                        "start": "1990-01-01",
+                        "end": str(date.today()),
+                    }
+                    for t in chunk
+                ]
+                progress_placeholder = st.empty()
+                progress_bar = progress_placeholder.progress(0)
+                summary = ingest_batch(
+                    storage,
+                    jobs,
+                    progress_cb=lambda d, t: progress_bar.progress(d / t),
+                )
+                progress_placeholder.empty()
+                meta["iters"] = meta.get("iters", 0) + 1
+                meta["last"] = summary
+                st.session_state.auto_meta = meta
+                names = storage.list_prefix("prices")
+                present = set(
+                    n.split("/", 1)[1].split(".")[0].upper()
+                    for n in names
+                    if n.startswith("prices/") and "." in n
+                )
+                missing = sorted(total_set - present)
+                st.info(
+                    f"Batch {meta['iters']} ok {summary['ok']} failed {summary['failed']}; {len(missing)} remaining"
+                )
+                time.sleep(int(pause_seconds_between_batches))
+                st.experimental_rerun()
     except Exception:
         st.caption("Membership parquet not available")
 
