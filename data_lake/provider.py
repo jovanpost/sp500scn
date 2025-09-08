@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Iterable
 
 import pandas as pd
 import yfinance as yf
+
+from .schemas import IngestJob
+from .ingest import ingest_batch
+from .storage import Storage
 
 
 def get_daily_adjusted(
@@ -52,3 +57,19 @@ def get_daily_adjusted(
     )
     df["ticker"] = ticker
     return df[["date", "open", "high", "low", "close", "adj_close", "volume", "ticker"]]
+
+
+def ingest(
+    storage: Storage,
+    tickers: Iterable[str],
+    start: date | str = "1990-01-01",
+    end: date | None = None,
+    progress_cb=None,
+):
+    """Ingest a collection of tickers into storage."""
+    if end is None:
+        end = date.today()
+    jobs: list[IngestJob] = [
+        {"ticker": t, "start": str(start), "end": str(end)} for t in tickers
+    ]
+    return ingest_batch(storage, jobs, progress_cb=progress_cb)

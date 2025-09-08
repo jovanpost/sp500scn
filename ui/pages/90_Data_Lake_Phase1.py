@@ -10,6 +10,7 @@ from data_lake.storage import Storage
 from data_lake.membership import build_membership, load_membership
 from data_lake.ingest import ingest_batch
 from data_lake.schemas import IngestJob
+from data_lake.provider import ingest as provider_ingest
 
 
 def render_data_lake_tab() -> None:
@@ -46,6 +47,39 @@ def render_data_lake_tab() -> None:
             st.dataframe(df.head(20))
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
+
+    st.markdown("### Prices coverage")
+    try:
+        membership_df = load_membership(storage)
+        current = sorted(
+            membership_df[membership_df["end_date"].isna()]["ticker"].unique()
+        )
+        price_files = storage.list_prefix("prices/")
+        st.write("current tickers", len(current))
+        st.write(current[:10])
+        st.write("price files", len(price_files))
+        st.write(price_files[:10])
+        present = sorted({p.split(".")[0].upper() for p in price_files})
+        missing = sorted(set(current) - set(present))
+        st.write(f"present {len(present)}/{len(current)}")
+        if missing:
+            st.write(f"missing {len(missing)}")
+            st.write("sample:", missing[:10])
+            if st.button("Ingest missing only"):
+                try:
+                    progress_bar = st.progress(0)
+                    summary = provider_ingest(
+                        storage,
+                        missing,
+                        progress_cb=lambda d, t: progress_bar.progress(d / t),
+                    )
+                    st.success(f"ok {summary['ok']}, failed {summary['failed']}")
+                except Exception as e:
+                    st.exception(e)
+        else:
+            st.caption("All tickers present")
+    except Exception:
+        st.caption("Membership parquet not available")
 
     st.markdown("### Ingest prices")
     start = st.date_input("start date", date(1990, 1, 1))
