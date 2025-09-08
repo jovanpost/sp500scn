@@ -156,31 +156,39 @@ class Storage:
         return (LOCAL_ROOT / path).exists()
 
     def list_prefix(self, prefix: str) -> list[str]:
-        """Return flat list of object names under a prefix."""
+        """Return list of object names under a prefix."""
 
-        prefix = prefix.rstrip("/") + "/"
         if self.mode == "supabase":
             try:
-                try:
-                    resp = self.bucket.list(prefix)
-                except TypeError:
-                    resp = self.bucket.list(path=prefix)
-                items = getattr(resp, "data", resp) or []
-                names = []
-                for it in items:
-                    if isinstance(it, dict):
-                        name = it.get("name")
-                    else:
-                        name = getattr(it, "name", None)
-                    if name:
-                        names.append(prefix + name)
+                bucket = self.client.storage.from_("lake")
+                names: list[str] = []
+                offset = 0
+                page = 200
+                while True:
+                    # storage3 list() treats the 'path' like a folder; ensure clean prefix
+                    path = prefix.strip("/")
+                    resp = bucket.list(path=path, limit=page, offset=offset)
+                    items = getattr(resp, "data", resp) or []
+                    if not items:
+                        break
+                    for it in items:
+                        n = it.get("name") if isinstance(it, dict) else getattr(it, "name", "")
+                        if n:
+                            names.append(f"{path}/{n}" if not n.startswith(f"{path}/") else n)
+                    if len(items) < page:
+                        break
+                    offset += page
                 return names
             except Exception:
                 return []
-        base = LOCAL_ROOT / prefix
-        if not base.exists():
-            return []
-        return [str(p.relative_to(LOCAL_ROOT)) for p in base.iterdir() if p.is_file()]
+        else:
+            base = (LOCAL_ROOT / prefix)
+            if not base.exists():
+                return []
+            return [
+                str(p.relative_to(LOCAL_ROOT)).replace("\\", "/")
+                for p in base.rglob("*") if p.is_file()
+            ]
 
     def exists_prefix(self, prefix: str) -> bool:
         """Return True if any object exists under the given prefix."""
