@@ -158,6 +158,31 @@ class Storage:
                 return False
         return (LOCAL_ROOT / path).exists()
 
+    def list_prefix(self, prefix: str) -> list[str]:
+        """Return flat list of object names under a prefix."""
+        if self.mode == "supabase":
+            try:
+                try:
+                    resp = self.bucket.list(prefix)
+                except TypeError:
+                    resp = self.bucket.list(path=prefix)
+                items = getattr(resp, "data", resp) or []
+                names = []
+                for it in items:
+                    if isinstance(it, dict):
+                        name = it.get("name")
+                    else:
+                        name = getattr(it, "name", None)
+                    if name:
+                        names.append(name)
+                return names
+            except Exception:
+                return []
+        base = LOCAL_ROOT / prefix
+        if not base.exists():
+            return []
+        return [p.name for p in base.iterdir() if p.is_file()]
+
     def selftest(self) -> dict:
         info = {"mode": self.mode, "key_info": self.key_info, "bucket": "lake"}
         try:
