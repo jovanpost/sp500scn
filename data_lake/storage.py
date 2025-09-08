@@ -97,13 +97,25 @@ class Storage:
                 self.client = create_client(url, key)
                 # Ensure a public bucket named 'lake'; handle storage3 variants.
                 try:
+                    try:
+                        self.client.storage.create_bucket("lake")
+                    except TypeError:
+                        # Older SDKs require the 'public' flag on create
+                        try:
+                            self.client.storage.create_bucket("lake", public=True)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        # Ignore if already exists
+                        if "already" not in str(e).lower():
+                            raise
+                    # Attempt to mark bucket public if supported
+                    try:
+                        self.client.storage.update_bucket("lake", public=True)
+                    except Exception:
+                        pass
                     names = _bucket_names(self.client)
                     self.bucket_exists = "lake" in names
-                    if not self.bucket_exists:
-                        # Create as public; re-check to avoid race in concurrent boots.
-                        self.client.storage.create_bucket("lake", public=True)
-                        names = _bucket_names(self.client)
-                        self.bucket_exists = "lake" in names
                     if not self.bucket_exists:
                         raise RuntimeError("Supabase storage bucket 'lake' not available")
                 except Exception as e:
@@ -160,6 +172,8 @@ class Storage:
 
     def list_prefix(self, prefix: str) -> list[str]:
         """Return flat list of object names under a prefix."""
+
+        prefix = prefix.rstrip("/") + "/"
         if self.mode == "supabase":
             try:
                 try:
@@ -174,14 +188,31 @@ class Storage:
                     else:
                         name = getattr(it, "name", None)
                     if name:
-                        names.append(name)
+                        names.append(prefix + name)
                 return names
             except Exception:
                 return []
         base = LOCAL_ROOT / prefix
         if not base.exists():
             return []
-        return [p.name for p in base.iterdir() if p.is_file()]
+        return [str(p.relative_to(LOCAL_ROOT)) for p in base.iterdir() if p.is_file()]
+
+    def exists_prefix(self, prefix: str) -> bool:
+        """Return True if any object exists under the given prefix."""
+
+        prefix = prefix.rstrip("/") + "/"
+        if self.mode == "supabase":
+            try:
+                try:
+                    resp = self.bucket.list(prefix, limit=1)
+                except TypeError:
+                    resp = self.bucket.list(path=prefix, limit=1)
+                items = getattr(resp, "data", resp) or []
+                return bool(items)
+            except Exception:
+                return False
+        base = LOCAL_ROOT / prefix
+        return base.exists() and any(base.iterdir())
 
     def selftest(self) -> dict:
         info = {"mode": self.mode, "key_info": self.key_info, "bucket": "lake"}

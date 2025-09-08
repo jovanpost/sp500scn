@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Iterable
+from typing import List, Tuple
 
 import pandas as pd
 import yfinance as yf
 
 from .schemas import IngestJob
-from .ingest import ingest_batch
+from .ingest import ingest_batch as _ingest_batch
 from .storage import Storage
 
 
@@ -59,17 +59,20 @@ def get_daily_adjusted(
     return df[["date", "open", "high", "low", "close", "adj_close", "volume", "ticker"]]
 
 
-def ingest(
+def ingest_batch(
     storage: Storage,
-    tickers: Iterable[str],
-    start: date | str = "1990-01-01",
-    end: date | None = None,
-    progress_cb=None,
-):
-    """Ingest a collection of tickers into storage."""
-    if end is None:
-        end = date.today()
+    tickers: List[str],
+    start: date,
+    end: date,
+    max_per_run: int,
+) -> Tuple[List[str], List[str]]:
+    """Ingest a batch of tickers returning ok and failed lists."""
+
+    selected = tickers[:max_per_run]
     jobs: list[IngestJob] = [
-        {"ticker": t, "start": str(start), "end": str(end)} for t in tickers
+        {"ticker": t, "start": str(start), "end": str(end)} for t in selected
     ]
-    return ingest_batch(storage, jobs, progress_cb=progress_cb)
+    summary = _ingest_batch(storage, jobs)
+    ok = [r["ticker"] for r in summary["results"] if not r["error"]]
+    fail = [r["ticker"] for r in summary["results"] if r["error"]]
+    return ok, fail

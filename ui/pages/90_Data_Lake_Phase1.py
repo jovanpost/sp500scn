@@ -7,10 +7,14 @@ import pandas as pd
 import streamlit as st
 
 from data_lake.storage import Storage
-from data_lake.membership import build_membership, load_membership
+from data_lake.membership import (
+    build_membership,
+    load_membership,
+    historical_tickers,
+)
 from data_lake.ingest import ingest_batch
 from data_lake.schemas import IngestJob
-from data_lake.provider import ingest as provider_ingest
+from data_lake.provider import ingest_batch as provider_ingest_batch
 
 
 def render_data_lake_tab() -> None:
@@ -51,29 +55,38 @@ def render_data_lake_tab() -> None:
     st.markdown("### Prices coverage")
     try:
         membership_df = load_membership(storage)
-        current = sorted(
-            membership_df[membership_df["end_date"].isna()]["ticker"].unique()
+        scope = st.selectbox(
+            "Scope", ["Historical (since 1996)", "Current only"]
         )
-        price_files = storage.list_prefix("prices/")
-        st.write("current tickers", len(current))
-        st.write(current[:10])
-        st.write("price files", len(price_files))
-        st.write(price_files[:10])
-        present = sorted({p.split(".")[0].upper() for p in price_files})
-        missing = sorted(set(current) - set(present))
-        st.write(f"present {len(present)}/{len(current)}")
+        if scope.startswith("Historical"):
+            tickers = historical_tickers(storage)
+        else:
+            tickers = sorted(
+                membership_df[membership_df["end_date"].isna()]["ticker"].unique()
+            )
+        present_files = storage.list_prefix("prices/")
+        present = {
+            f.split("/")[-1].split(".")[0].upper() for f in present_files
+        }
+        total = set(tickers)
+        missing = sorted(total - present)
+        st.write(f"{len(total) - len(missing)} / {len(total)} present")
         if missing:
-            st.write(f"missing {len(missing)}")
-            st.write("sample:", missing[:10])
+            with st.expander("Missing (first 25)"):
+                st.write(missing[:25])
+            max_per_run = st.session_state.get("max_tickers", 25)
+            start = st.session_state.get("start_date", date(1990, 1, 1))
+            end = st.session_state.get("end_date", date.today())
             if st.button("Ingest missing only"):
                 try:
                     progress_bar = st.progress(0)
-                    summary = provider_ingest(
-                        storage,
-                        missing,
-                        progress_cb=lambda d, t: progress_bar.progress(d / t),
+                    ok, fail = provider_ingest_batch(
+                        storage, missing, start, end, max_per_run
                     )
-                    st.success(f"ok {summary['ok']}, failed {summary['failed']}")
+                    progress_bar.progress(100)
+                    st.success(f"ok {len(ok)}, failed {len(fail)}")
+                    if fail:
+                        st.write("failed:", fail[:10])
                 except Exception as e:
                     st.exception(e)
         else:
@@ -82,9 +95,11 @@ def render_data_lake_tab() -> None:
         st.caption("Membership parquet not available")
 
     st.markdown("### Ingest prices")
-    start = st.date_input("start date", date(1990, 1, 1))
-    end = st.date_input("end date", date.today())
-    max_tickers = st.number_input("max tickers per run", 1, 1000, 25)
+    start = st.date_input("start date", date(1990, 1, 1), key="start_date")
+    end = st.date_input("end date", date.today(), key="end_date")
+    max_tickers = st.number_input(
+        "max tickers per run", 1, 1000, 25, key="max_tickers"
+    )
     dry_run = st.checkbox("dry run", value=False)
     if st.button("Ingest prices (batch)"):
         try:
