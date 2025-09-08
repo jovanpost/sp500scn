@@ -56,16 +56,35 @@ def _load_github() -> pd.DataFrame:
 
 
 def load_membership(storage: Storage | None = None) -> pd.DataFrame:
+    """Load the membership parquet returning ticker intervals.
+
+    The returned DataFrame always contains the columns
+    ``['ticker', 'start_date', 'end_date']`` regardless of any extra
+    metadata that may be present in the parquet/preview files.
+    """
+
     if storage is None:
         storage = Storage()
     try:
         data = storage.read_bytes("membership/sp500_members.parquet")
-        return pd.read_parquet(io.BytesIO(data))
+        df = pd.read_parquet(io.BytesIO(data))
     except Exception:
         preview_path = Path(__file__).with_name("sp500_members_preview.csv")
         if preview_path.exists():
-            return pd.read_csv(preview_path)
-        raise
+            df = pd.read_csv(preview_path)
+        else:
+            raise
+    cols = [c for c in ["ticker", "start_date", "end_date"] if c in df.columns]
+    return df[cols]
+
+
+def historical_tickers(storage: Storage | None = None) -> list[str]:
+    """Return sorted unique tickers across the full membership history."""
+
+    df = load_membership(storage)
+    if "ticker" not in df.columns:
+        return []
+    return sorted(df["ticker"].dropna().unique())
 
 
 def build_membership(storage: Storage) -> str:
