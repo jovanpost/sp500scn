@@ -19,17 +19,17 @@ def members_on_date(
     # Coerce membership bounds if present, otherwise fill with ``NaT`` so the
     # filtering logic still works.
     if "start_date" in df.columns:
-        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce").dt.tz_localize(None)
     else:
         df["start_date"] = pd.NaT
 
     if "end_date" in df.columns:
-        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
+        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce").dt.tz_localize(None)
     else:
         df["end_date"] = pd.NaT
 
     # Coerce the query date as well
-    dt = pd.to_datetime(date, errors="coerce")
+    dt = pd.to_datetime(date, errors="coerce").tz_localize(None)
 
     mask = (df["start_date"] <= dt) & (df["end_date"].isna() | (dt <= df["end_date"]))
     return df.loc[mask]
