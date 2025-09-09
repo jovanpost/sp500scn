@@ -43,8 +43,8 @@ def _price_bytes(_storage: Storage, ticker: str) -> bytes:
     return _storage.read_bytes(f"prices/{ticker}.parquet")
 
 
-def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
-    blob = _price_bytes(storage, ticker)
+def _load_prices(_storage: Storage, ticker: str) -> pd.DataFrame:
+    blob = _price_bytes(_storage, ticker)
     return _prices_from_bytes(ticker, blob)
 
 

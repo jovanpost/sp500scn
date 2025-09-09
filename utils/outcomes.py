@@ -251,7 +251,7 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
         # Cache history DataFrames per ticker.
         histories: dict[str, pd.DataFrame | None] = {}
         for tkr, start_dt in ticker_starts.items():
-            histories[tkr] = fetch_history(tkr, start=start_dt, auto_adjust=False)
+            histories[tkr] = fetch_history(tkr, start=start_dt)
 
         for i, r in df.iterrows():
             tkr = str(r.get("Ticker", "")).upper()
@@ -381,8 +381,7 @@ def evaluate_outcomes(df: pd.DataFrame, mode: str = "pending") -> pd.DataFrame:
             tkr,
             start=start,
             end=stop + pd.Timedelta(days=1),
-            auto_adjust=False,
-        )
+            )
 
     updated: list[dict[str, Any]] = []
     for row in rows:

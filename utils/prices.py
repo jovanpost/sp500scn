@@ -1,42 +1,45 @@
 from __future__ import annotations
 
 import pandas as pd
-import yfinance as yf
+
+from data_lake.provider import get_daily_adjusted
 
 
 def fetch_history(
     ticker: str,
     start: str | pd.Timestamp | None = None,
     end: str | pd.Timestamp | None = None,
-    interval: str = "1d",
-    auto_adjust: bool = False,
-):
-    """Fetch price history for *ticker* with normalized columns.
+) -> pd.DataFrame:
+    """Return daily OHLCV (+ Adj Close) for ``ticker``.
 
-    Returns a DataFrame with title-cased columns and numeric price/volume fields
-    or ``None`` if data cannot be retrieved. The helper removes timezone
-    information from the index and gracefully handles any errors.
+    Data is sourced from :func:`data_lake.provider.get_daily_adjusted` and
+    returned with a ``DatetimeIndex`` and title-cased columns matching the
+    previous ``yfinance`` output.
     """
-    try:
-        if not ticker:
-            return None
-        df = yf.Ticker(ticker).history(
-            start=start,
-            end=end,
-            interval=interval,
-            auto_adjust=auto_adjust,
-            actions=False,
-        )
-        if df is None or df.empty:
-            return None
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        if df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
-        df.columns = [c.title() for c in df.columns]
-        for col in ("Open", "High", "Low", "Close", "Adj Close", "Volume"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df
-    except Exception:
-        return None
+    if not ticker:
+        return pd.DataFrame()
+    df = get_daily_adjusted(ticker, start=start or "1990-01-01", end=end)
+    if df.empty:
+        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+        return pd.DataFrame(columns=cols)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"]).set_index("date").sort_index()
+    else:
+        df = df.copy()
+        df.index = pd.to_datetime(df.index, errors="coerce")
+        df = df.dropna().sort_index()
+    rename = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "adj_close": "Adj Close",
+        "volume": "Volume",
+        "ticker": "Ticker",
+    }
+    df = df.rename(columns=rename)
+    # Ensure canonical column order when available
+    cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    df = df[[c for c in cols if c in df.columns]]
+    return df
