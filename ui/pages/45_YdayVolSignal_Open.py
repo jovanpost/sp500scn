@@ -33,11 +33,20 @@ def _run_signal_scan(
 
     from data_lake.provider import get_daily_adjusted
 
-    counts: dict[str, int] = {"universe": len(active), "gap": 0, "vol": 0, "atr": 0, "sr": 0}
+    stats: dict[str, int] = {
+        "active_members": len(active),
+        "have_D_D1": 0,
+        "pass_close_up": 0,
+        "pass_volume_mult": 0,
+        "pass_gap": 0,
+        "pass_min_close": 0,
+        "pass_atr": 0,
+        "pass_21d": 0,
+    }
 
     tickers = active["ticker"].dropna().unique().tolist()
     if not tickers:
-        return pd.DataFrame(), counts, pd.DataFrame()
+        return pd.DataFrame(), stats, pd.DataFrame()
 
     D = pd.to_datetime(D)
     results: list[dict] = []
@@ -56,6 +65,8 @@ def _run_signal_scan(
         window = hist.loc[:d1].tail(lookback)
         if window.empty or window["volume"].mean() == 0:
             continue
+
+        stats["have_D_D1"] += 1
 
         close_up = (
             (d1_row["close"] - window.iloc[-2]["close"]) / window.iloc[-2]["close"] * 100.0
@@ -78,60 +89,85 @@ def _run_signal_scan(
             "gap_open_pct": gap_pct,
         }
 
+        if close_up >= min_close_up:
+            stats["pass_close_up"] += 1
+        else:
+            near.append(stage_info)
+            continue
+
+        if vol_mult >= min_vol_mult:
+            stats["pass_volume_mult"] += 1
+        else:
+            near.append(stage_info)
+            continue
+
         if gap_pct >= min_gap_next_open:
-            counts["gap"] += 1
+            stats["pass_gap"] += 1
         else:
             near.append(stage_info)
             continue
 
-        if close_up >= min_close_up and vol_mult >= min_vol_mult:
-            counts["vol"] += 1
-        else:
-            near.append(stage_info)
-            continue
-
-        # ATR and S/R checks would go here
-        counts["atr"] += 1
-        counts["sr"] += 1
+        # Placeholder filters for minimum close, ATR, and 21-day trend
+        stats["pass_min_close"] += 1
+        stats["pass_atr"] += 1
+        stats["pass_21d"] += 1
 
         results.append(stage_info)
 
-    counts["final"] = len(results)
+    stats["final"] = len(results)
     near_df = pd.DataFrame(near).sort_values(["gap_open_pct", "d1_vol_mult"], ascending=False)
     res_df = pd.DataFrame(results).sort_values("gap_open_pct", ascending=False)
-    return res_df, counts, near_df.head(10)
+    return res_df, stats, near_df.head(10)
 
 
 def render_page():
     st.header("⚡ Yesterday Close+Volume → Buy Next Open")
     storage = _get_storage()
 
+    debug = st.checkbox(
+        "Show debug information", value=st.session_state.get("show_debug", False)
+    )
+    st.session_state["show_debug"] = debug
+
     D = st.date_input("Entry day (D)", value=pd.Timestamp.today()).to_pydatetime()
     lookback = int(st.number_input("Lookback", value=63, min_value=1, step=1))
-    min_close_up = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
-    min_vol_mult = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
+    min_close_up = float(
+        st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5)
+    )
+    min_vol_mult = float(
+        st.number_input("Min volume multiple", value=1.5, step=0.1)
+    )
     min_gap = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
 
     if st.button("Run scan"):
         members = _load_members(storage)
         active = members_on_date(members, D)
-        st.caption(f"Active members on {D.date()}: {active['ticker'].nunique()}")
+        symbols = active["ticker"].unique().tolist()
+        frames_present = [s for s in symbols if storage.exists(f"prices/{s}.parquet")]
 
-        present = [t for t in active["ticker"].unique() if storage.exists(f"prices/{t}.parquet")]
-        st.caption(f"Price files found: {len(present)} / {active['ticker'].nunique()}")
-        if len(present) == 0:
+        stats = {"active_members": len(symbols)}
+
+        if len(frames_present) == 0:
+            with st.expander(
+                "Debug: filter pipeline", expanded=st.session_state.get("show_debug", False)
+            ):
+                for k, v in stats.items():
+                    st.write(f"{k}: {v}")
             st.warning(
                 "No price files found for selected date’s membership. Ingest more prices or pick another date."
             )
             return
 
         if active.empty:
+            with st.expander(
+                "Debug: filter pipeline", expanded=st.session_state.get("show_debug", False)
+            ):
+                for k, v in stats.items():
+                    st.write(f"{k}: {v}")
             st.warning("No active S&P members on selected date.")
-            with st.expander("Debug: membership on selected date"):
-                st.write({"selected_date": str(D), "active_count": 0})
             return
 
-        results, counts, near = _run_signal_scan(
+        results, stats, near = _run_signal_scan(
             active,
             D=D,
             lookback=lookback,
@@ -141,11 +177,11 @@ def render_page():
             opt={},
         )
 
-        st.caption(f"After gap filter: {counts['gap']}")
-        st.caption(f"After vol filter: {counts['vol']}")
-        st.caption(f"After ATR check: {counts['atr']}")
-        st.caption(f"After S/R check: {counts['sr']}")
-        st.caption(f"Final candidates: {counts['final']}")
+        with st.expander(
+            "Debug: filter pipeline", expanded=st.session_state.get("show_debug", False)
+        ):
+            for k, v in stats.items():
+                st.write(f"{k}: {v}")
 
         if results.empty:
             st.warning("No matches for the selected filters.")
