@@ -9,16 +9,20 @@ from engine.replay import time_to_hit
 
 
 @st.cache_data(show_spinner=False)
+def _members_from_bytes(blob: bytes) -> pd.DataFrame:
+    """Cached decode of the membership parquet (cache key = file bytes)."""
+    return pd.read_parquet(io.BytesIO(blob))
+
+
 def _load_members(storage: Storage) -> pd.DataFrame:
-    data = storage.read_bytes("membership/sp500_members.parquet")
-    df = pd.read_parquet(io.BytesIO(data))
-    return df
+    """Read bytes via Storage (not cached) then hit the cached decoder."""
+    blob = storage.read_bytes("membership/sp500_members.parquet")
+    return _members_from_bytes(blob)
 
 
 @st.cache_data(show_spinner=False)
-def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
-    data = storage.read_bytes(f"prices/{ticker}.parquet")
-    df = pd.read_parquet(io.BytesIO(data))
+def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
+    df = pd.read_parquet(io.BytesIO(blob))
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         df = df.dropna(subset=['date']).set_index('date').sort_index()
@@ -27,6 +31,11 @@ def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
         df.index = pd.to_datetime(df.index, errors='coerce')
         df = df.sort_index()
     return df
+
+
+def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
+    blob = storage.read_bytes(f"prices/{ticker}.parquet")
+    return _prices_from_bytes(ticker, blob)
 
 
 def render_page() -> None:
