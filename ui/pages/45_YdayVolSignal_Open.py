@@ -1,12 +1,8 @@
-from __future__ import annotations
 import io
 import pandas as pd
 import streamlit as st
-from data_lake.membership import load_membership
 from data_lake.storage import Storage
-from engine.features import atr
 from engine.universe import members_on_date
-from engine.replay import time_to_hit
 
 
 @st.cache_resource
@@ -14,238 +10,134 @@ def _get_storage() -> Storage:
     return Storage()
 
 
-@st.cache_data(show_spinner=False)
+# --- cache-safe loader: ignore Storage in hashing ---
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _s: "Storage"})
 def _load_members(_storage: Storage) -> pd.DataFrame:
-    """Cached membership loader that ignores the Storage instance."""
-    df = load_membership(_storage)
-    # Ensure expected dtypes (robust against CSV/Parquet differences)
-    for col in ("start_date", "end_date"):
-        if col not in df.columns:
-            df[col] = pd.NaT
-        else:
-            df[col] = pd.to_datetime(df[col], errors="coerce").dt.tz_localize(None)
-    if "ticker" in df.columns:
-        df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
-    return df
-
-
-def _diagnostics_block(label: str, n: int) -> None:
-    """Render a single diagnostics line."""
-    st.markdown(f"- **{label}**: `{n}`")
-
-
-@st.cache_data(show_spinner=False)
-def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
-    df = pd.read_parquet(io.BytesIO(blob))
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        df = df.dropna(subset=['date']).set_index('date').sort_index()
+    raw = _storage.read_bytes("membership/sp500_members.parquet")
+    df = pd.read_parquet(io.BytesIO(raw))
+    # normalize dates now to avoid dtype surprises later
+    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce")
+    if "end_date" in df.columns:
+        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
     else:
-        df = df.copy()
-        df.index = pd.to_datetime(df.index, errors='coerce')
-        df = df.sort_index()
+        df["end_date"] = pd.NaT
     return df
 
 
-@st.cache_data(show_spinner=False)
-def _price_bytes(_storage: Storage, ticker: str) -> bytes:
-    """Cached download of the price parquet (keyed by ticker)."""
-    return _storage.read_bytes(f"prices/{ticker}.parquet")
+def _run_signal_scan(active: pd.DataFrame, *, D, lookback, min_close_up, min_vol_mult,
+                     min_gap_next_open, opt) -> tuple[pd.DataFrame, dict]:
+    """Return (results_df, debug_counts) and keep simple stage counters so we can
+    explain zero results."""
+    # lazy imports so the page doesn’t explode from unrelated modules
+    from data_lake.provider import get_daily_adjusted
+
+    counts: dict[str, int] = {}
+    counts["universe"] = len(active)
+
+    # 1) build ticker list
+    tickers = active["ticker"].dropna().unique().tolist()
+    if not tickers:
+        return pd.DataFrame(), counts
+
+    # 2) fetch D-1 window (enough to compute lookback stats)
+    D = pd.to_datetime(D)
+    results = []
+    passed_signal = 0
+    for t in tickers:
+        hist = get_daily_adjusted(t, end=D, lookback=max(lookback + 2, 70))
+        if hist.empty or D not in hist.index:
+            continue
+        idx = hist.index.get_loc(D)
+        d1 = hist.index[idx - 1] if idx > 0 else None
+        if d1 is None:
+            continue
+
+        # --- Signal conditions (all as of D-1) ---
+        d1_row = hist.loc[d1]
+        window = hist.loc[:d1].tail(lookback)
+        if window.empty or window["volume"].mean() == 0:
+            continue
+
+        close_up = (
+            (d1_row["close"] - window.iloc[-2]["close"]) / window.iloc[-2]["close"] * 100.0
+            if len(window) >= 2
+            else 0.0
+        )
+        vol_mult = (
+            (d1_row["volume"] / window["volume"].mean()) if window["volume"].mean() else 0.0
+        )
+
+        if close_up < min_close_up or vol_mult < min_vol_mult:
+            continue
+
+        passed_signal += 1
+
+        # --- Next-day open gap (D open vs D-1 close) ---
+        d_row = hist.loc[D] if D in hist.index else None
+        if d_row is None:
+            continue
+        gap_pct = (d_row["open"] - d1_row["close"]) / d1_row["close"] * 100.0
+        if gap_pct < min_gap_next_open:
+            continue
+
+        # Optional filters can be added here (ATR, 21d return, min price, etc.)
+        results.append(
+            {
+                "ticker": t,
+                "d1_close_up_pct": close_up,
+                "d1_vol_mult": vol_mult,
+                "gap_open_pct": gap_pct,
+            }
+        )
+
+    counts["signal_pass"] = passed_signal
+    counts["final"] = len(results)
+    return pd.DataFrame(results).sort_values("gap_open_pct", ascending=False), counts
 
 
-def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
-    blob = _price_bytes(storage, ticker)
-    return _prices_from_bytes(ticker, blob)
-
-
-def render_page() -> None:
-    st.subheader("⚡ Yesterday Close+Volume → Buy Next Open")
+def render_page():
+    st.header("⚡ Yesterday Close+Volume → Buy Next Open")
     storage = _get_storage()
-    st.caption(storage.info())
 
-    # ---- Inputs ----
-    D_input = st.date_input("Entry day (D)", value=pd.Timestamp.today().date())
-    # Coerce to timezone-naive ``Timestamp`` to avoid ``str`` vs ``Timestamp`` comparisons downstream.
-    D = pd.to_datetime(D_input).tz_localize(None)
-    min_close_up_pct = st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5, format="%.2f") / 100.0
-    vol_window       = st.number_input("Volume lookback (sessions)", value=63, min_value=5, step=5)
-    min_vol_mult     = st.number_input(
-        "Min volume multiple (vs lookback avg)",
-        min_value=0.10, value=1.50, step=0.10, format="%.2f",
-        help="1.30 = yesterday's volume ≥ 1.30× average over the lookback window (ending on D-1)."
-    )
-    min_gap_on_open  = st.number_input("Min gap at D open vs D-1 close (%)", value=0.0, step=0.1, format="%.2f") / 100.0
-
-    st.markdown("**Optional filters (all computed as of D-1)**")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        use_atr_abs = st.checkbox("Min ATR(21) $", value=False)
-        min_atr_abs = st.number_input("ATR(21) ≥ ($)", value=0.50, step=0.10, format="%.2f") if use_atr_abs else None
-    with col2:
-        use_atr_pct = st.checkbox("Min ATR% of price", value=False)
-        min_atr_pct = st.number_input("ATR(21) ≥ (% of close)", value=0.50, step=0.10, format="%.2f")/100.0 if use_atr_pct else None
-    with col3:
-        use_ret21 = st.checkbox("Min 21-day return", value=False)
-        min_ret21 = st.number_input("Ret21 ≥ (%)", value=0.0, step=0.5, format="%.2f")/100.0 if use_ret21 else None
-
-    col4, col5 = st.columns(2)
-    with col4:
-        use_dollar_liq = st.checkbox("Min avg $ volume (20d)", value=False)
-        min_avg_dol_vol = st.number_input("Avg $ vol 20d ≥", value=10_000_000, step=1_000_000) if use_dollar_liq else None
-    with col5:
-        min_price = st.number_input("Min close price on D-1 ($)", value=5.0, step=0.5, format="%.2f")
-
-    tps = st.multiselect("TP set", options=[0.02,0.03,0.04,0.05,0.08,0.10], default=[0.02,0.04])
-    horizon = st.number_input("Horizon (days)", value=30, step=5)
-
-    show_diagnostics = st.checkbox("Show filter diagnostics", value=False)
+    D = st.date_input("Entry day (D)", value=pd.Timestamp.today()).to_pydatetime()
+    lookback = int(st.number_input("Lookback", value=63, min_value=1, step=1))
+    min_close_up = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
+    min_vol_mult = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
+    min_gap = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
 
     if st.button("Run scan"):
-        # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
-        members = _load_members(storage)
+        # IMPORTANT: leading underscore arg here matches the cached signature
+        members = _load_members(storage)  # storage is fine; cache ignores its hash
         active = members_on_date(members, D)
-        st.caption(f"Active S&P members on {D.date()}: {len(active)}")
 
         if active.empty:
             st.warning("No active S&P members on selected date.")
+            with st.expander("Debug: membership on selected date"):
+                st.write({"selected_date": str(D), "active_count": 0})
             return
 
-        rows: list[dict] = []
-        tickers = active['ticker'].unique().tolist()
-        prog = st.progress(0.0, text=f"Scanning {len(tickers)} tickers…")
+        # run the signal
+        results, counts = _run_signal_scan(
+            active,
+            D=D,
+            lookback=lookback,
+            min_close_up=min_close_up,
+            min_vol_mult=min_vol_mult,
+            min_gap_next_open=min_gap,
+            opt={},
+        )
 
-        counts = {
-            "active": len(tickers),
-            "price": 0,
-            "close_up": 0,
-            "volume": 0,
-            "atr_abs": 0,
-            "atr_pct": 0,
-            "ret21": 0,
-            "dollar_liq": 0,
-            "gap": 0,
-        }
-
-        for i, ticker in enumerate(tickers, 1):
-            prog.progress(i/len(tickers), text=f"{i}/{len(tickers)} {ticker}")
-            try:
-                df = _load_prices(storage, ticker)
-                if D not in df.index:
-                    continue
-                s_loc = df.index.get_loc(D) - 1
-                if s_loc < 1:
-                    continue
-                S = df.index[s_loc]  # signal day = D-1
-                # --- metrics as of S ---
-                close_S      = float(df.loc[S, 'close'])
-                close_Sm1    = float(df.iloc[s_loc-1]['close'])
-                ret1d_S      = (close_S / close_Sm1) - 1.0
-                avg_vol_S    = df['volume'].rolling(int(vol_window), min_periods=int(vol_window)).mean().loc[S]
-                if pd.isna(avg_vol_S) or avg_vol_S <= 0:
-                    continue
-                vol_mult_S   = float(df.loc[S, 'volume']) / float(avg_vol_S)
-                atr21        = atr(df, 21).loc[S]
-                atr_pct_S    = (atr21 / close_S) if close_S > 0 else pd.NA
-                ret21_S      = df['close'].pct_change(21).loc[S]
-                avg_dol_20_S = (df['close']*df['volume']).rolling(20, min_periods=20).mean().loc[S]
-
-                # --- mandatory filters ---
-                if close_S < float(min_price):
-                    continue
-                counts["price"] += 1
-                if ret1d_S < float(min_close_up_pct):
-                    continue
-                counts["close_up"] += 1
-                if vol_mult_S < float(min_vol_mult):
-                    continue
-                counts["volume"] += 1
-
-                # --- optional filters ---
-                if use_atr_abs:
-                    if pd.isna(atr21) or atr21 < float(min_atr_abs):
-                        continue
-                    counts["atr_abs"] += 1
-                if use_atr_pct:
-                    if pd.isna(atr_pct_S) or atr_pct_S < float(min_atr_pct):
-                        continue
-                    counts["atr_pct"] += 1
-                if use_ret21:
-                    if pd.isna(ret21_S) or ret21_S < float(min_ret21):
-                        continue
-                    counts["ret21"] += 1
-                if use_dollar_liq:
-                    if pd.isna(avg_dol_20_S) or avg_dol_20_S < float(min_avg_dol_vol):
-                        continue
-                    counts["dollar_liq"] += 1
-
-                # --- entry at D open if gap condition passes ---
-                open_D = float(df.loc[D, 'open'])
-                if open_D < close_S * (1 + float(min_gap_on_open)):
-                    continue
-                counts["gap"] += 1
-
-                hits = time_to_hit(df, D, open_D, tps, int(horizon))
-                rows.append({
-                    "ticker": ticker,
-                    "signal_day": pd.to_datetime(S).date(),
-                    "entry_day": pd.to_datetime(D).date(),
-                    "ret1d_S": ret1d_S,
-                    "vol_mult_S": vol_mult_S,
-                    "ATR21_$": float(atr21) if pd.notna(atr21) else None,
-                    "ATR21_%": float(atr_pct_S) if pd.notna(atr_pct_S) else None,
-                    "ret21_S": float(ret21_S) if pd.notna(ret21_S) else None,
-                    "avg_dollar_vol_20_S": float(avg_dol_20_S) if pd.notna(avg_dol_20_S) else None,
-                    "close_S": close_S,
-                    "open_D": open_D,
-                    **hits
-                })
-            except Exception:
-                continue
-
-        if show_diagnostics:
-            st.subheader("Diagnostics")
-            _diagnostics_block("Active S&P members on D", counts["active"])
-            _diagnostics_block(f"After min close on D-1 ≥ ${min_price:.2f}", counts["price"])
-            _diagnostics_block(f"After min close-up {min_close_up_pct*100:.2f}%", counts["close_up"])
-            _diagnostics_block(
-                f"After vol ≥ {min_vol_mult:.2f}× avg({int(vol_window)}d)",
-                counts["volume"],
-            )
-            if use_atr_abs:
-                _diagnostics_block(f"After ATR(21) ≥ ${float(min_atr_abs):.2f}", counts["atr_abs"])
-            if use_atr_pct:
-                _diagnostics_block(
-                    f"After ATR% ≥ {float(min_atr_pct)*100:.2f}%",
-                    counts["atr_pct"],
+        if results.empty:
+            st.warning("No matches for the selected filters.")
+            with st.expander("Why zero? Show stage counts"):
+                st.json(counts)
+                st.caption(
+                    "universe → passed initial signal (D-1) → final (gap & optional filters)"
                 )
-            if use_ret21:
-                _diagnostics_block(
-                    f"After Ret21 ≥ {float(min_ret21)*100:.2f}%",
-                    counts["ret21"],
-                )
-            if use_dollar_liq:
-                _diagnostics_block(
-                    f"After avg $ vol 20d ≥ {int(min_avg_dol_vol):,}",
-                    counts["dollar_liq"],
-                )
-            _diagnostics_block(
-                f"After open gap ≥ {min_gap_on_open*100:.2f}%",
-                counts["gap"],
-            )
+            return
 
-        if not rows:
-            st.info(
-                "No matches for the selected filters. Open the diagnostics above to see where they dropped out."
-            )
-        else:
-            out = pd.DataFrame(rows).sort_values(["vol_mult_S","ret1d_S"], ascending=[False, False])
-            st.dataframe(out, use_container_width=True)
-            st.download_button(
-                "Download CSV",
-                out.to_csv(index=False).encode(),
-                file_name=f"yday_vol_signal_{D.date()}.csv",
-                mime="text/csv",
-            )
+        st.success(f"{len(results)} matches")
+        st.dataframe(results, use_container_width=True)
 
 
 def page():

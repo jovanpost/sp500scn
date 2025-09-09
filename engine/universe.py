@@ -1,35 +1,18 @@
-from __future__ import annotations
-
-from typing import Union
-
 import pandas as pd
 
 
-def members_on_date(
-    m: pd.DataFrame,
-    date: Union[str, "pd.Timestamp", "datetime.date", "datetime.datetime"],
-) -> pd.DataFrame:
-    """Return members active on ``date``.
+def members_on_date(members: pd.DataFrame, date) -> pd.DataFrame:
+    """Return rows where ticker is active on ``date`` (inclusive bounds)."""
+    m = members.copy()
 
-    All date-like inputs are coerced to ``pd.Timestamp`` to avoid ``str`` vs
-    ``Timestamp`` comparisons that can raise errors.
-    """
-    df = m.copy()
-
-    # Coerce membership bounds if present, otherwise fill with ``NaT`` so the
-    # filtering logic still works.
-    if "start_date" in df.columns:
-        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce").dt.tz_localize(None)
+    # robust, timezone-naive timestamps
+    m["start_date"] = pd.to_datetime(m["start_date"], errors="coerce").dt.tz_localize(None)
+    if "end_date" in m.columns:
+        m["end_date"] = pd.to_datetime(m["end_date"], errors="coerce").dt.tz_localize(None)
     else:
-        df["start_date"] = pd.NaT
+        m["end_date"] = pd.NaT
 
-    if "end_date" in df.columns:
-        df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce").dt.tz_localize(None)
-    else:
-        df["end_date"] = pd.NaT
+    ts = pd.to_datetime(date, errors="coerce").tz_localize(None)
 
-    # Coerce the query date as well
-    dt = pd.to_datetime(date, errors="coerce").tz_localize(None)
-
-    mask = (df["start_date"] <= dt) & (df["end_date"].isna() | (dt <= df["end_date"]))
-    return df.loc[mask]
+    mask = (m["start_date"] <= ts) & (m["end_date"].isna() | (ts <= m["end_date"]))
+    return m.loc[mask]
