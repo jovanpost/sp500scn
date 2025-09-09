@@ -2,6 +2,7 @@ from __future__ import annotations
 import io
 import pandas as pd
 import streamlit as st
+from data_lake.membership import load_membership
 from data_lake.storage import Storage
 from engine.features import atr
 from engine.universe import members_on_date
@@ -21,6 +22,12 @@ def _load_members(blob: bytes) -> pd.DataFrame:
             df[col] = pd.NaT
     df["ticker"] = df["ticker"].astype(str).str.upper()
     return df
+
+
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: None})
+def _load_members_preview(storage: Storage) -> pd.DataFrame:
+    """Fallback to bundled preview when membership parquet is missing."""
+    return load_membership(storage)
 
 
 @st.cache_data(show_spinner=False)
@@ -88,7 +95,10 @@ def render_page() -> None:
     if st.button("Run scan"):
         # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
         D_ts = pd.Timestamp(D)
-        members = _load_members(storage.read_bytes("membership/sp500_members.parquet"))
+        try:
+            members = _load_members(storage.read_bytes("membership/sp500_members.parquet"))
+        except FileNotFoundError:
+            members = _load_members_preview(storage)
         active = members_on_date(members, D_ts)
 
         # Quick visibility when a run yields 0 matches.
