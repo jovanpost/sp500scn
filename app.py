@@ -10,14 +10,9 @@ setup_page()
 render_header()
 
 # Create tabs once with unique variable names
-tab_scanner, tab_gap, tab_history, tab_lake, tab_debug = st.tabs(
-    ["🔍 Scanner", "⚡ Gap Scanner", "📈 History & Outcomes", "💧 Data Lake (Phase 1)", "🐞 Debugger"]
+tab_gap, tab_history, tab_lake, tab_debug = st.tabs(
+    ["⚡ Gap Scanner", "📈 History & Outcomes", "💧 Data Lake (Phase 1)", "🐞 Debugger"]
 )
-
-with tab_scanner:
-    from ui.scan import render_scanner_tab
-
-    render_scanner_tab()
 
 with tab_gap:
     spec = importlib.util.spec_from_file_location(
