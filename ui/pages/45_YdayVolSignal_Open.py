@@ -8,16 +8,22 @@ from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
-@st.cache_data(show_spinner=False)
-def _members_from_bytes(blob: bytes) -> pd.DataFrame:
-    """Cached decode of the membership parquet (cache key = file bytes)."""
-    return pd.read_parquet(io.BytesIO(blob))
-
-
+@st.cache_data(
+    show_spinner=False,
+    # Storage is not hashable; provide a stable hash so Streamlit can cache.
+    hash_funcs={Storage: lambda _: "Storage"},
+)
 def _load_members(storage: Storage) -> pd.DataFrame:
-    """Read bytes via Storage (not cached) then hit the cached decoder."""
+    """Load membership data and normalize date columns."""
     blob = storage.read_bytes("membership/sp500_members.parquet")
-    return _members_from_bytes(blob)
+    df = pd.read_parquet(io.BytesIO(blob))
+    # Normalize date dtypes for safe comparisons downstream.
+    for col in ("start_date", "end_date"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+        else:
+            df[col] = pd.NaT
+    return df
 
 
 @st.cache_data(show_spinner=False)
@@ -86,6 +92,22 @@ def render_page() -> None:
     if st.button("Run scan"):
         members = _load_members(storage)
         active = members_on_date(members, D)
+
+        # Quick visibility when a run yields 0 matches.
+        show_debug = st.checkbox("Show debug", value=False)
+        if show_debug:
+            try:
+                st.write({
+                    "active_members": int(len(active)),
+                    "entry_day": str(D),
+                    "min_close_up_pct": min_close_up_pct,
+                    "vol_lookback_sessions": vol_window,
+                    "min_vol_multiple": min_vol_mult,
+                    "min_gap_open_vs_prev_close_pct": min_gap_on_open,
+                })
+            except Exception as _e:
+                st.write({"debug_error": str(_e)})
+
         if active.empty:
             st.warning("No active S&P members on selected date.")
             return
