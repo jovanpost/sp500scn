@@ -33,8 +33,14 @@ def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: None})
+def _price_bytes(storage: Storage, ticker: str) -> bytes:
+    """Cached download of the price parquet (keyed by ticker)."""
+    return storage.read_bytes(f"prices/{ticker}.parquet")
+
+
 def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
-    blob = storage.read_bytes(f"prices/{ticker}.parquet")
+    blob = _price_bytes(storage, ticker)
     return _prices_from_bytes(ticker, blob)
 
 
