@@ -97,8 +97,13 @@ def _run_signal_scan(
         results.append(stage_info)
 
     counts["final"] = len(results)
-    near_df = pd.DataFrame(near).sort_values(["gap_open_pct", "d1_vol_mult"], ascending=False)
-    res_df = pd.DataFrame(results).sort_values("gap_open_pct", ascending=False)
+    cols = ["ticker", "d1_close_up_pct", "d1_vol_mult", "gap_open_pct"]
+    near_df = pd.DataFrame(near, columns=cols)
+    if not near_df.empty:
+        near_df = near_df.sort_values(["gap_open_pct", "d1_vol_mult"], ascending=False)
+    res_df = pd.DataFrame(results, columns=cols)
+    if not res_df.empty:
+        res_df = res_df.sort_values("gap_open_pct", ascending=False)
     return res_df, counts, near_df.head(10)
 
 
