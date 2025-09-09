@@ -1,4 +1,6 @@
 import io
+import datetime as dt
+
 import pandas as pd
 import streamlit as st
 from data_lake.storage import Storage
@@ -129,7 +131,10 @@ def render_page():
     )
     st.session_state["show_debug"] = debug
 
-    D = st.date_input("Entry day (D)", value=pd.Timestamp.today()).to_pydatetime()
+    _d = st.date_input("Entry day (D)", value=dt.date.today())
+    if isinstance(_d, (list, tuple)):
+        _d = _d[0]
+    D = pd.Timestamp(_d)
     lookback = int(st.number_input("Lookback", value=63, min_value=1, step=1))
     min_close_up = float(
         st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5)
