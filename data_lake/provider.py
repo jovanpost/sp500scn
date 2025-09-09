@@ -24,27 +24,12 @@ def get_daily_adjusted(
 
     if end is None:
         end = date.today()
-    df = yf.download(ticker, start=start, end=end, auto_adjust=False, progress=False)
+    # sanitize for yfinance: strip leading '$', normalize dots to hyphens
+    t = str(ticker).strip().lstrip("$").replace(".", "-")
+    df = yf.download(t, start=start, end=end, auto_adjust=False, progress=False)
     if df.empty:
-        df = pd.DataFrame(
-            {
-                "date": pd.Series(dtype="datetime64[ns]"),
-                "open": pd.Series(dtype="float64"),
-                "high": pd.Series(dtype="float64"),
-                "low": pd.Series(dtype="float64"),
-                "close": pd.Series(dtype="float64"),
-                "adj_close": pd.Series(dtype="float64"),
-                "volume": pd.Series(dtype="int64"),
-                "ticker": pd.Series(dtype="object"),
-            }
-        )
-        df["ticker"] = ticker
-        return df[["date", "open", "high", "low", "close", "adj_close", "volume", "ticker"]]
-    df = df.reset_index()
-    if "Date" in df.columns:
-        df = df.rename(columns={"Date": "date"})
-    if "date" not in df.columns:
-        df["date"] = pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
+        # return schema-correct empty frame including date
+        df = pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"])
     df = df.rename(
         columns={
             "Open": "open",
@@ -55,6 +40,11 @@ def get_daily_adjusted(
             "Volume": "volume",
         }
     )
+    df = df.reset_index()
+    if "Date" in df.columns:
+        df = df.rename(columns={"Date": "date"})
+    if "date" not in df.columns:
+        df["date"] = pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
     df["ticker"] = ticker
     return df[["date", "open", "high", "low", "close", "adj_close", "volume", "ticker"]]
 

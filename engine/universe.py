@@ -3,7 +3,7 @@ import pandas as pd
 import pandas.api.types as pdt
 
 
-def members_on_date(m: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
+def members_on_date(m: pd.DataFrame, date) -> pd.DataFrame:
     """Return members active on ``date``. Be defensive about dtypes."""
     date = pd.to_datetime(date)
     df = m
