@@ -9,7 +9,7 @@ from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: "Storage"})
 def _load_members(_storage: Storage) -> pd.DataFrame:
     """Cached membership loader that ignores the Storage instance."""
     df = load_membership(_storage)
@@ -37,7 +37,7 @@ def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: "Storage"})
 def _price_bytes(_storage: Storage, ticker: str) -> bytes:
     """Cached download of the price parquet (keyed by ticker)."""
     return _storage.read_bytes(f"prices/{ticker}.parquet")
