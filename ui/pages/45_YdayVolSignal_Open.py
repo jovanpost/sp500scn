@@ -57,7 +57,11 @@ def _run_signal_scan(
     for t in tickers:
         back_days = max(lookback + 2, 70)
         start = (pd.Timestamp(D) - pd.Timedelta(days=back_days * 2)).date()
-        hist = get_daily_adjusted(t, start=start, end=pd.Timestamp(D).date())
+        hist = get_daily_adjusted(
+            t,
+            start=start,
+            end=(pd.Timestamp(D) + pd.Timedelta(days=1)).date(),
+        )
         if hist.empty or D not in hist.index:
             continue
         idx = hist.index.get_loc(D)
