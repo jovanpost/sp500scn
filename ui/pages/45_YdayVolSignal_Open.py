@@ -3,26 +3,28 @@ import io
 import pandas as pd
 import streamlit as st
 from data_lake.storage import Storage
+from data_lake.membership import load_membership
 from engine.features import atr
 from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
-@st.cache_data(
-    show_spinner=False,
-    # Storage is not hashable; provide a stable hash so Streamlit can cache.
-    hash_funcs={Storage: lambda _: "Storage"},
-)
-def _load_members(storage: Storage) -> pd.DataFrame:
-    """Load membership data and normalize date columns."""
-    blob = storage.read_bytes("membership/sp500_members.parquet")
-    df = pd.read_parquet(io.BytesIO(blob))
-    # Normalize date dtypes for safe comparisons downstream.
+@st.cache_data(show_spinner=False)
+def _load_members(_storage: Storage) -> pd.DataFrame:
+    """
+    Cached membership loader.
+    Leading underscore tells Streamlit not to hash the Storage param,
+    avoiding UnhashableParamError.
+    """
+    df = load_membership(_storage)
+    # Ensure expected dtypes (robust against CSV/Parquet differences)
     for col in ("start_date", "end_date"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
         else:
+            # make sure column exists so universe filter doesn't fail
             df[col] = pd.NaT
+    df["ticker"] = df["ticker"].astype(str).str.upper()
     return df
 
 
@@ -57,7 +59,6 @@ def render_page() -> None:
 
     # ---- Inputs ----
     D = st.date_input("Entry day (D)", value=pd.Timestamp.today().normalize())
-    D = pd.Timestamp(D)
     min_close_up_pct = st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5, format="%.2f") / 100.0
     vol_window       = st.number_input("Volume lookback (sessions)", value=63, min_value=5, step=5)
     min_vol_mult     = st.number_input(
@@ -90,8 +91,10 @@ def render_page() -> None:
     horizon = st.number_input("Horizon (days)", value=30, step=5)
 
     if st.button("Run scan"):
+        # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
+        D_ts = pd.Timestamp(D)
         members = _load_members(storage)
-        active = members_on_date(members, D)
+        active = members_on_date(members, D_ts)
 
         # Quick visibility when a run yields 0 matches.
         show_debug = st.checkbox("Show debug", value=False)
@@ -99,7 +102,7 @@ def render_page() -> None:
             try:
                 st.write({
                     "active_members": int(len(active)),
-                    "entry_day": str(D),
+                    "entry_day": str(D_ts),
                     "min_close_up_pct": min_close_up_pct,
                     "vol_lookback_sessions": vol_window,
                     "min_vol_multiple": min_vol_mult,
@@ -120,9 +123,9 @@ def render_page() -> None:
             prog.progress(i/len(tickers), text=f"{i}/{len(tickers)} {ticker}")
             try:
                 df = _load_prices(storage, ticker)
-                if D not in df.index:
+                if D_ts not in df.index:
                     continue
-                s_loc = df.index.get_loc(D) - 1
+                s_loc = df.index.get_loc(D_ts) - 1
                 if s_loc < 1:
                     continue
                 S = df.index[s_loc]  # signal day = D-1
@@ -158,15 +161,15 @@ def render_page() -> None:
                     continue
 
                 # --- entry at D open if gap condition passes ---
-                open_D = float(df.loc[D, 'open'])
+                open_D = float(df.loc[D_ts, 'open'])
                 if open_D < close_S * (1 + float(min_gap_on_open)):
                     continue
 
-                hits = time_to_hit(df, D, open_D, tps, int(horizon))
+                hits = time_to_hit(df, D_ts, open_D, tps, int(horizon))
                 rows.append({
                     "ticker": ticker,
                     "signal_day": pd.to_datetime(S).date(),
-                    "entry_day": pd.to_datetime(D).date(),
+                    "entry_day": pd.to_datetime(D_ts).date(),
                     "ret1d_S": ret1d_S,
                     "vol_mult_S": vol_mult_S,
                     "ATR21_$": float(atr21) if pd.notna(atr21) else None,
@@ -188,7 +191,7 @@ def render_page() -> None:
             st.download_button(
                 "Download CSV",
                 out.to_csv(index=False).encode(),
-                file_name=f"yday_vol_signal_{D.date()}.csv",
+                file_name=f"yday_vol_signal_{D_ts.date()}.csv",
                 mime="text/csv",
             )
 
