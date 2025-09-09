@@ -60,7 +60,8 @@ def render_page() -> None:
 
     # ---- Inputs ----
     D_input = st.date_input("Entry day (D)", value=pd.Timestamp.today().date())
-    D = pd.Timestamp(D_input)
+    # Coerce to ``Timestamp`` to avoid ``str`` vs ``Timestamp`` comparisons downstream.
+    D = pd.to_datetime(D_input)
     min_close_up_pct = st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5, format="%.2f") / 100.0
     vol_window       = st.number_input("Volume lookback (sessions)", value=63, min_value=5, step=5)
     min_vol_mult     = st.number_input(
