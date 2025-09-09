@@ -2,18 +2,14 @@ from __future__ import annotations
 import pandas as pd
 
 
-def members_on_date(members_df: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
-    """
-    members_df columns: ['ticker','start_date','end_date'] (strings or datetimes).
-    Return rows active on 'date'. Treat null end_date as active.
-    """
-    m = members_df.copy()
-    m['start_date'] = pd.to_datetime(m['start_date'], errors='coerce')
-    if 'end_date' in m.columns:
-        m['end_date'] = pd.to_datetime(m['end_date'], errors='coerce')
-    else:
-        m['end_date'] = pd.NaT
-    return m[
-        (m['start_date'] <= date)
-        & ((m['end_date'].isna()) | (date <= m['end_date']))
-    ]
+def members_on_date(m: pd.DataFrame, date) -> pd.DataFrame:
+    """Return members active on `date`. Robust to string date columns."""
+    df = m.copy()
+    D = pd.to_datetime(date).normalize()
+    for col in ("start_date", "end_date"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+        else:
+            df[col] = pd.NaT
+    mask = (df["start_date"] <= D) & (df["end_date"].isna() | (D <= df["end_date"]))
+    return df.loc[mask].copy()
