@@ -23,10 +23,15 @@ def _load_members(_storage: Storage) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NaT
         else:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[col] = pd.to_datetime(df[col], errors="coerce").dt.tz_localize(None)
     if "ticker" in df.columns:
         df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     return df
+
+
+def _diagnostics_block(label: str, n: int) -> None:
+    """Render a single diagnostics line."""
+    st.markdown(f"- **{label}**: `{n}`")
 
 
 @st.cache_data(show_spinner=False)
@@ -60,8 +65,8 @@ def render_page() -> None:
 
     # ---- Inputs ----
     D_input = st.date_input("Entry day (D)", value=pd.Timestamp.today().date())
-    # Coerce to ``Timestamp`` to avoid ``str`` vs ``Timestamp`` comparisons downstream.
-    D = pd.to_datetime(D_input)
+    # Coerce to timezone-naive ``Timestamp`` to avoid ``str`` vs ``Timestamp`` comparisons downstream.
+    D = pd.to_datetime(D_input).tz_localize(None)
     min_close_up_pct = st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5, format="%.2f") / 100.0
     vol_window       = st.number_input("Volume lookback (sessions)", value=63, min_value=5, step=5)
     min_vol_mult     = st.number_input(
@@ -93,34 +98,33 @@ def render_page() -> None:
     tps = st.multiselect("TP set", options=[0.02,0.03,0.04,0.05,0.08,0.10], default=[0.02,0.04])
     horizon = st.number_input("Horizon (days)", value=30, step=5)
 
+    show_diagnostics = st.checkbox("Show filter diagnostics", value=False)
+
     if st.button("Run scan"):
         # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
         members = _load_members(storage)
         active = members_on_date(members, D)
         st.caption(f"Active S&P members on {D.date()}: {len(active)}")
 
-        # Quick visibility when a run yields 0 matches.
-        show_debug = st.checkbox("Show debug", value=False)
-        if show_debug:
-            try:
-                st.write({
-                    "active_members": int(len(active)),
-                    "entry_day": str(D),
-                    "min_close_up_pct": min_close_up_pct,
-                    "vol_lookback_sessions": vol_window,
-                    "min_vol_multiple": min_vol_mult,
-                    "min_gap_open_vs_prev_close_pct": min_gap_on_open,
-                })
-            except Exception as _e:
-                st.write({"debug_error": str(_e)})
-
         if active.empty:
             st.warning("No active S&P members on selected date.")
             return
 
-        rows = []
+        rows: list[dict] = []
         tickers = active['ticker'].unique().tolist()
         prog = st.progress(0.0, text=f"Scanning {len(tickers)} tickers…")
+
+        counts = {
+            "active": len(tickers),
+            "price": 0,
+            "close_up": 0,
+            "volume": 0,
+            "atr_abs": 0,
+            "atr_pct": 0,
+            "ret21": 0,
+            "dollar_liq": 0,
+            "gap": 0,
+        }
 
         for i, ticker in enumerate(tickers, 1):
             prog.progress(i/len(tickers), text=f"{i}/{len(tickers)} {ticker}")
@@ -146,27 +150,39 @@ def render_page() -> None:
                 avg_dol_20_S = (df['close']*df['volume']).rolling(20, min_periods=20).mean().loc[S]
 
                 # --- mandatory filters ---
-                if close_S < float(min_price): 
+                if close_S < float(min_price):
                     continue
+                counts["price"] += 1
                 if ret1d_S < float(min_close_up_pct):
                     continue
+                counts["close_up"] += 1
                 if vol_mult_S < float(min_vol_mult):
                     continue
+                counts["volume"] += 1
 
                 # --- optional filters ---
-                if use_atr_abs and (pd.isna(atr21) or atr21 < float(min_atr_abs)):
-                    continue
-                if use_atr_pct and (pd.isna(atr_pct_S) or atr_pct_S < float(min_atr_pct)):
-                    continue
-                if use_ret21 and (pd.isna(ret21_S) or ret21_S < float(min_ret21)):
-                    continue
-                if use_dollar_liq and (pd.isna(avg_dol_20_S) or avg_dol_20_S < float(min_avg_dol_vol)):
-                    continue
+                if use_atr_abs:
+                    if pd.isna(atr21) or atr21 < float(min_atr_abs):
+                        continue
+                    counts["atr_abs"] += 1
+                if use_atr_pct:
+                    if pd.isna(atr_pct_S) or atr_pct_S < float(min_atr_pct):
+                        continue
+                    counts["atr_pct"] += 1
+                if use_ret21:
+                    if pd.isna(ret21_S) or ret21_S < float(min_ret21):
+                        continue
+                    counts["ret21"] += 1
+                if use_dollar_liq:
+                    if pd.isna(avg_dol_20_S) or avg_dol_20_S < float(min_avg_dol_vol):
+                        continue
+                    counts["dollar_liq"] += 1
 
                 # --- entry at D open if gap condition passes ---
                 open_D = float(df.loc[D, 'open'])
                 if open_D < close_S * (1 + float(min_gap_on_open)):
                     continue
+                counts["gap"] += 1
 
                 hits = time_to_hit(df, D, open_D, tps, int(horizon))
                 rows.append({
@@ -186,8 +202,41 @@ def render_page() -> None:
             except Exception:
                 continue
 
+        if show_diagnostics:
+            st.subheader("Diagnostics")
+            _diagnostics_block("Active S&P members on D", counts["active"])
+            _diagnostics_block(f"After min close on D-1 ≥ ${min_price:.2f}", counts["price"])
+            _diagnostics_block(f"After min close-up {min_close_up_pct*100:.2f}%", counts["close_up"])
+            _diagnostics_block(
+                f"After vol ≥ {min_vol_mult:.2f}× avg({int(vol_window)}d)",
+                counts["volume"],
+            )
+            if use_atr_abs:
+                _diagnostics_block(f"After ATR(21) ≥ ${float(min_atr_abs):.2f}", counts["atr_abs"])
+            if use_atr_pct:
+                _diagnostics_block(
+                    f"After ATR% ≥ {float(min_atr_pct)*100:.2f}%",
+                    counts["atr_pct"],
+                )
+            if use_ret21:
+                _diagnostics_block(
+                    f"After Ret21 ≥ {float(min_ret21)*100:.2f}%",
+                    counts["ret21"],
+                )
+            if use_dollar_liq:
+                _diagnostics_block(
+                    f"After avg $ vol 20d ≥ {int(min_avg_dol_vol):,}",
+                    counts["dollar_liq"],
+                )
+            _diagnostics_block(
+                f"After open gap ≥ {min_gap_on_open*100:.2f}%",
+                counts["gap"],
+            )
+
         if not rows:
-            st.warning("No matches for the selected filters.")
+            st.info(
+                "No matches for the selected filters. Open the diagnostics above to see where they dropped out."
+            )
         else:
             out = pd.DataFrame(rows).sort_values(["vol_mult_S","ret1d_S"], ascending=[False, False])
             st.dataframe(out, use_container_width=True)
