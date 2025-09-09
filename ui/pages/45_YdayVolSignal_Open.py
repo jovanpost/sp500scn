@@ -9,25 +9,19 @@ from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
-@st.cache_data(show_spinner=False)
-def _load_members(blob: bytes) -> pd.DataFrame:
-    """Cached membership loader keyed by file bytes."""
-    df = pd.read_parquet(io.BytesIO(blob))
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+def _load_members(_storage: Storage) -> pd.DataFrame:
+    """Cached membership loader that ignores the Storage instance."""
+    df = load_membership(_storage)
     # Ensure expected dtypes (robust against CSV/Parquet differences)
     for col in ("start_date", "end_date"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-        else:
-            # make sure column exists so universe filter doesn't fail
+        if col not in df.columns:
             df[col] = pd.NaT
-    df["ticker"] = df["ticker"].astype(str).str.upper()
+        else:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    if "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     return df
-
-
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: None})
-def _load_members_preview(storage: Storage) -> pd.DataFrame:
-    """Fallback to bundled preview when membership parquet is missing."""
-    return load_membership(storage)
 
 
 @st.cache_data(show_spinner=False)
@@ -43,10 +37,10 @@ def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: None})
-def _price_bytes(storage: Storage, ticker: str) -> bytes:
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+def _price_bytes(_storage: Storage, ticker: str) -> bytes:
     """Cached download of the price parquet (keyed by ticker)."""
-    return storage.read_bytes(f"prices/{ticker}.parquet")
+    return _storage.read_bytes(f"prices/{ticker}.parquet")
 
 
 def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
@@ -95,11 +89,9 @@ def render_page() -> None:
     if st.button("Run scan"):
         # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
         D_ts = pd.Timestamp(D)
-        try:
-            members = _load_members(storage.read_bytes("membership/sp500_members.parquet"))
-        except FileNotFoundError:
-            members = _load_members_preview(storage)
+        members = _load_members(storage)
         active = members_on_date(members, D_ts)
+        st.caption(f"Active S&P members on {D_ts.date()}: {len(active)}")
 
         # Quick visibility when a run yields 0 matches.
         show_debug = st.checkbox("Show debug", value=False)

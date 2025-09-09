@@ -20,10 +20,11 @@ MAX_RETRIES = 3
 
 def _fetch(job: IngestJob) -> pd.DataFrame:
     ticker = job["ticker"]
+    yf_symbol = str(ticker).strip().lstrip("$").replace(".", "-")
     start, end = job["start"], job["end"]
     for attempt in range(MAX_RETRIES):
         try:
-            df = yf.Ticker(ticker).history(
+            df = yf.Ticker(yf_symbol).history(
                 interval="1d", start=start, end=end, auto_adjust=True, actions=True
             )
             break
@@ -35,6 +36,7 @@ def _fetch(job: IngestJob) -> pd.DataFrame:
     if df.empty:
         df = pd.DataFrame({
             # yfinance's canonical column names
+            "Date": pd.Series(dtype="datetime64[ns]"),
             "Open": pd.Series(dtype="float64"),
             "High": pd.Series(dtype="float64"),
             "Low": pd.Series(dtype="float64"),
