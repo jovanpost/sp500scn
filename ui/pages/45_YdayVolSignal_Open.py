@@ -96,8 +96,12 @@ def render_page() -> None:
         # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
         D_ts = pd.Timestamp(D)
         try:
-            members = _load_members(storage.read_bytes("membership/sp500_members.parquet"))
-        except FileNotFoundError:
+            key = "membership/sp500_members.parquet"
+            if storage.exists(key):
+                members = _load_members(storage.read_bytes(key))
+            else:
+                members = _load_members_preview(storage)
+        except Exception:
             members = _load_members_preview(storage)
         active = members_on_date(members, D_ts)
 
