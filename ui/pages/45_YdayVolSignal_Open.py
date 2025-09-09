@@ -9,10 +9,11 @@ from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: "Storage"})
+@st.cache_data(show_spinner=False)
 def _load_members(_storage: Storage) -> pd.DataFrame:
     """Cached membership loader that ignores the Storage instance."""
-    df = load_membership(_storage)
+    storage = _storage
+    df = load_membership(storage)
     # Ensure expected dtypes (robust against CSV/Parquet differences)
     for col in ("start_date", "end_date"):
         if col not in df.columns:
@@ -37,14 +38,15 @@ def _prices_from_bytes(ticker: str, blob: bytes) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: "Storage"})
+@st.cache_data(show_spinner=False)
 def _price_bytes(_storage: Storage, ticker: str) -> bytes:
     """Cached download of the price parquet (keyed by ticker)."""
-    return _storage.read_bytes(f"prices/{ticker}.parquet")
+    storage = _storage
+    return storage.read_bytes(f"prices/{ticker}.parquet")
 
 
-def _load_prices(_storage: Storage, ticker: str) -> pd.DataFrame:
-    blob = _price_bytes(_storage, ticker)
+def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame:
+    blob = _price_bytes(storage, ticker)
     return _prices_from_bytes(ticker, blob)
 
 
