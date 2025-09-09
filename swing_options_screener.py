@@ -72,7 +72,7 @@ def _fmt_ts(ts):
 def _get_history(ticker):
     # UNADJUSTED daily (aligns better with Finviz)
     start = pd.Timestamp.today() - pd.DateOffset(months=16)
-    return fetch_history(ticker, start=start, auto_adjust=False)
+    return fetch_history(ticker, start=start)
 
 def _atr_from_ohlc(df, win):
     hl  = df['High'] - df['Low']

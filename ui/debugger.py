@@ -121,7 +121,6 @@ def diagnose_ticker(
         df = fetch_history(
             symbol,
             start=pd.Timestamp.today() - pd.DateOffset(months=6),
-            auto_adjust=False,
         )
 
     entry = prev_close = today_vol = None
