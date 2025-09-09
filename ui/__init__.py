@@ -1,12 +1,9 @@
-from .scan import render_scanner_tab
-from .history import render_history_tab
-from .debugger import render_debugger_tab
+# Avoid importing heavy modules at import-time; pages import what they need locally.
 from .layout import setup_page, render_header
+from .history import render_history_tab
 
 __all__ = [
-    "render_scanner_tab",
-    "render_history_tab",
-    "render_debugger_tab",
     "setup_page",
     "render_header",
+    "render_history_tab",
 ]
