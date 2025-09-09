@@ -17,3 +17,9 @@ def members_on_date(members_df: pd.DataFrame, date: pd.Timestamp) -> pd.DataFram
         (m['start_date'] <= date)
         & ((m['end_date'].isna()) | (date <= m['end_date']))
     ]
+
+
+def missing_dates(df: pd.DataFrame, dates: list[pd.Timestamp]) -> list[pd.Timestamp]:
+    """Return list of dates from ``dates`` missing in ``df``'s index."""
+    idx = pd.DatetimeIndex(df.index)
+    return [pd.Timestamp(d) for d in dates if pd.Timestamp(d) not in idx]
