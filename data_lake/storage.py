@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os, io, json, base64, pathlib, tempfile, logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 try:
     from supabase import create_client  # type: ignore
@@ -61,20 +61,24 @@ def _classify_jwt(k: str) -> dict:
         return {"valid": False, "kind": "invalid_jwt", "error": str(e)}
 
 
-def _bucket_names(client) -> set[str]:
-    """Return set of bucket names, handling APIResponse vs list."""
-    try:
-        resp = client.storage.list_buckets()
-        buckets = getattr(resp, "data", resp) or []
-        names = []
-        for b in buckets:
-            if isinstance(b, dict):
-                names.append(b.get("name"))
-            else:
-                names.append(getattr(b, "name", None))
-        return {n for n in names if n}
-    except Exception:
-        return set()
+def _as_buckets_list(resp: Any):
+    # storage3 may return list, dict with 'data', or object with .data
+    if resp is None:
+        return []
+    if isinstance(resp, list):
+        return resp
+    if isinstance(resp, dict) and "data" in resp:
+        return resp["data"]
+    if hasattr(resp, "data"):
+        return resp.data
+    return []
+
+
+def _bucket_name(b: Any) -> Optional[str]:
+    # dict or object
+    if isinstance(b, dict):
+        return b.get("name") or b.get("id")
+    return getattr(b, "name", None) or getattr(b, "id", None)
 
 
 class Storage:
@@ -95,16 +99,18 @@ class Storage:
             else:
                 url = creds[0]  # type: ignore
                 self.client = create_client(url, key)
-                # Ensure a bucket named 'lake' exists (support APIResponse or list returns)
+                # Ensure a bucket named 'lake' exists (no public kw in storage3==0.12.x)
                 try:
-                    names = _bucket_names(self.client)
-                    if "lake" not in names:
-                        # Create without SDK-specific kwargs to avoid signature mismatches.
-                        self.client.storage.create_bucket("lake")
-                        names.add("lake")
+                    resp = self.client.storage.list_buckets()
+                    names = {_bucket_name(b) for b in _as_buckets_list(resp)}
                     self.bucket_exists = "lake" in names
+                    if not self.bucket_exists:
+                        try:
+                            self.client.storage.create_bucket("lake")
+                            self.bucket_exists = True
+                        except Exception:
+                            pass
                 except Exception:
-                    # Non-fatal: if listing/creating fails here, uploads will surface a clear error later.
                     self.bucket_exists = False
                 self.bucket = self.client.storage.from_("lake")
         else:
@@ -145,6 +151,14 @@ class Storage:
             return resp
         p = (LOCAL_ROOT / path)
         return p.read_bytes()
+
+    def read_parquet(self, path: str):
+        import pandas as pd
+        if self.mode == "supabase":
+            buf = self.bucket.download(path)
+            return pd.read_parquet(io.BytesIO(buf))
+        p = (LOCAL_ROOT / path)
+        return pd.read_parquet(p)
 
     def exists(self, path: str) -> bool:
         if self.mode == "supabase":
@@ -254,12 +268,16 @@ class Storage:
             if self.mode != "supabase":
                 info["note"] = "local mode"
                 return info
-            names = _bucket_names(self.client)
-            info["buckets"] = sorted(names)
+            resp = self.client.storage.list_buckets()
+            names = {_bucket_name(b) for b in _as_buckets_list(resp)}
+            info["buckets"] = sorted(n for n in names if n)
             info["lake_exists"] = "lake" in names
             if not info["lake_exists"]:
-                self.client.storage.create_bucket("lake", public=True)
-                info["created_lake"] = True
+                try:
+                    self.client.storage.create_bucket("lake")
+                    info["created_lake"] = True
+                except Exception:
+                    info["created_lake"] = False
             bkt = self.client.storage.from_("lake")
             opts = {"upsert": "true", "contentType": "text/plain"}
             tmp = tempfile.NamedTemporaryFile(delete=False)
