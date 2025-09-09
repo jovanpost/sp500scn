@@ -3,20 +3,15 @@ import io
 import pandas as pd
 import streamlit as st
 from data_lake.storage import Storage
-from data_lake.membership import load_membership
 from engine.features import atr
 from engine.universe import members_on_date
 from engine.replay import time_to_hit
 
 
 @st.cache_data(show_spinner=False)
-def _load_members(_storage: Storage) -> pd.DataFrame:
-    """
-    Cached membership loader.
-    Leading underscore tells Streamlit not to hash the Storage param,
-    avoiding UnhashableParamError.
-    """
-    df = load_membership(_storage)
+def _load_members(blob: bytes) -> pd.DataFrame:
+    """Cached membership loader keyed by file bytes."""
+    df = pd.read_parquet(io.BytesIO(blob))
     # Ensure expected dtypes (robust against CSV/Parquet differences)
     for col in ("start_date", "end_date"):
         if col in df.columns:
@@ -93,7 +88,7 @@ def render_page() -> None:
     if st.button("Run scan"):
         # Coerce UI date into pandas Timestamp to avoid Timestamp vs str comparisons
         D_ts = pd.Timestamp(D)
-        members = _load_members(storage)
+        members = _load_members(storage.read_bytes("membership/sp500_members.parquet"))
         active = members_on_date(members, D_ts)
 
         # Quick visibility when a run yields 0 matches.
