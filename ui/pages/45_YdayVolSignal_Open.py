@@ -112,6 +112,7 @@ def render_page() -> None:
                     continue
                 S = df.index[s_loc]  # signal day = D-1
 
+                # --- metrics as of S ---
                 close_S = float(df.loc[S, 'close'])
                 close_Sm1 = float(df.iloc[s_loc - 1]['close'])
                 ret1d_S = (close_S / close_Sm1) - 1.0
@@ -124,6 +125,7 @@ def render_page() -> None:
                 ret21_S = df['close'].pct_change(21).loc[S]
                 avg_dol_20_S = (df['close'] * df['volume']).rolling(20, min_periods=20).mean().loc[S]
 
+                # --- mandatory filters ---
                 if close_S < float(min_price):
                     continue
                 if ret1d_S < float(min_close_up_pct):
@@ -131,6 +133,7 @@ def render_page() -> None:
                 if vol_mult_S < float(min_vol_mult):
                     continue
 
+                # --- optional filters ---
                 if use_atr_abs and (pd.isna(atr21) or atr21 < float(min_atr_abs)):
                     continue
                 if use_atr_pct and (pd.isna(atr_pct_S) or atr_pct_S < float(min_atr_pct)):
@@ -142,6 +145,7 @@ def render_page() -> None:
                 ):
                     continue
 
+                # --- entry at D open if gap condition passes ---
                 open_D = float(df.loc[D, 'open'])
                 if open_D < close_S * (1 + float(min_gap_on_open)):
                     continue
