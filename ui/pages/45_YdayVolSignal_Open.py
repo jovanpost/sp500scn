@@ -1,6 +1,7 @@
 import io
 import datetime as dt
 import time
+import logging
 from dataclasses import dataclass, asdict
 
 import pandas as pd
@@ -160,12 +161,16 @@ def _run_signal_scan(
         results.append(stage_info)
 
     stats.final = len(results)
-    if results:
-        res_df = pd.DataFrame(results)
-        if "gap_open_pct" in res_df.columns:
-            res_df = res_df.sort_values("gap_open_pct", ascending=False)
-    else:
+
+    res_df = pd.DataFrame(results)
+    if res_df.empty:
         res_df = pd.DataFrame(columns=cols)
+    elif "gap_open_pct" not in res_df.columns:
+        logging.info("No 'gap_open_pct' column found in scan results; returning empty DataFrame")
+        res_df = pd.DataFrame(columns=cols)
+    else:
+        res_df = res_df.sort_values("gap_open_pct", ascending=False)
+
     return res_df, stats, fails, timeout_msg
 
 
