@@ -1,243 +1,258 @@
-import io
-import datetime as dt
-import time
-from dataclasses import dataclass, asdict
-
+import logging
 import pandas as pd
+import numpy as np
+import datetime as dt
 import streamlit as st
-from data_lake.storage import Storage
-from engine.universe import members_on_date
+from typing import Dict, Any, Tuple, List
 
 
-@dataclass
-class ScanStats:
-    universe: int = 0
-    loaded: int = 0
-    close_up: int = 0
-    vol: int = 0
-    gap: int = 0
-    optional: int = 0
-    sr: int = 0
-    final: int = 0
-
-
-@st.cache_resource
-def _get_storage() -> Storage:
-    return Storage()
+def _emit(msg: str):
+    logging.info(msg)
+    st.write(msg)
 
 
 @st.cache_data(show_spinner=False)
-def _load_members(_storage) -> pd.DataFrame:
-    raw = _storage.read_bytes("membership/sp500_members.parquet")
-    df = pd.read_parquet(io.BytesIO(raw))
-    df["start_date"] = pd.to_datetime(df["start_date"])
-    df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce")
-    return df
+def _load_members(_bucket_key: str) -> pd.DataFrame:
+    from data_lake.storage import Storage
+
+    s = Storage()
+    raw = s.read_bytes("membership/sp500_members.parquet")
+    m = pd.read_parquet(pd.io.common.BytesIO(raw))
+    m["start_date"] = pd.to_datetime(m["start_date"], errors="coerce", utc=True).dt.tz_localize(None)
+    m["end_date"] = pd.to_datetime(m["end_date"], errors="coerce", utc=True).dt.tz_localize(None)
+    return m
 
 
-def _run_signal_scan(
-    active: pd.DataFrame,
-    *,
-    D,
-    lookback,
-    min_close_up,
-    min_vol_mult,
-    min_gap_next_open,
-    limit=None,
-    explain=False,
-    use_sr=True,
-    max_runtime=30,
-) -> tuple[pd.DataFrame, ScanStats, dict[str, list[dict]], str | None]:
-    """Run scan returning (results, stats, failures, timeout_msg)."""
+def members_on_date(m: pd.DataFrame, date: dt.date) -> pd.DataFrame:
+    D = pd.to_datetime(date)
+    start = pd.to_datetime(m["start_date"])
+    end = pd.to_datetime(m["end_date"])
+    mask = (start <= D) & (end.isna() | (D <= end))
+    return m.loc[mask]
 
-    from data_lake.provider import get_daily_adjusted
 
-    stats = ScanStats(universe=len(active))
-    fails: dict[str, list[dict]] = {"close_up": [], "vol": [], "gap": [], "sr": []}
+def _load_prices(storage, ticker: str) -> pd.DataFrame | None:
+    try:
+        path = f"prices/{ticker}.parquet"
+        raw = storage.read_bytes(path)
+        df = pd.read_parquet(pd.io.common.BytesIO(raw))
+        df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
+        return df.sort_values("date")
+    except Exception as e:
+        logging.warning("missing or unreadable price file for %s: %s", ticker, e)
+        return None
 
-    tickers = sorted(active["ticker"].dropna().unique().tolist())
-    if limit:
-        tickers = tickers[:limit]
-    if not tickers:
-        return pd.DataFrame(), stats, fails, None
 
+def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[str, Any] | None:
     D = pd.to_datetime(D)
-    results: list[dict] = []
-    start_time = time.time()
-    timeout_msg = None
+
+    if D not in df["date"].values:
+        idx = df["date"].searchsorted(D)
+        if idx == 0 or idx >= len(df):
+            return None
+        D = df["date"].iloc[idx]
+
+    idx = df.index[df["date"] == D]
+    if len(idx) == 0:
+        return None
+    i = idx[0]
+    if i == 0:
+        return None
+    dm1 = i - 1
+
+    close_up_pct = (df.loc[dm1, "close"] / df.loc[dm1 - 1, "close"] - 1.0) * 100 if dm1 > 0 else np.nan
+
+    w0 = max(0, dm1 - vol_lookback + 1)
+    lookback_vol = df.loc[w0:dm1, "volume"].mean()
+    vol_multiple = df.loc[dm1, "volume"] / lookback_vol if lookback_vol and not np.isnan(lookback_vol) else np.nan
+
+    gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
+
+    tr = np.maximum.reduce([
+        df["high"] - df["low"],
+        (df["high"] - df["close"].shift()).abs(),
+        (df["low"] - df["close"].shift()).abs()
+    ])
+    atr = tr.rolling(21, min_periods=1).mean()
+    atr21 = float(atr.loc[dm1]) if dm1 in atr.index else np.nan
+    atr21_pct = atr21 / df.loc[dm1, "close"] * 100 if df.loc[dm1, "close"] else np.nan
+
+    if dm1 >= 21:
+        ret21 = (df.loc[dm1, "close"] / df.loc[dm1-21, "close"] - 1.0) * 100
+    else:
+        ret21 = np.nan
+
+    lo_win = df.loc[max(0, dm1-21):dm1, "low"].min()
+    hi_win = df.loc[max(0, dm1-21):dm1, "high"].max()
+
+    entry = float(df.loc[i, "open"])
+    support = float(lo_win)
+    resistance = float(hi_win)
+    sr_ratio = np.nan
+    tp_halfway_pct = np.nan
+    if support > 0 and resistance > entry:
+        up = resistance - entry
+        down = entry - support
+        sr_ratio = up / down if down > 0 else np.nan
+        tp_halfway_pct = (entry + up/2) / entry - 1.0
+
+    return {
+        "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
+        "vol_multiple": float(vol_multiple) if not np.isnan(vol_multiple) else np.nan,
+        "gap_open_pct": float(gap_open_pct),
+        "atr21": float(atr21) if not np.isnan(atr21) else np.nan,
+        "atr21_pct": float(atr21_pct) if not np.isnan(atr21_pct) else np.nan,
+        "ret21_pct": float(ret21) if not np.isnan(ret21) else np.nan,
+        "support": support,
+        "resistance": resistance,
+        "sr_ratio": sr_ratio,
+        "tp_halfway_pct": float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan,
+        "entry_open": entry,
+    }
+
+
+def _run_signal_scan(storage,
+                     tickers: List[str],
+                     D: dt.date,
+                     min_close_up_pct: float,
+                     vol_lookback: int,
+                     min_vol_multiple: float,
+                     min_gap_open_pct: float,
+                     opts: Dict[str, Any],
+                     dry_run_n: int | None = None
+                     ) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
+
+    from collections import OrderedDict
+
+    stats = OrderedDict(universe=len(tickers), loaded=0,
+                        after_close_up=0, after_vol=0, after_gap=0,
+                        after_optional=0, after_sr=0, final=0)
+    dropped_examples: List[str] = []
+
+    if dry_run_n:
+        tickers = sorted(tickers)[:dry_run_n]
+
+    results: List[Dict[str, Any]] = []
 
     for t in tickers:
-        if time.time() - start_time > max_runtime:
-            timeout_msg = f"Timed out while processing {t}"
-            break
-
-        back_days = max(lookback + 2, 70)
-        start = (pd.Timestamp(D) - pd.Timedelta(days=back_days * 2)).date()
-        hist = get_daily_adjusted(
-            t,
-            start=start,
-            end=(pd.Timestamp(D) + pd.Timedelta(days=1)).date(),
-        )
-        if hist.empty or D not in hist.index:
+        df = _load_prices(storage, t)
+        if df is None or len(df) < 30:
             continue
-        idx = hist.index.get_loc(D)
-        d1 = hist.index[idx - 1] if idx > 0 else None
-        if d1 is None:
+        stats["loaded"] += 1
+
+        m = _compute_metrics(df, D, vol_lookback)
+        if not m:
             continue
 
-        d1_row = hist.loc[d1]
-        window = hist.loc[:d1].tail(lookback)
-        if window.empty or window["volume"].mean() == 0:
-            continue
-
-        stats.loaded += 1
-
-        close_up = (
-            (d1_row["close"] - window.iloc[-2]["close"]) / window.iloc[-2]["close"] * 100.0
-            if len(window) >= 2
-            else 0.0
-        )
-        vol_mult = (
-            (d1_row["volume"] / window["volume"].mean()) if window["volume"].mean() else 0.0
-        )
-
-        d_row = hist.loc[D] if D in hist.index else None
-        if d_row is None:
-            continue
-        gap_pct = (d_row["open"] - d1_row["close"]) / d1_row["close"] * 100.0
-
-        stage_info = {
-            "ticker": t,
-            "d1_close_up_pct": close_up,
-            "d1_vol_mult": vol_mult,
-            "gap_open_pct": gap_pct,
-        }
-
-        if close_up >= min_close_up:
-            stats.close_up += 1
+        if not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close_up_pct:
+            pass
         else:
-            if explain:
-                fails["close_up"].append({"ticker": t, "value": close_up})
+            dropped_examples.append(f"{t} close_up {m['close_up_pct']}")
             continue
+        stats["after_close_up"] += 1
 
-        if vol_mult >= min_vol_mult:
-            stats.vol += 1
+        if not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol_multiple:
+            pass
         else:
-            if explain:
-                fails["vol"].append({"ticker": t, "value": vol_mult})
+            dropped_examples.append(f"{t} vol_mult {m['vol_multiple']}")
             continue
+        stats["after_vol"] += 1
 
-        if gap_pct >= min_gap_next_open:
-            stats.gap += 1
+        if m["gap_open_pct"] >= min_gap_open_pct:
+            pass
         else:
-            if explain:
-                fails["gap"].append({"ticker": t, "value": gap_pct})
+            dropped_examples.append(f"{t} gap {m['gap_open_pct']}")
             continue
+        stats["after_gap"] += 1
 
-        stats.optional += 1
+        ok = True
+        if v := opts.get("min_atr_dollars"):
+            ok &= not np.isnan(m["atr21"]) and (m["atr21"] >= v)
+        if v := opts.get("min_atr_pct"):
+            ok &= not np.isnan(m["atr21_pct"]) and (m["atr21_pct"] >= v)
+        if v := opts.get("min_close_dollars"):
+            ok &= (m["entry_open"] >= v)
+        if v := opts.get("min_ret21_pct"):
+            ok &= not np.isnan(m["ret21_pct"]) and (m["ret21_pct"] >= v)
+        if not ok:
+            dropped_examples.append(f"{t} optional filters")
+            continue
+        stats["after_optional"] += 1
 
-        if use_sr:
-            prior = hist.loc[:d1].tail(21)
-            support = prior["low"].min()
-            resistance = prior["high"].max()
-            entry = d_row["open"]
-            sr_ratio = (
-                (resistance - entry) / (entry - support) if entry > support else 0.0
-            )
-            stage_info["sr_ratio"] = sr_ratio
-            if sr_ratio >= 2.0:
-                stats.sr += 1
-            else:
-                if explain:
-                    fails["sr"].append({"ticker": t, "value": sr_ratio})
+        if opts.get("require_sr", True):
+            if np.isnan(m["sr_ratio"]) or m["sr_ratio"] < opts.get("sr_ratio_min", 2.0):
+                dropped_examples.append(f"{t} sr {m['sr_ratio']}")
                 continue
-        else:
-            stats.sr += 1
+        stats["after_sr"] += 1
 
-        results.append(stage_info)
+        row = {"ticker": t, **m}
+        results.append(row)
 
-    stats.final = len(results)
-    res_df = pd.DataFrame(results).sort_values("gap_open_pct", ascending=False)
-    return res_df, stats, fails, timeout_msg
+    res_df = pd.DataFrame(results)
+    if not res_df.empty and "gap_open_pct" in res_df.columns:
+        res_df = res_df.sort_values("gap_open_pct", ascending=False)
+    stats["final"] = len(res_df)
+
+    return res_df, stats, dropped_examples[:10]
 
 
 def render_page():
     st.header("⚡ Yesterday Close+Volume → Buy Next Open")
-    storage = _get_storage()
 
     _d = st.date_input("Entry day (D)", value=dt.date.today())
     if isinstance(_d, (list, tuple)):
         _d = _d[0]
-    D = pd.Timestamp(_d)
-    lookback = int(st.number_input("Lookback", value=63, min_value=1, step=1))
-    min_close_up = float(
-        st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5)
-    )
-    min_vol_mult = float(
-        st.number_input("Min volume multiple", value=1.5, step=0.1)
-    )
-    min_gap = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
-    dry_limit = int(st.number_input("Dry-run N tickers", value=30, min_value=1, step=1))
-    run_full = st.checkbox("Run full scan", value=False)
-    explain_zero = st.checkbox("Explain zero", value=False)
-    use_sr = st.checkbox("Use S/R 2:1 filter", value=True)
+    D = pd.to_datetime(_d).date()
 
-    if st.button("Run scan"):
-        with st.status("Scanning...", expanded=True) as status:
-            status.update(label="Loading membership...")
-            members = _load_members(storage)
-            status.write(f"Loaded membership: {len(members)} rows")
+    vol_lookback = int(st.number_input("Volume lookback", min_value=1, value=63, step=1))
+    min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
+    min_vol_multiple = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
+    min_gap_open_pct = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
+    min_close_dollars = float(st.number_input("Min entry price ($)", value=0.0, step=1.0))
 
-            status.update(label="Resolving active tickers...")
-            active = members_on_date(members, D)
-            status.write(f"Universe size: {len(active)}")
+    use_atr_dollars = st.checkbox("Use ATR $ filter", value=False)
+    min_atr_dollars = float(st.number_input("Min ATR ($)", value=1.0, step=0.1)) if use_atr_dollars else 0.0
 
-            status.update(label="Storage check...")
-            for t in ["AAPL", "MSFT", "XOM"]:
-                try:
-                    storage.read_bytes(f"prices/{t}.parquet")
-                    status.write(f"{t} ✓")
-                except Exception:
-                    status.write(f"{t} ✗")
+    use_atr_pct = st.checkbox("Use ATR% filter", value=False)
+    min_atr_pct = float(st.number_input("Min ATR (%)", value=2.0, step=0.1)) if use_atr_pct else 0.0
 
-            if active.empty:
-                status.update(label="No active members")
-                st.warning("No active S&P members on selected date.")
-                return
+    use_ret21 = st.checkbox("Use 21-day return filter", value=False)
+    min_ret21_pct = float(st.number_input("Min 21-day return (%)", value=0.0, step=0.1)) if use_ret21 else 0.0
 
-            limit = None if run_full else dry_limit
-            status.update(label="Running filters...")
-            results, stats, fails, timeout = _run_signal_scan(
-                active,
-                D=D,
-                lookback=lookback,
-                min_close_up=min_close_up,
-                min_vol_mult=min_vol_mult,
-                min_gap_next_open=min_gap,
-                limit=limit,
-                explain=explain_zero,
-                use_sr=use_sr,
+    dry_n = st.number_input("Dry-run N tickers", min_value=0, max_value=3000, value=30, step=10)
+    show_debug = st.checkbox("Show debug", value=True)
+
+    if st.button("Run scan", type="primary"):
+        with st.status("Running filters...", expanded=True):
+            from data_lake.storage import Storage
+            s = Storage()
+            members = _load_members("anon")
+            active = members_on_date(members, D)["symbol"].dropna().unique().tolist()
+            st.write(f"Loaded membership: {len(members)} rows")
+            st.write(f"Universe size: {len(active)}")
+
+            res_df, stats, drops = _run_signal_scan(
+                s, active, D,
+                min_close_up_pct, vol_lookback, min_vol_multiple, min_gap_open_pct,
+                opts={
+                    "min_atr_dollars": min_atr_dollars if use_atr_dollars else None,
+                    "min_atr_pct": min_atr_pct if use_atr_pct else None,
+                    "min_close_dollars": min_close_dollars,
+                    "min_ret21_pct": min_ret21_pct if use_ret21 else None,
+                    "require_sr": True,
+                    "sr_ratio_min": 2.0,
+                },
+                dry_run_n=(dry_n or None) if dry_n > 0 else None
             )
-            if timeout:
-                status.write(timeout)
-            status.update(label="Scan complete")
 
-        counts_df = pd.DataFrame([asdict(stats)])[
-            ["universe", "loaded", "close_up", "vol", "gap", "optional", "sr", "final"]
-        ]
-        st.table(counts_df)
-
-        if results.empty:
+        st.dataframe(pd.DataFrame([stats]))
+        if res_df.empty:
             st.warning("No matches for the selected filters.")
-            if explain_zero:
-                for stage, items in fails.items():
-                    if items:
-                        st.write(stage)
-                        st.dataframe(pd.DataFrame(items).head(5))
-            return
-
-        st.success(f"{len(results)} matches")
-        st.dataframe(results, use_container_width=True)
+            if show_debug and drops:
+                st.write("First few drops:", drops)
+        else:
+            st.success(f"{len(res_df)} matches")
+            st.dataframe(res_df.head(100))
 
 
 def page():
