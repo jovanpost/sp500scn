@@ -58,8 +58,11 @@ def _run_signal_scan(
     tickers = sorted(active["ticker"].dropna().unique().tolist())
     if limit:
         tickers = tickers[:limit]
+    cols = ["ticker", "d1_close_up_pct", "d1_vol_mult", "gap_open_pct"]
+    if use_sr:
+        cols.append("sr_ratio")
     if not tickers:
-        return pd.DataFrame(), stats, fails, None
+        return pd.DataFrame(columns=cols), stats, fails, None
 
     D = pd.to_datetime(D)
     results: list[dict] = []
@@ -158,11 +161,10 @@ def _run_signal_scan(
 
     stats.final = len(results)
     if results:
-        res_df = pd.DataFrame(results).sort_values("gap_open_pct", ascending=False)
+        res_df = pd.DataFrame(results)
+        if "gap_open_pct" in res_df.columns:
+            res_df = res_df.sort_values("gap_open_pct", ascending=False)
     else:
-        cols = ["ticker", "d1_close_up_pct", "d1_vol_mult", "gap_open_pct"]
-        if use_sr:
-            cols.append("sr_ratio")
         res_df = pd.DataFrame(columns=cols)
     return res_df, stats, fails, timeout_msg
 
