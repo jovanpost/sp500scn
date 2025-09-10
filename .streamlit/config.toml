@@ -1,5 +1,2 @@
-[theme]
-primaryColor = "#FF4B4B"   # bright red for dark theme
-textColor = "#f2f2f2"
-backgroundColor = "#000000"
-secondaryBackgroundColor = "#1a1a1a"
+[server]
+fileWatcherType = "none"

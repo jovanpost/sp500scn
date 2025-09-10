@@ -1,7 +1,10 @@
+import os
 import importlib.util
 from pathlib import Path
 import streamlit as st
 from ui.layout import setup_page, render_header
+
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 
 # Initialize page and global layout/CSS
 setup_page()
