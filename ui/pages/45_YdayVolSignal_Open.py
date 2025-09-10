@@ -68,11 +68,14 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[st
 
     gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
 
-    tr = np.maximum.reduce([
-        df["high"] - df["low"],
-        (df["high"] - df["close"].shift()).abs(),
-        (df["low"] - df["close"].shift()).abs()
-    ])
+    tr = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift()).abs(),
+            (df["low"] - df["close"].shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     atr = tr.rolling(21, min_periods=1).mean()
     atr21 = float(atr.loc[dm1]) if dm1 in atr.index else np.nan
     atr21_pct = atr21 / df.loc[dm1, "close"] * 100 if df.loc[dm1, "close"] else np.nan
@@ -227,7 +230,7 @@ def render_page():
             from data_lake.storage import Storage
             s = Storage()
             members = _load_members("anon")
-            active = members_on_date(members, D)["symbol"].dropna().unique().tolist()
+            active = members_on_date(members, D)["ticker"].dropna().unique().tolist()
             st.write(f"Loaded membership: {len(members)} rows")
             st.write(f"Universe size: {len(active)}")
 
