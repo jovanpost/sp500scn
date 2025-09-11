@@ -26,11 +26,8 @@ def replay_trade(
 
     # Dates should already be tz-naive normalized; make it idempotent
     d = pd.to_datetime(bars["date"], errors="coerce")
-    # Strip timezone info to ensure comparisons work regardless of input
-    if d.dt.tz is not None:
-        d = d.dt.tz_convert(None)
-    else:
-        d = d.dt.tz_localize(None)
+    # Drop timezone without shifting wall-clock time so comparisons remain valid
+    d = d.dt.tz_localize(None)
     d = d.dt.normalize()
     bars = bars.assign(date=d).dropna(subset=["date"]).sort_values("date")
 

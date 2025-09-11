@@ -381,10 +381,8 @@ def render_page():
 
                         # Canonicalize to tz-naive midnight
                         d = pd.to_datetime(df["date"], errors="coerce")
-                        if d.dt.tz is not None:
-                            d = d.dt.tz_convert(None)
-                        else:
-                            d = d.dt.tz_localize(None)
+                        # Drop timezone without shifting local timestamps
+                        d = d.dt.tz_localize(None)
                         df["date"] = d.dt.normalize()
 
                         # Keep only needed columns
