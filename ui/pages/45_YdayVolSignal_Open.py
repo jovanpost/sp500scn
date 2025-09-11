@@ -33,7 +33,11 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     csv_buf = io.StringIO()
     df.to_csv(csv_buf, index=False)
     csv_txt = csv_buf.getvalue()
-    md_txt = df.to_markdown(index=False)
+    try:
+        md_txt = df.to_markdown(index=False)
+    except Exception as e:
+        logging.warning("markdown export skipped: %s", e)
+        md_txt = None
 
     # Download button (native)
     st.download_button(
@@ -48,23 +52,37 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     # Tiny HTML+JS component to copy to clipboard (CSV & Markdown)
     # We JSON-encode the strings so quotes/newlines are safe in the HTML.
     csv_js = json.dumps(csv_txt)
-    md_js = json.dumps(md_txt)
+    md_js = json.dumps(md_txt) if md_txt is not None else None
+
+    md_button = (
+        f"""
+      <button id="{key_prefix}_copy_md"
+              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
+        📋 Copy Markdown
+      </button>"""
+        if md_txt is not None
+        else ""
+    )
+    md_js_line = (
+        f"const mdText_{key_prefix}  = {md_js};" if md_txt is not None else ""
+    )
+    md_listener = (
+        f"document.getElementById(\"{key_prefix}_copy_md\")\n        .addEventListener(\"click\", () => copyText(mdText_{key_prefix}, \"{key_prefix}_copied\"));"
+        if md_txt is not None
+        else ""
+    )
 
     html = f"""
     <div style="display:flex; gap:.5rem; margin:.5rem 0 1rem 0;">
       <button id="{key_prefix}_copy_csv"
               style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
         📋 Copy CSV
-      </button>
-      <button id="{key_prefix}_copy_md"
-              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
-        📋 Copy Markdown
-      </button>
+      </button>{md_button}
       <span id="{key_prefix}_copied" style="margin-left:.5rem; color:#7ee787;"></span>
     </div>
     <script>
       const csvText_{key_prefix} = {csv_js};
-      const mdText_{key_prefix}  = {md_js};
+      {md_js_line}
 
       async function copyText(text, labelId){{
         try {{
@@ -82,8 +100,7 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
 
       document.getElementById("{key_prefix}_copy_csv")
         .addEventListener("click", () => copyText(csvText_{key_prefix}, "{key_prefix}_copied"));
-      document.getElementById("{key_prefix}_copy_md")
-        .addEventListener("click", () => copyText(mdText_{key_prefix}, "{key_prefix}_copied"));
+      {md_listener}
     </script>
     """
     components.html(html, height=60)
