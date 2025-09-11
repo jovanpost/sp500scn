@@ -35,7 +35,7 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     csv_txt = csv_buf.getvalue()
     try:
         md_txt = df.to_markdown(index=False)
-    except Exception as e:
+    except ImportError as e:
         logging.warning("markdown export skipped: %s", e)
         md_txt = None
 
