@@ -20,8 +20,12 @@ def _load_members(_bucket_key: str) -> pd.DataFrame:
     s = Storage()
     raw = s.read_bytes("membership/sp500_members.parquet")
     m = pd.read_parquet(pd.io.common.BytesIO(raw))
-    m["start_date"] = pd.to_datetime(m["start_date"], errors="coerce", utc=True).dt.tz_localize(None)
-    m["end_date"] = pd.to_datetime(m["end_date"], errors="coerce", utc=True).dt.tz_localize(None)
+    m["start_date"] = pd.to_datetime(
+        m["start_date"], errors="coerce", utc=True
+    ).dt.tz_localize(None)
+    m["end_date"] = pd.to_datetime(
+        m["end_date"], errors="coerce", utc=True
+    ).dt.tz_localize(None)
     return m
 
 
@@ -61,7 +65,9 @@ def _cached_prices(ticker: str) -> pd.DataFrame | None:
         return None
 
 
-def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[str, Any] | None:
+def _compute_metrics(
+    df: pd.DataFrame, D: dt.date, vol_lookback: int
+) -> Dict[str, Any] | None:
     D = pd.to_datetime(D)
 
     if D not in df["date"].values:
@@ -78,11 +84,19 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[st
         return None
     dm1 = i - 1
 
-    close_up_pct = (df.loc[dm1, "close"] / df.loc[dm1 - 1, "close"] - 1.0) * 100 if dm1 > 0 else np.nan
+    close_up_pct = (
+        (df.loc[dm1, "close"] / df.loc[dm1 - 1, "close"] - 1.0) * 100
+        if dm1 > 0
+        else np.nan
+    )
 
     w0 = max(0, dm1 - vol_lookback + 1)
     lookback_vol = df.loc[w0:dm1, "volume"].mean()
-    vol_multiple = df.loc[dm1, "volume"] / lookback_vol if lookback_vol and not np.isnan(lookback_vol) else np.nan
+    vol_multiple = (
+        df.loc[dm1, "volume"] / lookback_vol
+        if lookback_vol and not np.isnan(lookback_vol)
+        else np.nan
+    )
 
     gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
 
@@ -99,12 +113,12 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[st
     atr21_pct = atr21 / df.loc[dm1, "close"] * 100 if df.loc[dm1, "close"] else np.nan
 
     if dm1 >= 21:
-        ret21 = (df.loc[dm1, "close"] / df.loc[dm1-21, "close"] - 1.0) * 100
+        ret21 = (df.loc[dm1, "close"] / df.loc[dm1 - 21, "close"] - 1.0) * 100
     else:
         ret21 = np.nan
 
-    lo_win = df.loc[max(0, dm1-21):dm1, "low"].min()
-    hi_win = df.loc[max(0, dm1-21):dm1, "high"].max()
+    lo_win = df.loc[max(0, dm1 - 21) : dm1, "low"].min()
+    hi_win = df.loc[max(0, dm1 - 21) : dm1, "high"].max()
 
     entry = float(df.loc[i, "open"])
     support = float(lo_win)
@@ -115,7 +129,7 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[st
         up = resistance - entry
         down = entry - support
         sr_ratio = up / down if down > 0 else np.nan
-        tp_halfway_pct = (entry + up/2) / entry - 1.0
+        tp_halfway_pct = (entry + up / 2) / entry - 1.0
 
     return {
         "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
@@ -127,27 +141,37 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int) -> Dict[st
         "support": support,
         "resistance": resistance,
         "sr_ratio": sr_ratio,
-        "tp_halfway_pct": float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan,
+        "tp_halfway_pct": (
+            float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan
+        ),
         "entry_open": entry,
     }
 
 
-def _run_signal_scan(storage,
-                     tickers: List[str],
-                     D: dt.date,
-                     min_close_up_pct: float,
-                     vol_lookback: int,
-                     min_vol_multiple: float,
-                     min_gap_open_pct: float,
-                     opts: Dict[str, Any],
-                     dry_run_n: int | None = None
-                     ) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
+def _run_signal_scan(
+    storage,
+    tickers: List[str],
+    D: dt.date,
+    min_close_up_pct: float,
+    vol_lookback: int,
+    min_vol_multiple: float,
+    min_gap_open_pct: float,
+    opts: Dict[str, Any],
+    dry_run_n: int | None = None,
+) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
 
     from collections import OrderedDict
 
-    stats = OrderedDict(universe=len(tickers), loaded=0,
-                        after_close_up=0, after_vol=0, after_gap=0,
-                        after_optional=0, after_sr=0, final=0)
+    stats = OrderedDict(
+        universe=len(tickers),
+        loaded=0,
+        after_close_up=0,
+        after_vol=0,
+        after_gap=0,
+        after_optional=0,
+        after_sr=0,
+        final=0,
+    )
     dropped_examples: List[str] = []
 
     if dry_run_n:
@@ -192,7 +216,7 @@ def _run_signal_scan(storage,
         if v := opts.get("min_atr_pct"):
             ok &= not np.isnan(m["atr21_pct"]) and (m["atr21_pct"] >= v)
         if v := opts.get("min_close_dollars"):
-            ok &= (m["entry_open"] >= v)
+            ok &= m["entry_open"] >= v
         if v := opts.get("min_ret21_pct"):
             ok &= not np.isnan(m["ret21_pct"]) and (m["ret21_pct"] >= v)
         if not ok:
@@ -225,27 +249,50 @@ def render_page():
         _d = _d[0]
     D = pd.to_datetime(_d).date()
 
-    vol_lookback = int(st.number_input("Volume lookback", min_value=1, value=63, step=1))
-    min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
-    min_vol_multiple = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
+    vol_lookback = int(
+        st.number_input("Volume lookback", min_value=1, value=63, step=1)
+    )
+    min_close_up_pct = float(
+        st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5)
+    )
+    min_vol_multiple = float(
+        st.number_input("Min volume multiple", value=1.5, step=0.1)
+    )
     min_gap_open_pct = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
-    min_close_dollars = float(st.number_input("Min entry price ($)", value=0.0, step=1.0))
+    min_close_dollars = float(
+        st.number_input("Min entry price ($)", value=0.0, step=1.0)
+    )
 
     use_atr_dollars = st.checkbox("Use ATR $ filter", value=False)
-    min_atr_dollars = float(st.number_input("Min ATR ($)", value=1.0, step=0.1)) if use_atr_dollars else 0.0
+    min_atr_dollars = (
+        float(st.number_input("Min ATR ($)", value=1.0, step=0.1))
+        if use_atr_dollars
+        else 0.0
+    )
 
     use_atr_pct = st.checkbox("Use ATR% filter", value=False)
-    min_atr_pct = float(st.number_input("Min ATR (%)", value=2.0, step=0.1)) if use_atr_pct else 0.0
+    min_atr_pct = (
+        float(st.number_input("Min ATR (%)", value=2.0, step=0.1))
+        if use_atr_pct
+        else 0.0
+    )
 
     use_ret21 = st.checkbox("Use 21-day return filter", value=False)
-    min_ret21_pct = float(st.number_input("Min 21-day return (%)", value=0.0, step=0.1)) if use_ret21 else 0.0
+    min_ret21_pct = (
+        float(st.number_input("Min 21-day return (%)", value=0.0, step=0.1))
+        if use_ret21
+        else 0.0
+    )
 
-    dry_n = st.number_input("Dry-run N tickers", min_value=0, max_value=3000, value=30, step=10)
+    dry_n = st.number_input(
+        "Dry-run N tickers", min_value=0, max_value=3000, value=30, step=10
+    )
     show_debug = st.checkbox("Show debug", value=True)
 
     if st.button("Run scan", type="primary"):
         with st.status("Running filters...", expanded=True):
             from data_lake.storage import Storage
+
             s = Storage()
             members = _load_members("anon")
             active = members_on_date(members, D)["ticker"].dropna().unique().tolist()
@@ -253,8 +300,13 @@ def render_page():
             st.write(f"Universe size: {len(active)}")
 
             res_df, stats, drops = _run_signal_scan(
-                s, active, D,
-                min_close_up_pct, vol_lookback, min_vol_multiple, min_gap_open_pct,
+                s,
+                active,
+                D,
+                min_close_up_pct,
+                vol_lookback,
+                min_vol_multiple,
+                min_gap_open_pct,
                 opts={
                     "min_atr_dollars": min_atr_dollars if use_atr_dollars else None,
                     "min_atr_pct": min_atr_pct if use_atr_pct else None,
@@ -263,7 +315,7 @@ def render_page():
                     "require_sr": True,
                     "sr_ratio_min": 2.0,
                 },
-                dry_run_n=(dry_n or None) if dry_n > 0 else None
+                dry_run_n=(dry_n or None) if dry_n > 0 else None,
             )
 
         st.session_state["res_df"] = res_df
@@ -297,7 +349,9 @@ def render_page():
                     f"{len(run_df)} matches; limiting to top {limit_n} by sr_ratio unless confirmed"
                 )
                 if not st.checkbox("Process all matches", value=False):
-                    run_df = run_df.sort_values("sr_ratio", ascending=False).head(limit_n)
+                    run_df = run_df.sort_values("sr_ratio", ascending=False).head(
+                        limit_n
+                    )
 
             if st.button("Run outcomes for matches"):
                 from data_lake.storage import Storage
@@ -308,23 +362,51 @@ def render_page():
                     1 + run_df["tp_halfway_pct"]
                 )
                 for r in run_df.itertuples(index=False):
-                    df = _cached_prices(r.ticker)
-                    if df is None:
-                        rows.append(
-                            {
-                                "ticker": r.ticker,
-                                "hit": False,
-                                "exit_reason": "no_data",
-                                "exit_price": float("nan"),
-                                "days_to_exit": 0,
-                                "mae_pct": float("nan"),
-                                "mfe_pct": float("nan"),
-                            }
-                        )
-                        continue
                     try:
-                        entry_ts = pd.to_datetime(D).normalize()
-                        tp_price = float(r.tp_price)
+                        df = storage.read_parquet(f"prices/{r.ticker}.parquet")
+
+                        # Ensure we have a date column
+                        if "date" not in df.columns:
+                            idx_col = (
+                                "index"
+                                if "index" in df.columns
+                                else ("Date" if "Date" in df.columns else None)
+                            )
+                            if idx_col is not None:
+                                df["date"] = df[idx_col]
+                            else:
+                                raise ValueError(
+                                    f"{r.ticker}: could not find a date/index column in parquet"
+                                )
+
+                        # Canonicalize to tz-naive midnight
+                        d = pd.to_datetime(df["date"], errors="coerce")
+                        d = d.dt.tz_localize(None, errors="ignore").dt.normalize()
+                        df["date"] = d
+
+                        # Keep only needed columns
+                        df = (
+                            df[["date", "open", "high", "low", "close"]]
+                            .dropna()
+                            .sort_values("date")
+                        )
+
+                        # Build normalized entry timestamp
+                        entry_ts = pd.to_datetime(D)
+                        try:
+                            entry_ts = entry_ts.tz_localize(None)
+                        except Exception:
+                            pass
+                        entry_ts = entry_ts.normalize()
+
+                        # Diagnostics for missing windows
+                        first_dt = df["date"].min()
+                        last_dt = df["date"].max()
+                        st.write(
+                            f"ᴅɪᴀɢ: {r.ticker} bars {first_dt.date() if pd.notna(first_dt) else 'NA'} → {last_dt.date() if pd.notna(last_dt) else 'NA'}"
+                        )
+
+                        tp_price = float(r.entry_open * (1 + r.tp_halfway_pct))
                         stop_price = float(r.support) if use_stop else None
                         out = replay_trade(
                             df,
@@ -357,11 +439,21 @@ def render_page():
                 st.write(
                     {
                         "hit_rate": float(hits.mean()),
-                        "median_days_to_exit": float(
-                            res.loc[hits, "days_to_exit"].median() if hits.any() else float("nan")
+                        "median_days_to_exit": (
+                            float(res.loc[hits, "days_to_exit"].median())
+                            if hits.any()
+                            else None
                         ),
-                        "avg_MAE_pct": float(res["mae_pct"].mean()),
-                        "avg_MFE_pct": float(res["mfe_pct"].mean()),
+                        "avg_MAE_pct": (
+                            float(res["mae_pct"].dropna().mean())
+                            if res["mae_pct"].notna().any()
+                            else None
+                        ),
+                        "avg_MFE_pct": (
+                            float(res["mfe_pct"].dropna().mean())
+                            if res["mfe_pct"].notna().any()
+                            else None
+                        ),
                     }
                 )
                 st.dataframe(
