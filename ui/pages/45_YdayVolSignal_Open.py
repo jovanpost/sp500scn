@@ -266,6 +266,15 @@ def render_page():
                 dry_run_n=(dry_n or None) if dry_n > 0 else None
             )
 
+        st.session_state["res_df"] = res_df
+        st.session_state["stats"] = stats
+        st.session_state["drops"] = drops
+
+    res_df = st.session_state.get("res_df")
+    stats = st.session_state.get("stats")
+    drops = st.session_state.get("drops")
+
+    if res_df is not None:
         st.dataframe(pd.DataFrame([stats]))
         if res_df.empty:
             st.warning("No matches for the selected filters.")
