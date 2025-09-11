@@ -5,6 +5,8 @@ import datetime as dt
 import streamlit as st
 from typing import Dict, Any, Tuple, List
 
+from engine.replay import replay_trade
+
 
 def _emit(msg: str):
     logging.info(msg)
@@ -40,6 +42,22 @@ def _load_prices(storage, ticker: str) -> pd.DataFrame | None:
         return df.sort_values("date")
     except Exception as e:
         logging.warning("missing or unreadable price file for %s: %s", ticker, e)
+        return None
+
+
+@st.cache_data(show_spinner=False)
+def _cached_prices(ticker: str) -> pd.DataFrame | None:
+    from data_lake.storage import Storage
+
+    s = Storage()
+    try:
+        df = s.read_parquet(f"prices/{ticker}.parquet")
+        if "date" not in df.columns:
+            df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
+        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+        return df[["date", "open", "high", "low", "close"]].sort_values("date")
+    except Exception as e:
+        logging.warning("price load failed for %s: %s", ticker, e)
         return None
 
 
@@ -256,6 +274,101 @@ def render_page():
         else:
             st.success(f"{len(res_df)} matches")
             st.dataframe(res_df.head(100))
+
+            use_stop = st.checkbox("Use stop at support", value=True)
+            horizon = int(
+                st.number_input("Horizon (days)", min_value=1, value=30, step=1)
+            )
+            save_outcomes = st.checkbox("Save outcomes to lake", value=False)
+
+            run_df = res_df.copy()
+            limit_n = 50
+            if len(run_df) > limit_n:
+                st.warning(
+                    f"{len(run_df)} matches; limiting to top {limit_n} by sr_ratio unless confirmed"
+                )
+                if not st.checkbox("Process all matches", value=False):
+                    run_df = run_df.sort_values("sr_ratio", ascending=False).head(limit_n)
+
+            if st.button("Run outcomes for matches"):
+                from data_lake.storage import Storage
+
+                storage = Storage()
+                rows: List[Dict[str, Any]] = []
+                run_df["tp_price"] = run_df["entry_open"] * (
+                    1 + run_df["tp_halfway_pct"]
+                )
+                for r in run_df.itertuples(index=False):
+                    df = _cached_prices(r.ticker)
+                    if df is None:
+                        rows.append(
+                            {
+                                "ticker": r.ticker,
+                                "hit": False,
+                                "exit_reason": "no_data",
+                                "exit_price": float("nan"),
+                                "days_to_exit": 0,
+                                "mae_pct": float("nan"),
+                                "mfe_pct": float("nan"),
+                            }
+                        )
+                        continue
+                    try:
+                        entry_ts = pd.to_datetime(D).normalize()
+                        tp_price = float(r.tp_price)
+                        stop_price = float(r.support) if use_stop else None
+                        out = replay_trade(
+                            df,
+                            entry_ts,
+                            float(r.entry_open),
+                            tp_price,
+                            stop_price,
+                            horizon_days=horizon,
+                        )
+                        out["ticker"] = r.ticker
+                        rows.append(out)
+                    except Exception as e:
+                        rows.append(
+                            {
+                                "ticker": r.ticker,
+                                "hit": False,
+                                "exit_reason": f"error:{e}",
+                                "exit_price": float("nan"),
+                                "days_to_exit": 0,
+                                "mae_pct": float("nan"),
+                                "mfe_pct": float("nan"),
+                            }
+                        )
+
+                outcomes = pd.DataFrame(rows)
+                res = run_df.merge(outcomes, on="ticker", how="left")
+
+                hits = res["hit"].fillna(False)
+                st.subheader("Outcomes summary")
+                st.write(
+                    {
+                        "hit_rate": float(hits.mean()),
+                        "median_days_to_exit": float(
+                            res.loc[hits, "days_to_exit"].median() if hits.any() else float("nan")
+                        ),
+                        "avg_MAE_pct": float(res["mae_pct"].mean()),
+                        "avg_MFE_pct": float(res["mfe_pct"].mean()),
+                    }
+                )
+                st.dataframe(
+                    res.sort_values(["hit", "days_to_exit"], ascending=[False, True]),
+                    use_container_width=True,
+                )
+
+                if save_outcomes:
+                    import io
+
+                    buf = io.BytesIO()
+                    res.to_parquet(buf, index=False)
+                    storage.write_bytes(
+                        f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
+                        buf.getvalue(),
+                    )
 
 
 def page():
