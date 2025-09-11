@@ -1,8 +1,11 @@
+import io
+import json
 import logging
 import pandas as pd
 import numpy as np
 import datetime as dt
 import streamlit as st
+import streamlit.components.v1 as components
 from typing import Dict, Any, Tuple, List
 
 from engine.replay import replay_trade
@@ -11,6 +14,79 @@ from engine.replay import replay_trade
 def _emit(msg: str):
     logging.info(msg)
     st.write(msg)
+
+
+def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
+    """
+    Renders a DataFrame with:
+      - Copy CSV to clipboard
+      - Copy Markdown to clipboard
+      - Download CSV (native)
+    key_prefix: unique string ('matches', 'outcomes', etc) so Streamlit keys don't collide.
+    """
+    st.subheader(title)
+
+    # Show the table
+    st.dataframe(df, use_container_width=True, hide_index=False)
+
+    # Prep CSV & Markdown strings
+    csv_buf = io.StringIO()
+    df.to_csv(csv_buf, index=False)
+    csv_txt = csv_buf.getvalue()
+    md_txt = df.to_markdown(index=False)
+
+    # Download button (native)
+    st.download_button(
+        label="⬇️ Download CSV",
+        data=csv_txt,
+        file_name=f"{key_prefix}.csv",
+        mime="text/csv",
+        key=f"{key_prefix}_dl",
+        use_container_width=False,
+    )
+
+    # Tiny HTML+JS component to copy to clipboard (CSV & Markdown)
+    # We JSON-encode the strings so quotes/newlines are safe in the HTML.
+    csv_js = json.dumps(csv_txt)
+    md_js = json.dumps(md_txt)
+
+    html = f"""
+    <div style="display:flex; gap:.5rem; margin:.5rem 0 1rem 0;">
+      <button id="{key_prefix}_copy_csv"
+              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
+        📋 Copy CSV
+      </button>
+      <button id="{key_prefix}_copy_md"
+              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
+        📋 Copy Markdown
+      </button>
+      <span id="{key_prefix}_copied" style="margin-left:.5rem; color:#7ee787;"></span>
+    </div>
+    <script>
+      const csvText_{key_prefix} = {csv_js};
+      const mdText_{key_prefix}  = {md_js};
+
+      async function copyText(text, labelId){{
+        try {{
+          await navigator.clipboard.writeText(text);
+          const el = document.getElementById(labelId);
+          if (el) {{
+            el.textContent = "Copied!";
+            setTimeout(() => el.textContent = "", 1400);
+          }}
+        }} catch (e) {{
+          // Fallback: show text in a prompt so user can Ctrl+C
+          window.prompt("Copy with Ctrl/Cmd+C, then Enter:", text);
+        }}
+      }}
+
+      document.getElementById("{key_prefix}_copy_csv")
+        .addEventListener("click", () => copyText(csvText_{key_prefix}, "{key_prefix}_copied"));
+      document.getElementById("{key_prefix}_copy_md")
+        .addEventListener("click", () => copyText(mdText_{key_prefix}, "{key_prefix}_copied"));
+    </script>
+    """
+    components.html(html, height=60)
 
 
 @st.cache_data(show_spinner=False)
@@ -328,13 +404,8 @@ def render_page():
 
     if res_df is not None:
         st.dataframe(pd.DataFrame([stats]))
-        if res_df.empty:
-            st.warning("No matches for the selected filters.")
-            if show_debug and drops:
-                st.write("First few drops:", drops)
-        else:
-            st.success(f"{len(res_df)} matches")
-            st.dataframe(res_df.head(100))
+        if not res_df.empty:
+            _render_df_with_copy("✅ Candidates (matches)", res_df, "matches")
 
             use_stop = st.checkbox("Use stop at support", value=True)
             horizon = int(
@@ -457,20 +528,25 @@ def render_page():
                         ),
                     }
                 )
-                st.dataframe(
-                    res.sort_values(["hit", "days_to_exit"], ascending=[False, True]),
-                    use_container_width=True,
+                outcomes_df = res.sort_values(
+                    ["hit", "days_to_exit"], ascending=[False, True]
                 )
+                if not outcomes_df.empty:
+                    _render_df_with_copy("🎯 Outcomes", outcomes_df, "outcomes")
+                else:
+                    st.info("No outcomes to display.")
 
                 if save_outcomes:
-                    import io
-
                     buf = io.BytesIO()
                     res.to_parquet(buf, index=False)
                     storage.write_bytes(
                         f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
                         buf.getvalue(),
                     )
+        else:
+            st.info("No matches for the selected filters.")
+            if show_debug and drops:
+                st.write("First few drops:", drops)
 
 
 def page():
