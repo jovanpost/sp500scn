@@ -19,7 +19,8 @@ def status_block(title: str, key_prefix: str = "prog"):
     Version-proof progress block built from primitives only.
     Returns: (status_like, prog_widget, log_fn)
       - status_like.update(label=..., state=...)
-      - prog_widget.progress(value) where value can be 0..1 (float) or 0..100 (int)
+      - prog_widget.progress(value, *args, **kwargs) where value can be
+        0..1 (float) or 0..100 (int)
       - log_fn(text) appends to a code block
     """
     title_slot = st.empty()
@@ -34,8 +35,8 @@ def status_block(title: str, key_prefix: str = "prog"):
             def __init__(self, raw_prog):
                 self._raw = raw_prog
 
-            def progress(self, v):
-                # Normalize to 0..100 int
+            def progress(self, v, *args, **kwargs):
+                # Normalize to 0..100 int and forward any other args/kwargs
                 try:
                     if isinstance(v, float):
                         if 0.0 <= v <= 1.0:
@@ -47,12 +48,12 @@ def status_block(title: str, key_prefix: str = "prog"):
                 except Exception:
                     v = 0
                 v = max(0, min(100, v))
-                self._raw.progress(v)
+                self._raw.progress(v, *args, **kwargs)
 
         prog_widget = _ProgLike(raw)
     except Exception:
         class _NoopProg:
-            def progress(self, v):  # no-op fallback
+            def progress(self, v, *args, **kwargs):  # no-op fallback
                 pass
 
         prog_widget = _NoopProg()
