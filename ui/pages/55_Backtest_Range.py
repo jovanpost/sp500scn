@@ -1,13 +1,67 @@
+import io
 import datetime as dt
+from typing import Dict
+
+import pandas as pd
 import streamlit as st
 
 from data_lake.storage import Storage
 from engine.signal_scan import ScanParams
-from backtest.run_range import run_range, trading_days
+from backtest.run_range import run_range
+
+
+def _df_to_markdown_safe(df: pd.DataFrame) -> str:
+    """Return a Markdown table for df without relying on pandas.to_markdown."""
+    try:
+        from tabulate import tabulate  # optional dependency
+
+        return tabulate(
+            df.values.tolist(),
+            headers=list(df.columns),
+            tablefmt="pipe",
+            floatfmt="g",
+        )
+    except Exception:
+        cols = [str(c) for c in df.columns]
+        lines = []
+        lines.append("| " + " | ".join(cols) + " |")
+        lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
+        for row in df.itertuples(index=False, name=None):
+            vals = []
+            for v in row:
+                if pd.isna(v):
+                    vals.append("")
+                elif isinstance(v, (int, float)):
+                    vals.append(f"{v:.6g}")
+                else:
+                    vals.append(str(v))
+            lines.append("| " + " | ".join(vals) + " |")
+        return "\n".join(lines)
+
+
+def _df_to_csv_text(df: pd.DataFrame) -> str:
+    return df.to_csv(index=False)
+
+
+def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
+    st.subheader(title)
+    st.dataframe(df, use_container_width=True, hide_index=False)
+    fmt = st.radio("Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt")
+    txt = _df_to_markdown_safe(df) if fmt == "Markdown" else _df_to_csv_text(df)
+    st.text_area("Copy this", txt, height=180, key=f"{key_prefix}_copybox")
+    mime = "text/markdown" if fmt == "Markdown" else "text/csv"
+    ext = "md" if fmt == "Markdown" else "csv"
+    st.download_button(
+        f"Download table ({ext.upper()})",
+        txt.encode("utf-8"),
+        file_name=f"{key_prefix}.{ext}",
+        mime=mime,
+        key=f"{key_prefix}_dl",
+    )
 
 
 def render_page() -> None:
-    st.header("📈 Backtest Range")
+    st.header("📅 Backtest (range)")
 
     start = st.date_input("Start date", value=dt.date.today() - dt.timedelta(days=30))
     end = st.date_input("End date", value=dt.date.today())
@@ -23,6 +77,7 @@ def render_page() -> None:
     atr_window = int(st.number_input("ATR window", min_value=1, value=21, step=1))
     horizon = int(st.number_input("Horizon (days)", min_value=1, value=30, step=1))
     sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
+    save_outcomes = st.checkbox("Save outcomes to lake", value=False)
 
     if st.button("Run backtest", type="primary"):
         storage = Storage()
@@ -35,22 +90,43 @@ def render_page() -> None:
             "horizon_days": horizon,
             "sr_min_ratio": sr_min_ratio,
         }
-        days = trading_days(storage, str(start), str(end))
-        progress = st.progress(0.0)
+        prog = st.progress(0.0)
+        status = st.empty()
 
-        def _cb(i: int, total: int) -> None:
-            progress.progress(i / total if total else 0.0)
+        def _cb(i: int, total: int, day: pd.Timestamp, cands: int, hits: int) -> None:
+            prog.progress(i / total if total else 0.0)
+            status.text(f"{day.date()}: {cands} matches, {hits} hits")
 
-        rid, summary = run_range(storage, str(start), str(end), params, progress_cb=_cb)
-        st.write(summary)
+        trades_df, summary = run_range(storage, str(start), str(end), params, progress_cb=_cb)
+        st.session_state["bt_trades"] = trades_df
+        st.session_state["bt_summary"] = summary
 
-        cand_bytes = storage.read_bytes(f"runs/{rid}/candidates.parquet")
-        out_bytes = storage.read_bytes(f"runs/{rid}/outcomes.parquet")
-        sum_bytes = storage.read_bytes(f"runs/{rid}/summary.json")
-        st.download_button("Candidates", cand_bytes, file_name="candidates.parquet")
-        st.download_button("Outcomes", out_bytes, file_name="outcomes.parquet")
-        st.download_button("Summary", sum_bytes, file_name="summary.json")
+        if save_outcomes and not trades_df.empty:
+            run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            buf = io.BytesIO()
+            trades_df.to_parquet(buf, index=False)
+            path = f"backtests/{run_id}.parquet"
+            storage.write_bytes(path, buf.getvalue())
+            st.session_state["bt_save_path"] = path
+
+    trades_df = st.session_state.get("bt_trades")
+    summary = st.session_state.get("bt_summary")
+    save_path = st.session_state.get("bt_save_path")
+
+    if summary is not None:
+        st.subheader("Summary")
+        st.dataframe(pd.DataFrame([summary]))
+
+    if trades_df is not None:
+        if trades_df.empty:
+            st.info("No trades found in this range.")
+        else:
+            _render_df_with_copy("Trades", trades_df, "trades")
+
+    if save_path:
+        st.success(f"Saved to lake at {save_path}")
 
 
 def page() -> None:
     render_page()
+
