@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 from data_lake.storage import Storage
-from .metrics import has_21d_runup_precedent
 from .replay import replay_trade
+from .filters import has_21d_precedent, atr_feasible
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,10 @@ class ScanParams(TypedDict, total=False):
     lookback_days: int
     horizon_days: int
     sr_min_ratio: float
+    use_precedent: bool
+    use_atr_feasible: bool
+    precedent_lookback: int
+    precedent_window: int
 
 
 def _load_members(storage: Storage) -> pd.DataFrame:
@@ -147,6 +151,10 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
     min_gap = float(params.get("min_gap_open_pct", 0.0))
     horizon = int(params.get("horizon_days", 30))
     sr_min = float(params.get("sr_min_ratio", 2.0))
+    use_precedent = bool(params.get("use_precedent", True))
+    use_atr_feasible = bool(params.get("use_atr_feasible", True))
+    prec_lookback = int(params.get("precedent_lookback", 252))
+    prec_window = int(params.get("precedent_window", 21))
 
     cand_rows: List[Dict[str, Any]] = []
     out_rows: List[Dict[str, Any]] = []
@@ -161,7 +169,21 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
             continue
         stats["loaded"] += 1
 
-        m = _compute_metrics(df, D, vol_lookback, atr_window)
+        D_ts = pd.to_datetime(D)
+        if D_ts not in df["date"].values:
+            idx = df["date"].searchsorted(D_ts)
+            if idx == 0 or idx >= len(df):
+                fail_count += 1
+                continue
+            D_ts = df["date"].iloc[idx]
+        idx_found = df.index[df["date"] == D_ts]
+        if len(idx_found) == 0 or idx_found[0] == 0:
+            fail_count += 1
+            continue
+        i = idx_found[0]
+        dm1 = i - 1
+
+        m = _compute_metrics(df, D_ts, vol_lookback, atr_window)
         if not m:
             fail_count += 1
             continue
@@ -172,33 +194,29 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
             and m["gap_open_pct"] >= min_gap
             and (not np.isnan(m["sr_ratio"]) and m["sr_ratio"] >= sr_min)
         ):
-            history_before_D = df[df["date"] < pd.to_datetime(D)]
             tp_halfway_pct = m.get("tp_halfway_pct")
-            atr_pct = m.get("atr21_pct")
-            precedent_ok = has_21d_runup_precedent(
-                history_before_D, 252, atr_window, tp_halfway_pct
-            ) if (tp_halfway_pct is not None and not np.isnan(tp_halfway_pct)) else False
-            atr_ok = (
-                (atr_pct / 100.0) * atr_window >= tp_halfway_pct
-                if (atr_pct is not None and not np.isnan(atr_pct) and tp_halfway_pct and not np.isnan(tp_halfway_pct))
-                else False
-            )
+            required_pct = tp_halfway_pct
+            prec_ok = has_21d_precedent(
+                df, dm1, required_pct, lookback_days=prec_lookback, window=prec_window
+            ) if (required_pct is not None and not np.isnan(required_pct)) else False
+            atr_ok = atr_feasible(
+                df, dm1, required_pct, atr_window
+            ) if (required_pct is not None and not np.isnan(required_pct)) else False
             reasons: List[str] = []
-            if not precedent_ok:
-                reasons.append(
-                    f"no {atr_window}d precedent ≥ {tp_halfway_pct:.2%} in 252d"
-                )
+            if not prec_ok:
+                reasons.append("no_21d_precedent")
             if not atr_ok:
-                reasons.append("ATR×window < target")
+                reasons.append("atr_insufficient")
 
-            if precedent_ok and atr_ok:
-                row = {
-                    "ticker": t,
-                    **m,
-                    "precedent_ok": precedent_ok,
-                    "atr_ok": atr_ok,
-                    "reasons": "",
-                }
+            row = {
+                "ticker": t,
+                **m,
+                "precedent_ok": int(prec_ok),
+                "atr_ok": int(atr_ok),
+                "reasons": ",".join(reasons),
+            }
+            include = ((not use_precedent) or prec_ok) and ((not use_atr_feasible) or atr_ok)
+            if include:
                 cand_rows.append(row)
 
                 tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
@@ -213,9 +231,6 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
                 )
                 out_row = {**row, "tp_price": tp_price, **out}
                 out_rows.append(out_row)
-            else:
-                # filtered by feasibility
-                pass
         else:
             # did not meet basic filters
             pass
