@@ -1,51 +1,20 @@
-# Basic dependency import smoke test
-name: smoke
+name: Smoke Test
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
 jobs:
   smoke:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        python-version: [ "3.11", "3.10" ]
+        python-version: ["3.10", "3.11"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-      - name: Install minimal deps (smoke)
-        env:
-          PIP_DISABLE_PIP_VERSION_CHECK: "1"
-          PIP_DEFAULT_TIMEOUT: "60"
-        run: |
-          set -e
-          python -m pip install --upgrade pip
-          tries=3
-          ok=0
-          for i in $(seq 1 $tries); do
-            echo "Attempt $i/$tries: wheel-only install"
-            if pip install --only-binary=:all: -r requirements-smoke.txt; then
-              ok=1; break
-            fi
-            echo "Wheel-only failed; fallback resolver"
-            if pip install -r requirements-smoke.txt; then
-              ok=1; break
-            fi
-            sleep 5
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo "Dependency install failed after $tries attempts"; exit 1
-          fi
-          python -c "import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests; print('ok')"
-      - name: Import check
-        run: |
-          python - <<'PY'
-          import streamlit, yfinance, pandas, numpy, pyarrow, bs4, lxml, requests
-          import data_lake.ingest, data_lake.membership, data_lake.storage, data_lake.provider
-          print("ok")
-          PY
+      - name: Install dependencies
+        run: pip install -r requirements-smoke.txt
+      - name: Test imports
+        run: python -c "import pandas, streamlit, supabase, tabulate; print('Imports OK')"

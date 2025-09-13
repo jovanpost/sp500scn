@@ -203,22 +203,22 @@ def render_page() -> None:
 
             prices: Dict[str, pd.DataFrame] = {}
             log(f"Preloading {len(active_tickers)} tickers…")
-            df_all = load_prices_cached(storage, active_tickers, start_date, end_date)
-            if df_all.empty:
-                log("No prices loaded—check Supabase/yfinance.")
+            prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
+            if prices_df.empty:
+                log("No prices loaded—check Supabase table/data.")
                 prog.progress(100, text="Prefetch complete")
                 st.error("No data for backtest.")
                 return
-            else:
-                if not df_all.columns.is_unique:
-                    df_all = df_all.loc[:, ~df_all.columns.duplicated()]
-                df_all.index = pd.to_datetime(df_all.index)
-                for t in active_tickers:
-                    df_t = df_all[df_all.get("ticker") == t]
-                    if not df_t.empty:
-                        prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
-                prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
-                log("Prefetch complete.")
+            if not prices_df.columns.is_unique:
+                prices_df = prices_df.loc[:, ~prices_df.columns.duplicated()]
+                log("Dropped duplicate columns in backtest data.")
+            prices_df.index = pd.to_datetime(prices_df.index)
+            for t in active_tickers:
+                df_t = prices_df[prices_df.get("ticker") == t]
+                if not df_t.empty:
+                    prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
+            prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
+            log("Prefetch complete.")
 
             def _load_prices_patched(_storage, ticker):
                 df = prices.get(ticker)
