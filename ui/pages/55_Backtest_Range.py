@@ -30,56 +30,56 @@ def load_prices_cached(storage, ticker: str) -> pd.DataFrame:
 
 
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
-    import io, streamlit as st
-
     st.subheader(title)
+    if df is None or df.empty:
+        st.info("No rows.")
+        return
 
-    # CSV buffer for download + manual copy
+    # visible table
+    st.dataframe(df, use_container_width=True)
+
+    # CSV text once
     csv_buf = io.StringIO()
     df.to_csv(csv_buf, index=False)
     csv_txt = csv_buf.getvalue()
 
-    # Download button (native)
+    # download
     st.download_button(
-        f"\u2b07\ufe0f Download CSV — {title}",
+        label="\u2b07\ufe0f Download CSV",
         data=csv_txt.encode("utf-8"),
         file_name=f"{key_prefix}.csv",
         mime="text/csv",
         key=f"{key_prefix}_dl",
     )
 
-    # Copy UX (plain textarea users can select/copy)
-    with st.expander("\ud83d\udccb Copy table (CSV text)", expanded=False):
-        st.text_area(
-            label="Select and copy:",
-            value=csv_txt,
-            height=200,
-            key=f"{key_prefix}_copy",
-        )
-
-    # Render visually
-    st.dataframe(df, use_container_width=True)
+    # copyable textarea
+    st.text_area(
+        "Copy CSV",
+        value=csv_txt,
+        height=160,
+        key=f"{key_prefix}_copy",
+    )
 
 
 def render_page() -> None:
     st.header("📅 Backtest (range)")
 
-    with st.form("range_controls"):
+    with st.form("bt_controls"):
         col1, col2, col3 = st.columns(3)
         with col1:
             start = st.date_input(
                 "Start date",
                 value=dt.date.today() - dt.timedelta(days=30),
-                key="range_start",
+                key="bt_start",
             )
-            end = st.date_input("End date", value=dt.date.today(), key="range_end")
+            end = st.date_input("End date", value=dt.date.today(), key="bt_end")
             horizon = int(
                 st.number_input(
                     "Horizon (days)",
                     min_value=1,
                     value=30,
                     step=1,
-                    key="range_horizon",
+                    key="bt_horizon",
                 )
             )
         with col2:
@@ -89,7 +89,7 @@ def render_page() -> None:
                     min_value=1,
                     value=63,
                     step=1,
-                    key="range_vol_lb",
+                    key="bt_vol_lookback",
                 )
             )
             min_close_up_pct = float(
@@ -97,7 +97,7 @@ def render_page() -> None:
                     "Min close-up on D-1 (%)",
                     value=3.0,
                     step=0.5,
-                    key="range_min_close_up",
+                    key="bt_min_close_up",
                 )
             )
             min_gap_open_pct = float(
@@ -105,7 +105,7 @@ def render_page() -> None:
                     "Min gap open (%)",
                     value=0.0,
                     step=0.1,
-                    key="range_min_gap",
+                    key="bt_min_gap_open",
                 )
             )
         with col3:
@@ -114,7 +114,7 @@ def render_page() -> None:
                     "Min volume multiple",
                     value=1.5,
                     step=0.1,
-                    key="range_min_vol_mult",
+                    key="bt_min_vol_mult",
                 )
             )
             atr_window = int(
@@ -123,7 +123,7 @@ def render_page() -> None:
                     min_value=5,
                     value=21,
                     step=1,
-                    key="range_atr_win",
+                    key="bt_atr_win",
                 )
             )
             sr_min_ratio = float(
@@ -131,7 +131,7 @@ def render_page() -> None:
                     "Min S:R ratio",
                     value=2.0,
                     step=0.1,
-                    key="range_sr_min_ratio",
+                    key="bt_sr_min_ratio",
                 )
             )
             sr_lookback = int(
@@ -140,18 +140,18 @@ def render_page() -> None:
                     min_value=10,
                     value=21,
                     step=1,
-                    key="range_sr_lb",
+                    key="bt_sr_lb",
                 )
             )
             use_precedent = st.checkbox(
                 "Require 21-day precedent (lookback 252d, window 21d)",
                 value=True,
-                key="range_use_precedent",
+                key="bt_req_prec",
             )
             use_atr_feasible = st.checkbox(
                 "Require ATR×N feasibility (at D-1)",
                 value=True,
-                key="range_use_atr_ok",
+                key="bt_req_atr",
             )
             precedent_lookback = int(
                 st.number_input(
@@ -159,7 +159,7 @@ def render_page() -> None:
                     min_value=21,
                     value=252,
                     step=1,
-                    key="range_prec_lookback",
+                    key="bt_prec_lookback",
                 )
             )
             precedent_window = int(
@@ -168,11 +168,11 @@ def render_page() -> None:
                     min_value=5,
                     value=21,
                     step=1,
-                    key="range_prec_window",
+                    key="bt_prec_window",
                 )
             )
         save_outcomes = st.checkbox(
-            "Save outcomes to lake", value=False, key="range_save_outcomes"
+            "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
         run = st.form_submit_button("Run backtest", use_container_width=True, key="bt_run")
 
@@ -314,13 +314,13 @@ def render_page() -> None:
 
     if summary is not None:
         st.subheader("Summary")
-        st.dataframe(pd.DataFrame([summary]), key="range_summary_df")
+        st.dataframe(pd.DataFrame([summary]), key="bt_summary_df")
 
     if trades_df is not None:
         if trades_df.empty:
             st.info("No trades found in this range.")
         else:
-            _render_df_with_copy("Trades", trades_df, "range_trades")
+            _render_df_with_copy("Trades", trades_df, "bt_trades")
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
