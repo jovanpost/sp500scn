@@ -127,6 +127,14 @@ def render_page() -> None:
                     key="range_atr_win",
                 )
             )
+            sr_min_ratio = float(
+                st.number_input(
+                    "Min S:R ratio",
+                    value=2.0,
+                    step=0.1,
+                    key="range_sr_min_ratio",
+                )
+            )
             sr_lookback = int(
                 st.number_input(
                     "S/R lookback (days)",
@@ -183,6 +191,7 @@ def render_page() -> None:
             "atr_window": atr_window,
             "lookback_days": vol_lookback,
             "horizon_days": horizon,
+            "sr_min_ratio": sr_min_ratio,
             "sr_lookback": sr_lookback,
             "use_precedent": use_precedent,
             "use_atr_feasible": use_atr_feasible,
