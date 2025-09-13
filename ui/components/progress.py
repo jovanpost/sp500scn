@@ -65,25 +65,41 @@ def status_block(title: str, key_prefix: str = "prog"):
       - log_fn(text) appends to a code block (keeps last ~200 lines)
     """
 
-    title_slot = st.container(key=f"{key_prefix}_status").empty()
     try:
-        title_slot.markdown(f"**{title}**")
+        status = st.status(title, expanded=True)
+        bar_slot = status.empty()
+        prog_widget = bar_slot.progress(0, key=f"{key_prefix}_prog")
+        log_slot = status.empty()
+        _buf: list[str] = []
+
+        def log_fn(msg: str):
+            try:
+                _buf.append(str(msg))
+                log_slot.code("\n".join(_buf[-200:]), language="text")
+            except Exception:
+                pass
+
+        return status, prog_widget, log_fn
     except Exception:
-        pass
-
-    bar_slot = st.container(key=f"{key_prefix}_prog").empty()
-    prog_widget = _ProgLike(bar_slot)
-
-    log_slot = st.container(key=f"{key_prefix}_log").empty()
-    _buf: list[str] = []
-
-    def log_fn(msg: str):
+        title_slot = st.container(key=f"{key_prefix}_status").empty()
         try:
-            _buf.append(str(msg))
-            # Keep last N lines to avoid unbounded growth
-            log_slot.code("\n".join(_buf[-200:]), language="text")
+            title_slot.markdown(f"**{title}**")
         except Exception:
             pass
 
-    return _StatusLike(title_slot), prog_widget, log_fn
+        bar_slot = st.container(key=f"{key_prefix}_prog").empty()
+        prog_widget = _ProgLike(bar_slot)
+
+        log_slot = st.container(key=f"{key_prefix}_log").empty()
+        _buf: list[str] = []
+
+        def log_fn(msg: str):
+            try:
+                _buf.append(str(msg))
+                # Keep last N lines to avoid unbounded growth
+                log_slot.code("\n".join(_buf[-200:]), language="text")
+            except Exception:
+                pass
+
+        return _StatusLike(title_slot), prog_widget, log_fn
 

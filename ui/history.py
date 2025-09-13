@@ -245,7 +245,7 @@ def outcomes_summary(dfh: pd.DataFrame):
     mask = dfh["Expiry_parsed"].notna()
     if mask.any():
         base_ns = pd.Timestamp.utcnow().normalize().value  # int64 ns at 00:00 UTC today
-        exp_ns = dfh.loc[mask, "Expiry_parsed"].view("int64")
+        exp_ns = dfh.loc[mask, "Expiry_parsed"].astype("int64")
         NS_PER_DAY = 86_400_000_000_000
         dte_days = ((exp_ns - base_ns) // NS_PER_DAY).astype("int64")
         dfh.loc[mask, "DTE"] = pd.array(dte_days, dtype="Int64")
