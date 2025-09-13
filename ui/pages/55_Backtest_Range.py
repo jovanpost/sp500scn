@@ -2,13 +2,31 @@ import io
 import datetime as dt
 from typing import Dict
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 
 from data_lake.storage import Storage
-from engine.signal_scan import ScanParams
-from backtest.run_range import run_range
+import engine.signal_scan as sigscan
+from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
+
+
+@st.cache_data(show_spinner=False)
+def load_prices_cached(storage, ticker: str) -> pd.DataFrame:
+    """
+    Load one ticker's prices from lake and cache by ticker.
+    Returns df with a Date index (tz-naive) and at least columns:
+    ['open','high','low','close','volume','dividends','stock_splits'].
+    """
+    path = f"prices/{ticker}.parquet"
+    df = storage.read_parquet(path)
+
+    # normalize
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        df = df.set_index("date").sort_index()
+    return df
 
 
 def _df_to_markdown_safe(df: pd.DataFrame) -> str:
@@ -204,14 +222,81 @@ def render_page() -> None:
                 "precedent_window": precedent_window,
             }
 
-            def _cb(i: int, total: int, day: pd.Timestamp, cands: int, hits: int) -> None:
-                pct = int(i / max(1, total) * 100)
-                prog.progress(pct, text=f"{pct}% ({day.date()})")
-                log(f"{day.date()} → {cands} matches, {hits} hits")
+            start_date = pd.to_datetime(start)
+            end_date = pd.to_datetime(end)
+            date_list = list(pd.date_range(start=start_date, end=end_date, freq="B"))
 
-            trades_df, summary = run_range(
-                storage, str(start), str(end), params, progress_cb=_cb
-            )
+            members = sigscan._load_members(storage)
+
+            active_tickers = set()
+            for D in date_list:
+                active_tickers.update(members_on_date(members, D)["ticker"].tolist())
+            active_tickers = sorted(active_tickers)
+
+            prices: Dict[str, pd.DataFrame] = {}
+            log(f"Preloading {len(active_tickers)} tickers…")
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futs = {ex.submit(load_prices_cached, storage, t): t for t in active_tickers}
+                loaded = 0
+                for fut in as_completed(futs):
+                    t = futs[fut]
+                    try:
+                        prices[t] = fut.result()
+                    except Exception as e:
+                        log(f"load FAIL {t}: {e}")
+                    loaded += 1
+                    prog.progress(
+                        int(loaded / max(1, len(active_tickers)) * 100),
+                        text=f"Prefetch {loaded}/{len(active_tickers)}",
+                    )
+            log("Prefetch complete.")
+
+            def _load_prices_patched(_storage, ticker):
+                df = prices.get(ticker)
+                if df is None:
+                    return None
+                out = df.reset_index().rename(columns={"index": "date"})
+                out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
+                return out[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
+
+            def _load_members_patched(_storage):
+                return members
+
+            sigscan._load_prices = _load_prices_patched
+            sigscan._load_members = _load_members_patched
+
+            results = []
+            days_with_candidates = 0
+            done = 0
+            total_days = len(date_list)
+            for D in date_list:
+                cands, out, _fails, _stats = sigscan.scan_day(storage, pd.Timestamp(D), params)
+                cand_count = int(len(cands))
+                if cand_count:
+                    days_with_candidates += 1
+                if not out.empty:
+                    tmp = out.copy()
+                    tmp["date"] = pd.Timestamp(D).normalize()
+                    results.append(tmp)
+                done += 1
+                pct = int(done / max(1, total_days) * 100)
+                prog.progress(pct, text=f"{pct}%  ({pd.Timestamp(D).date()})")
+                if done % 5 == 0:
+                    log(f"{pd.Timestamp(D).date()} → {cand_count} candidates")
+
+            trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+            hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
+            summary = {
+                "total_days": int(total_days),
+                "days_with_candidates": int(days_with_candidates),
+                "trades": int(len(trades_df)),
+                "hits": hits,
+                "hit_rate": float(hits) / max(1, len(trades_df)),
+                "median_days_to_exit": float(trades_df["days_to_exit"].median()) if not trades_df.empty else float("nan"),
+                "avg_MAE_pct": float(trades_df["mae_pct"].mean()) if not trades_df.empty else float("nan"),
+                "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
+            }
+
             st.session_state["bt_trades"] = trades_df
             st.session_state["bt_summary"] = summary
 
@@ -223,9 +308,7 @@ def render_page() -> None:
                 storage.write_bytes(path, buf.getvalue())
                 st.session_state["bt_save_path"] = path
 
-            status.update(
-                label=f"Backtest complete ✅ ({len(trades_df)} trades)", state="complete"
-            )
+            status.update(label=f"Backtest complete ✅ ({len(trades_df)} trades)", state="complete")
             st.toast("Backtest finished", icon="✅")
         except Exception as e:
             log(f"ERROR: {e}")
