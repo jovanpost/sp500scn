@@ -7,6 +7,7 @@ import streamlit as st
 from typing import Dict, Any, Tuple, List
 
 from engine.replay import replay_trade
+from engine.metrics import has_21d_runup_precedent
 
 # Safe table exporters that do not require pandas.to_markdown / tabulate
 def _df_to_markdown_safe(df: pd.DataFrame) -> str:
@@ -296,7 +297,48 @@ def _run_signal_scan(
                 continue
         stats["after_sr"] += 1
 
-        row = {"ticker": t, **m}
+        # Advanced feasibility checks
+        require_precedent = opts.get("require_precedent", True)
+        precedent_lookback_days = int(opts.get("precedent_lookback_days", 252))
+        require_atr_feas = opts.get("require_atr_feas", True)
+        atr_multiple = float(opts.get("atr_multiple", 1.0))
+
+        history_before_D = df[df["date"] < pd.to_datetime(D)]
+        tp_halfway_pct = m.get("tp_halfway_pct")
+        atr21_pct = m.get("atr21_pct")
+
+        precedent_ok = has_21d_runup_precedent(
+            history_before_D, precedent_lookback_days, 21, tp_halfway_pct
+        ) if not np.isnan(tp_halfway_pct) else False
+
+        atr_ok = (
+            (atr21_pct / 100.0) * 21 >= tp_halfway_pct * atr_multiple
+            if (atr21_pct is not None and not np.isnan(atr21_pct) and not np.isnan(tp_halfway_pct))
+            else False
+        )
+
+        reasons: List[str] = []
+        if not precedent_ok:
+            reasons.append(
+                f"no 21d precedent ≥ {tp_halfway_pct:.2%} in {precedent_lookback_days}d"
+            )
+        if not atr_ok:
+            reasons.append(f"ATR×21 < target×{atr_multiple:.2f}")
+
+        row = {
+            "ticker": t,
+            **m,
+            "precedent_ok": precedent_ok,
+            "atr_ok": atr_ok,
+            "reasons": "; ".join(reasons),
+        }
+
+        if (require_precedent and not precedent_ok) or (
+            require_atr_feas and not atr_ok
+        ):
+            dropped_examples.append(f"{t} feasibility")
+            continue
+
         results.append(row)
 
     res_df = pd.DataFrame(results)
@@ -350,6 +392,16 @@ def render_page():
         else 0.0
     )
 
+    with st.expander("Advanced feasibility filters"):
+        require_precedent = st.checkbox("Require 21d run-up precedent", value=True)
+        precedent_lookback_days = st.slider(
+            "Precedent lookback days", min_value=63, max_value=504, value=252, step=21
+        )
+        require_atr_feas = st.checkbox("Require ATR×21 feasibility", value=True)
+        atr_multiple = st.slider(
+            "ATR multiple", min_value=0.5, max_value=3.0, value=1.0, step=0.1
+        )
+
     dry_n = st.number_input(
         "Dry-run N tickers", min_value=0, max_value=3000, value=30, step=10
     )
@@ -380,6 +432,10 @@ def render_page():
                     "min_ret21_pct": min_ret21_pct if use_ret21 else None,
                     "require_sr": True,
                     "sr_ratio_min": 2.0,
+                    "require_precedent": require_precedent,
+                    "precedent_lookback_days": int(precedent_lookback_days),
+                    "require_atr_feas": require_atr_feas,
+                    "atr_multiple": float(atr_multiple),
                 },
                 dry_run_n=(dry_n or None) if dry_n > 0 else None,
             )
@@ -410,9 +466,12 @@ def render_page():
                     f"{len(run_df)} matches; limiting to top {limit_n} by sr_ratio unless confirmed"
                 )
                 if not st.checkbox("Process all matches", value=False):
-                    run_df = run_df.sort_values("sr_ratio", ascending=False).head(
-                        limit_n
-                    )
+                    if "sr_ratio" in run_df.columns:
+                        run_df = run_df.sort_values("sr_ratio", ascending=False).head(
+                            limit_n
+                        )
+                    else:
+                        run_df = run_df.head(limit_n)
 
             if st.button("Run outcomes for matches"):
                 from data_lake.storage import Storage
@@ -534,7 +593,15 @@ def render_page():
                         buf.getvalue(),
                     )
         else:
-            st.info("No matches for the selected filters.")
+            gates = []
+            if require_precedent:
+                gates.append("21d precedent")
+            if require_atr_feas:
+                gates.append(f"ATR×21 ≥ target×{atr_multiple:.2f}")
+            msg = "No matches for the selected filters."
+            if gates:
+                msg += " Enabled feasibility gates: " + ", ".join(gates)
+            st.info(msg)
             if show_debug and drops:
                 st.write("First few drops:", drops)
 
