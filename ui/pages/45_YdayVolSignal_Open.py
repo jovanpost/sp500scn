@@ -11,35 +11,35 @@ from ui.components.progress import status_block
 
 
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
-    import io, streamlit as st
-
     st.subheader(title)
+    if df is None or df.empty:
+        st.info("No rows.")
+        return
 
-    # CSV buffer for download + manual copy
+    # visible table
+    st.dataframe(df, use_container_width=True)
+
+    # CSV text once
     csv_buf = io.StringIO()
     df.to_csv(csv_buf, index=False)
     csv_txt = csv_buf.getvalue()
 
-    # Download button (native)
+    # download
     st.download_button(
-        f"\u2b07\ufe0f Download CSV — {title}",
+        label="\u2b07\ufe0f Download CSV",
         data=csv_txt.encode("utf-8"),
         file_name=f"{key_prefix}.csv",
         mime="text/csv",
         key=f"{key_prefix}_dl",
     )
 
-    # Copy UX (plain textarea users can select/copy)
-    with st.expander("\ud83d\udccb Copy table (CSV text)", expanded=False):
-        st.text_area(
-            label="Select and copy:",
-            value=csv_txt,
-            height=200,
-            key=f"{key_prefix}_copy",
-        )
-
-    # Render visually
-    st.dataframe(df, use_container_width=True)
+    # copyable textarea
+    st.text_area(
+        "Copy CSV",
+        value=csv_txt,
+        height=160,
+        key=f"{key_prefix}_copy",
+    )
 
 
 def render_page() -> None:
@@ -114,12 +114,8 @@ def render_page() -> None:
             "hits": int(out_df["hit"].sum()) if out_df is not None and not out_df.empty else 0,
         }
         st.dataframe(pd.DataFrame([summary]))
-        if not cand_df.empty:
-            _render_df_with_copy("✅ Candidates (matches)", cand_df, "matches")
-        if out_df is not None and not out_df.empty:
-            _render_df_with_copy("🎯 Outcomes", out_df, "outcomes")
-        else:
-            st.info("No outcomes to display.")
+        _render_df_with_copy("✅ Candidates (matches)", cand_df, "matches")
+        _render_df_with_copy("🎯 Outcomes", out_df, "outcomes")
 
 
 def page() -> None:
