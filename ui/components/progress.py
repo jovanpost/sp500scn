@@ -16,20 +16,53 @@ class _StatusLike:
 
 def status_block(title: str, key_prefix: str = "prog"):
     """
-    Version-proof progress block.
+    Version-proof progress block built from primitives only.
     Returns: (status_like, prog_widget, log_fn)
       - status_like.update(label=..., state=...)
-      - prog_widget.progress(int 0..100)
+      - prog_widget.progress(value) where value can be 0..1 (float) or 0..100 (int)
       - log_fn(text) appends to a code block
     """
     title_slot = st.empty()
     title_slot.markdown(f"**{title}**")
-    prog_widget = st.progress(0, key=f"{key_prefix}_prog")
+
+    # Progress: avoid passing key= (not supported in some versions),
+    # and normalize inputs so callers can pass float 0..1 or int 0..100.
+    try:
+        raw = st.progress(0)  # no key argument for max compatibility
+
+        class _ProgLike:
+            def __init__(self, raw_prog):
+                self._raw = raw_prog
+
+            def progress(self, v):
+                # Normalize to 0..100 int
+                try:
+                    if isinstance(v, float):
+                        if 0.0 <= v <= 1.0:
+                            v = int(round(v * 100))
+                        else:
+                            v = int(round(v))
+                    else:
+                        v = int(v)
+                except Exception:
+                    v = 0
+                v = max(0, min(100, v))
+                self._raw.progress(v)
+
+        prog_widget = _ProgLike(raw)
+    except Exception:
+        class _NoopProg:
+            def progress(self, v):  # no-op fallback
+                pass
+
+        prog_widget = _NoopProg()
+
     log_slot = st.empty()
     _buf: list[str] = []
 
     def log_fn(msg: str):
         _buf.append(str(msg))
-        log_slot.code("\n".join(_buf[-80:]), language="text")
+        # Keep last N lines to avoid growing forever
+        log_slot.code("\n".join(_buf[-200:]), language="text")
 
     return _StatusLike(title_slot), prog_widget, log_fn
