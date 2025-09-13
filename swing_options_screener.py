@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, time
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from utils.numeric import safe_float
 from utils.prices import fetch_history
@@ -108,26 +107,7 @@ def _market_session_state():
     return now, open_t, close_t
 
 def _get_1m_data(ticker):
-    try:
-        df = yf.download(ticker, period="1d", interval="1m",
-                         auto_adjust=False, progress=False, prepost=False)
-        if df is None or df.empty: return None
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        try:
-            if df.index.tz is None:
-                df.index = (df.index.tz_localize("UTC")
-                                     .tz_convert(ZoneInfo("America/New_York"))
-                                     .tz_localize(None))
-        except Exception:
-            pass
-        df.columns = [c.title() for c in df.columns]
-        for col in ('Open','High','Low','Close','Volume'):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception:
-        return None
+    return None
 
 def _intraday_quote_and_volume(ticker):
     """Return (last_price, today_cum_volume, source_note, entry_ts_ET)."""
@@ -138,30 +118,15 @@ def _intraday_quote_and_volume(ticker):
     m1 = _get_1m_data(ticker)
     if m1 is not None and not m1.empty:
         last_ts = m1.index[-1]
-        if (now - last_ts).total_seconds() <= 5*60 and np.isfinite(safe_float(m1['Close'].iloc[-1])):
+        if (now - last_ts).total_seconds() <= 5 * 60 and np.isfinite(safe_float(m1['Close'].iloc[-1])):
             last_px = safe_float(m1['Close'].iloc[-1])
             today_vol = safe_float(m1['Volume'].sum())
             if np.isfinite(last_px) and today_vol >= 0:
                 return last_px, today_vol, "1m_fresh", last_ts
 
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        lp = safe_float(fi.get("last_price", np.nan)) if isinstance(fi, dict) else np.nan
-        tv = safe_float(fi.get("last_volume", np.nan)) if isinstance(fi, dict) else np.nan
-        if np.isfinite(lp):
-            return lp, (tv if np.isfinite(tv) else np.nan), "fast_info", now
-    except Exception:
-        pass
-
     return np.nan, np.nan, "no_intraday", None
 
 def _previous_close_robust(df_daily, ticker):
-    try:
-        fi = yf.Ticker(ticker).fast_info
-        pc = safe_float(fi.get('previous_close', np.nan)) if isinstance(fi, dict) else np.nan
-        if np.isfinite(pc): return pc
-    except Exception:
-        pass
     et_today = _now_et().date()
     idx_dates = df_daily.index.date
     if len(df_daily) == 0: return np.nan
@@ -273,27 +238,6 @@ def compute_relvol_time_adjusted(df_daily, today_vol, use_median=False):
 # -------------------------
 # Options helpers
 # -------------------------
-def _parse_expirations(t: yf.Ticker):
-    exps = getattr(t, "options", [])
-    out = []
-    today_et = _now_et().date()
-    for s in exps or []:
-        try:
-            d = datetime.strptime(s, "%Y-%m-%d").date()
-            if d >= today_et:
-                out.append(d)
-        except Exception:
-            continue
-    return out
-
-def _nearest_expiration(t: yf.Ticker, target_days=TARGET_OPT_DAYS_DEFAULT):
-    exps = _parse_expirations(t)
-    if not exps:
-        return None, "no_expirations"
-    today = _now_et().date()
-    best = min(exps, key=lambda d: abs((d - today).days - target_days))
-    return best, None
-
 def _mid_or_last(row):
     bid = safe_float(row.get('bid', np.nan))
     ask = safe_float(row.get('ask', np.nan))
@@ -321,63 +265,7 @@ def _row_for_strike(df_calls, strike):
     return df_calls.loc[idx]
 
 def suggest_bull_call_spread(ticker, tp_price, target_days=TARGET_OPT_DAYS_DEFAULT, width_pref=OPT_WIDTH_PREFERENCE):
-    try:
-        t = yf.Ticker(ticker)
-        expiry, err = _nearest_expiration(t, target_days=target_days)
-        if err: return None, err
-        chain = t.option_chain(expiry.strftime("%Y-%m-%d"))
-        calls = chain.calls
-        if calls is None or calls.empty: return None, "no_calls"
-
-        sell_row = calls.iloc[(calls['strike'] - tp_price).abs().idxmin()]
-        sell_k = safe_float(sell_row['strike'])
-
-        buy_row = None
-        buy_k = None
-        for w in width_pref:
-            candidate = sell_k - w
-            if not calls[np.isclose(calls['strike'], candidate)].empty:
-                buy_row = _row_for_strike(calls, candidate)
-                buy_k = safe_float(buy_row['strike'])
-                break
-        if buy_row is None:
-            lower_calls = calls[calls['strike'] < sell_k]
-            if lower_calls.empty:
-                return None, "no_lower_strike"
-            buy_row = lower_calls.iloc[(lower_calls['strike'] - (sell_k - 5)).abs().idxmin()]
-            buy_k = safe_float(buy_row['strike'])
-
-        mid_long  = _mid_or_last(buy_row)
-        mid_short = _mid_or_last(sell_row)
-        if not (np.isfinite(mid_long) and np.isfinite(mid_short)):
-            return None, "no_quotes"
-
-        debit_mid = mid_long - mid_short
-        debit_con = _conservative_price(buy_row, sell_row)
-        width = sell_k - buy_k
-        max_profit_mid = max(width - debit_mid, 0)
-        max_profit_con = max(width - debit_con, 0)
-        rr_mid = (max_profit_mid / debit_mid) if debit_mid > 0 else np.nan
-        rr_con = (max_profit_con / debit_con) if debit_con > 0 else np.nan
-        breakeven_mid = buy_k + debit_mid
-
-        out = {
-            "OptExpiry": expiry.isoformat(),
-            "BuyK": round(buy_k, 2),
-            "SellK": round(sell_k, 2),
-            "Width": round(width, 2),
-            "DebitMid": round(debit_mid, 2),
-            "DebitCons": round(debit_con, 2),
-            "MaxProfitMid": round(max_profit_mid, 2),
-            "MaxProfitCons": round(max_profit_con, 2),
-            "RR_Spread_Mid": round(rr_mid, 2) if np.isfinite(rr_mid) else "",
-            "RR_Spread_Cons": round(rr_con, 2) if np.isfinite(rr_con) else "",
-            "BreakevenMid": round(breakeven_mid, 2),
-            "PricingNote": "ask(buy)-bid(sell)=DebitCons; mid-mid=DebitMid"
-        }
-        return out, None
-    except Exception as e:
-        return None, f"opt_error:{e}"
+    return None, "options data unavailable"
 
 # -------------------------
 # Core evaluation

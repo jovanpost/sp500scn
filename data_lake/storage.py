@@ -4,9 +4,6 @@ import os, io, json, base64, pathlib, tempfile, logging
 from typing import Optional, Tuple, Any, List
 
 import pandas as pd
-import yfinance as yf
-from requests.exceptions import RequestException
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 try:
     from supabase import create_client, Client  # type: ignore
@@ -306,46 +303,53 @@ class Storage:
 def load_prices_cached(
     _storage: Storage, tickers: List[str], start: pd.Timestamp, end: pd.Timestamp
 ) -> pd.DataFrame:
-    """Load OHLCV data prioritising Supabase with yfinance fallback.
+    """Load OHLCV data from Supabase with pagination.
 
-    Supabase queries attempt to fetch the full date range without the usual
-    1000-row limit; missing tickers fall back to yfinance. Duplicate columns are
-    dropped from the final concatenated DataFrame.
+    Skips storage hashing; drops duplicate columns; keeps ticker column.
     """
 
     supabase: Client | None = getattr(_storage, "supabase_client", None)
     prices: list[pd.DataFrame] = []
-    missing_tickers: set[str] = set(tickers)
+    failed_tickers: set[str] = set()
+    PAGE_SIZE = 1000
 
     if supabase:
         for ticker in tickers:
             try:
-                response = (
-                    supabase.table("sp500_ohlcv")
-                    .select("ticker, date, open, high, low, close, volume")
-                    .eq("ticker", ticker)
-                    .gte("date", start.strftime("%Y-%m-%d"))
-                    .lte("date", end.strftime("%Y-%m-%d"))
-                    .order("date")
-                    .limit(100000)
-                    .execute()
-                )
-                if response.data:
-                    df = pd.DataFrame(response.data)
+                offset = 0
+                ticker_data: list[dict] = []
+                while True:
+                    resp = (
+                        supabase.table("sp500_ohlcv")
+                        .select("ticker, date, open, high, low, close, volume")
+                        .eq("ticker", ticker)
+                        .gte("date", start.strftime("%Y-%m-%d"))
+                        .lte("date", end.strftime("%Y-%m-%d"))
+                        .order("date")
+                        .range(offset, offset + PAGE_SIZE - 1)
+                        .execute()
+                    )
+                    if not resp.data:
+                        break
+                    ticker_data.extend(resp.data)
+                    if len(resp.data) < PAGE_SIZE:
+                        break
+                    offset += PAGE_SIZE
+
+                if ticker_data:
+                    df = pd.DataFrame(ticker_data)
                     if not df.empty:
                         df["Date"] = pd.to_datetime(df["date"])
                         df = (
-                            df[
-                                [
-                                    "Date",
-                                    "ticker",
-                                    "open",
-                                    "high",
-                                    "low",
-                                    "close",
-                                    "volume",
-                                ]
-                            ]
+                            df[[
+                                "Date",
+                                "ticker",
+                                "open",
+                                "high",
+                                "low",
+                                "close",
+                                "volume",
+                            ]]
                             .rename(
                                 columns={
                                     "open": "Open",
@@ -358,39 +362,20 @@ def load_prices_cached(
                             .set_index("Date")
                         )
                         prices.append(df)
-                        missing_tickers.discard(ticker)
+                    else:
+                        failed_tickers.add(ticker)
+                else:
+                    failed_tickers.add(ticker)
             except Exception as e:
-                st.warning(
-                    f"Supabase failed for {ticker}: {str(e)[:50]}... To yfinance."
+                failed_tickers.add(ticker)
+                st.error(
+                    f"Supabase query failed for {ticker}: {str(e)[:50]}. No data loaded."
                 )
 
-    if missing_tickers:
-
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=4, max=10),
-            retry=retry_if_exception_type(
-                (RequestException, json.JSONDecodeError, ConnectionError)
-            ),
+    if failed_tickers:
+        st.warning(
+            f"Failed to load data for {len(failed_tickers)} tickers: {', '.join(failed_tickers)}"
         )
-        def safe_yf_download(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
-            try:
-                df = yf.download(ticker, start=start_str, end=end_str, progress=False)
-                if not df.empty:
-                    df = df[["Open", "High", "Low", "Close", "Volume"]]
-                return df
-            except Exception as e:
-                st.warning(f"yfinance failed {ticker}: {str(e)[:50]}... Skip.")
-                return pd.DataFrame()
-
-        for ticker in list(missing_tickers):
-            df = safe_yf_download(
-                ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-            )
-            if not df.empty:
-                df["ticker"] = ticker
-                prices.append(df)
-                missing_tickers.discard(ticker)
 
     if prices:
         all_prices = pd.concat(prices, axis=0)
@@ -398,7 +383,5 @@ def load_prices_cached(
             all_prices = all_prices.loc[:, ~all_prices.columns.duplicated(keep="first")]
             st.info("Dropped duplicate columns in prices.")
         return all_prices
+    st.error("No price data loaded from Supabase. Check table name or data availability.")
     return pd.DataFrame()
-
-
-print("load_prices_cached imported successfully")

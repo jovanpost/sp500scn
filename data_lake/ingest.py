@@ -4,73 +4,65 @@ from __future__ import annotations
 
 import io
 import json
-import time
 from datetime import datetime
 from typing import List
 
 import pandas as pd
-import yfinance as yf
+from supabase import Client
 
 from .schemas import IngestJob, IngestResult
 from .storage import Storage
 
-RATE_LIMIT_SECONDS = 0.5
-MAX_RETRIES = 3
 
-
-def _fetch(job: IngestJob) -> pd.DataFrame:
+def _fetch(storage: Storage, job: IngestJob) -> pd.DataFrame:
     ticker = job["ticker"]
-    yf_symbol = str(ticker).strip().lstrip("$").replace(".", "-")
     start, end = job["start"], job["end"]
-    for attempt in range(MAX_RETRIES):
-        try:
-            df = yf.Ticker(yf_symbol).history(
-                interval="1d", start=start, end=end, auto_adjust=True, actions=True
+    supabase: Client | None = getattr(storage, "supabase_client", None)
+    if not supabase:
+        return pd.DataFrame()
+
+    page_size = 1000
+    offset = 0
+    rows: list[dict] = []
+    while True:
+        resp = (
+            supabase.table("sp500_ohlcv")
+            .select(
+                "ticker, date, open, high, low, close, volume, dividends, stock_splits"
             )
+            .eq("ticker", ticker)
+            .gte("date", start)
+            .lte("date", end)
+            .order("date")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        if not resp.data:
             break
-        except Exception:
-            if attempt + 1 == MAX_RETRIES:
-                raise
-            time.sleep(RATE_LIMIT_SECONDS * (attempt + 1))
-    # Ensure we always have a uniform schema, including a 'date' column.
-    if df.empty:
-        df = pd.DataFrame({
-            # yfinance's canonical column names
-            "Date": pd.Series(dtype="datetime64[ns]"),
-            "Open": pd.Series(dtype="float64"),
-            "High": pd.Series(dtype="float64"),
-            "Low": pd.Series(dtype="float64"),
-            "Close": pd.Series(dtype="float64"),
-            "Volume": pd.Series(dtype="int64"),
-            "Dividends": pd.Series(dtype="float64"),
-            "Stock Splits": pd.Series(dtype="float64"),
-        })
-    for col in ["Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]:
-        if col not in df.columns:
-            df[col] = 0.0 if col in {"Dividends", "Stock Splits"} else 0
-    df = df[["Open", "High", "Low", "Close", "Volume", "Dividends", "Stock Splits"]]
-    df = df.rename(
-        columns={
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Volume": "volume",
-            "Dividends": "dividends",
-            "Stock Splits": "stock_splits",
-        }
-    )
-    # yfinance uses a DatetimeIndex named 'Date' for history; after reset we rename to 'date'.
-    # If there is no index (empty case), create a proper 'date' column with datetime dtype.
-    df = df.reset_index()
-    if "Date" in df.columns:
-        df = df.rename(columns={"Date": "date"})
-    if "date" not in df.columns:
-        df["date"] = pd.to_datetime(pd.Series([], dtype="datetime64[ns]"))
-    else:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        rows.extend(resp.data)
+        if len(resp.data) < page_size:
+            break
+        offset += page_size
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = ticker
-    return df
+    return df[
+        [
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "dividends",
+            "stock_splits",
+            "ticker",
+        ]
+    ]
 
 
 def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> dict:
@@ -83,7 +75,7 @@ def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> d
         error = None
         rows = 0
         try:
-            df = _fetch(job)
+            df = _fetch(storage, job)
             buffer = io.BytesIO()
             df.to_parquet(buffer, index=False)
             storage.write_bytes(path, buffer.getvalue())
@@ -95,7 +87,6 @@ def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> d
         results.append({"ticker": job["ticker"], "rows_written": rows, "path": path, "error": error})
         if progress_cb:
             progress_cb(idx + 1, len(jobs))
-        time.sleep(RATE_LIMIT_SECONDS)
 
     ok = sum(1 for r in results if not r["error"])
     failed = len(results) - ok
@@ -107,7 +98,7 @@ def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> d
     manifest = {
         "generated_at_utc": datetime.utcnow().isoformat(),
         "storage_backend": storage.mode,
-        "provider": "yfinance",
+        "provider": "supabase",
         "ok": ok,
         "failed": failed,
         "min_date": min_date,
