@@ -36,12 +36,13 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
         return
 
     # visible table
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
-    # CSV text once
+    # text for controls
     csv_buf = io.StringIO()
     df.to_csv(csv_buf, index=False)
     csv_txt = csv_buf.getvalue()
+    md_txt = df.to_markdown(index=False)
 
     # download
     st.download_button(
@@ -54,8 +55,8 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 
     # copyable textarea
     st.text_area(
-        "Copy CSV",
-        value=csv_txt,
+        "Copy Markdown",
+        value=md_txt,
         height=160,
         key=f"{key_prefix}_copy",
     )
@@ -174,7 +175,7 @@ def render_page() -> None:
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
-        run = st.form_submit_button("Run backtest", use_container_width=True, key="bt_run")
+        run = st.form_submit_button("Run backtest", width="stretch", key="bt_run")
 
     if isinstance(start, (list, tuple)):
         start = start[0]
