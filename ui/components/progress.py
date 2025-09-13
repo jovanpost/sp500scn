@@ -1,29 +1,40 @@
 from __future__ import annotations
 
-import time
-from typing import Iterable, Optional
-from uuid import uuid4
-
 import streamlit as st
 
 
-def status_block(title: str, *, key_prefix: str = "stx"):
-    """
-    Convenience context that returns (status, progress, log_write).
-    Use log_write(msg) to append lines safely.
-    """
-    key = f"{key_prefix}_{uuid4().hex[:8]}"
-    container = st.container()
-    with container:
-        status = st.status(title, expanded=True, key=f"{key}_status")
-        prog = st.progress(0, text="Starting…", key=f"{key}_prog")
-        log_area = st.empty()
-        lines: list[str] = []
+class _DummyStatus:
+    def update(self, **kwargs):
+        pass
 
-        def log_write(msg: str):
-            lines.append(msg)
-            # Render last ~60 lines to avoid huge DOM
-            tail = "\n".join(lines[-60:])
-            log_area.code(tail, language="text")
 
-    return status, prog, log_write
+def status_block(title: str, key_prefix: str = "prog"):
+    """
+    Returns (status, prog, log) where:
+      - status has .update(label=..., state=...) (noop in fallback)
+      - prog is st.progress
+      - log(msg: str) appends a message
+    """
+    root = st.container()
+
+    try:
+        status = st.status(title, expanded=True, key=f"{key_prefix}_status")
+        prog = st.progress(0, text="", key=f"{key_prefix}_prog")
+
+        def log(msg: str):
+            status.write(msg)
+
+        return status, prog, log
+    except Exception:
+        # Fallback for environments without st.status or when it errors
+        root.markdown(f"**{title}**", key=f"{key_prefix}_title")
+        prog = root.progress(0, text="", key=f"{key_prefix}_prog")
+        log_area = root.empty(key=f"{key_prefix}_log")
+        _buffer: list[str] = []
+
+        def log(msg: str):
+            _buffer.append(str(msg))
+            log_area.code("\n".join(_buffer[-50:]), language="text")
+
+        return _DummyStatus(), prog, log
+
