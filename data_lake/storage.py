@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os, io, json, base64, pathlib, tempfile, logging
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, List
 
 import pandas as pd
 import yfinance as yf
@@ -302,73 +302,90 @@ class Storage:
             return {"error": str(e)}
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(hash_funcs={Storage: lambda _: 0})
 def load_prices_cached(
-    _storage: Storage, tickers: list[str], start: pd.Timestamp, end: pd.Timestamp
+    _storage: Storage, tickers: List[str], start: pd.Timestamp, end: pd.Timestamp
 ) -> pd.DataFrame:
-    """Fetch OHLCV data for tickers using Supabase first, then yfinance."""
-    prices: list[pd.DataFrame] = []
-    missing: list[str] = []
+    """Load OHLCV data prioritising Supabase with yfinance fallback.
+
+    Supabase queries attempt to fetch the full date range without the usual
+    1000-row limit; missing tickers fall back to yfinance. Duplicate columns are
+    dropped from the final concatenated DataFrame.
+    """
 
     supabase: Client | None = getattr(_storage, "supabase_client", None)
+    prices: list[pd.DataFrame] = []
+    missing_tickers: set[str] = set(tickers)
+
     if supabase:
-        for t in tickers:
+        for ticker in tickers:
             try:
-                row_limit = (end - start).days + 1
-                query = (
+                response = (
                     supabase.table("sp500_ohlcv")
-                    .select("*")
-                    .eq("ticker", t)
+                    .select("ticker, date, open, high, low, close, volume")
+                    .eq("ticker", ticker)
                     .gte("date", start.strftime("%Y-%m-%d"))
                     .lte("date", end.strftime("%Y-%m-%d"))
-                    .limit(row_limit)
+                    .order("date")
+                    .limit(100000)
                     .execute()
                 )
-                df = pd.DataFrame(query.data)
-                if not df.empty:
-                    df["Date"] = pd.to_datetime(df["date"])
-                    df = df[
-                        ["Date", "Open", "High", "Low", "Close", "Volume", "ticker"]
-                    ].set_index("Date")
-                    prices.append(df)
-                else:
-                    missing.append(t)
+                if response.data:
+                    df = pd.DataFrame(response.data)
+                    if not df.empty:
+                        df["Date"] = pd.to_datetime(df["date"])
+                        df = df[
+                            ["Date", "open", "high", "low", "close", "volume"]
+                        ].rename(
+                            columns={
+                                "open": "Open",
+                                "high": "High",
+                                "low": "Low",
+                                "close": "Close",
+                                "volume": "Volume",
+                            }
+                        ).set_index("Date")
+                        prices.append(df)
+                        missing_tickers.discard(ticker)
             except Exception as e:
-                st.warning(f"Supabase query failed for {t}: {str(e)[:50]}... Falling back to yfinance.")
-                missing.append(t)
-    else:
-        missing = list(tickers)
+                st.warning(
+                    f"Supabase failed for {ticker}: {str(e)[:50]}... To yfinance."
+                )
 
-    if missing:
+    if missing_tickers:
 
         @retry(
             stop=stop_after_attempt(3),
-            wait=wait_exponential(min=4, max=10),
+            wait=wait_exponential(multiplier=1, min=4, max=10),
             retry=retry_if_exception_type(
                 (RequestException, json.JSONDecodeError, ConnectionError)
             ),
         )
-        def _dl(ticker: str) -> pd.DataFrame:
+        def safe_yf_download(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
             try:
-                return yf.download(
-                    ticker,
-                    start=start.strftime("%Y-%m-%d"),
-                    end=end.strftime("%Y-%m-%d"),
-                    progress=False,
-                )
+                df = yf.download(ticker, start=start_str, end=end_str, progress=False)
+                if not df.empty:
+                    df = df[["Open", "High", "Low", "Close", "Volume"]]
+                return df
             except Exception as e:
-                st.warning(f"yfinance failed for {ticker}: {str(e)[:50]}... Skipping.")
+                st.warning(f"yfinance failed {ticker}: {str(e)[:50]}... Skip.")
                 return pd.DataFrame()
 
-        for t in missing:
-            df = _dl(t)
+        for ticker in list(missing_tickers):
+            df = safe_yf_download(
+                ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+            )
             if not df.empty:
-                df["ticker"] = t
                 prices.append(df)
+                missing_tickers.discard(ticker)
 
     if prices:
-        all_prices = pd.concat(prices, ignore_index=False)
+        all_prices = pd.concat(prices, axis=0)
         if not all_prices.columns.is_unique:
-            all_prices = all_prices.loc[:, ~all_prices.columns.duplicated()]
+            all_prices = all_prices.loc[:, ~all_prices.columns.duplicated(keep="first")]
+            st.info("Dropped duplicate columns in prices.")
         return all_prices
     return pd.DataFrame()
+
+
+print("load_prices_cached imported successfully")
