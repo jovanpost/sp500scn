@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import logging
 import datetime as dt
-from typing import TypedDict, Tuple, List, Dict, Any
+from typing import TypedDict, Tuple, List, Dict, Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -135,7 +135,12 @@ def _compute_metrics(df: pd.DataFrame, D: dt.date, vol_lookback: int, atr_window
     }
 
 
-def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.DataFrame, pd.DataFrame, int, dict]:
+def scan_day(
+    storage: Storage,
+    D: pd.Timestamp,
+    params: ScanParams,
+    on_step: Callable[[int, int, str], None] | None = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, int, dict]:
     """
     Returns (candidates_df, outcomes_df, fail_count, debug_info).
     Must produce same columns as the UI page.
@@ -143,6 +148,7 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
 
     members = _load_members(storage)
     active = members_on_date(members, D.date())["ticker"].dropna().unique().tolist()
+    total = len(active)
 
     vol_lookback = int(params.get("lookback_days", 63))
     atr_window = int(params.get("atr_window", 21))
@@ -162,78 +168,84 @@ def scan_day(storage: Storage, D: pd.Timestamp, params: ScanParams) -> Tuple[pd.
 
     stats = {"universe": len(active), "loaded": 0, "candidates": 0}
 
-    for t in active:
-        df = _load_prices(storage, t)
-        if df is None or len(df) < max(vol_lookback, atr_window) + 2:
-            fail_count += 1
-            continue
-        stats["loaded"] += 1
-
-        D_ts = pd.to_datetime(D)
-        if D_ts not in df["date"].values:
-            idx = df["date"].searchsorted(D_ts)
-            if idx == 0 or idx >= len(df):
+    for idx, t in enumerate(active, 1):
+        try:
+            df = _load_prices(storage, t)
+            if df is None or len(df) < max(vol_lookback, atr_window) + 2:
                 fail_count += 1
                 continue
-            D_ts = df["date"].iloc[idx]
-        idx_found = df.index[df["date"] == D_ts]
-        if len(idx_found) == 0 or idx_found[0] == 0:
-            fail_count += 1
-            continue
-        i = idx_found[0]
-        dm1 = i - 1
+            stats["loaded"] += 1
 
-        m = _compute_metrics(df, D_ts, vol_lookback, atr_window)
-        if not m:
-            fail_count += 1
-            continue
+            D_ts = pd.to_datetime(D)
+            if D_ts not in df["date"].values:
+                idx_loc = df["date"].searchsorted(D_ts)
+                if idx_loc == 0 or idx_loc >= len(df):
+                    fail_count += 1
+                    continue
+                D_ts = df["date"].iloc[idx_loc]
+            idx_found = df.index[df["date"] == D_ts]
+            if len(idx_found) == 0 or idx_found[0] == 0:
+                fail_count += 1
+                continue
+            i = idx_found[0]
+            dm1 = i - 1
 
-        if (
-            (not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close)
-            and (not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol)
-            and m["gap_open_pct"] >= min_gap
-            and (not np.isnan(m["sr_ratio"]) and m["sr_ratio"] >= sr_min)
-        ):
-            tp_halfway_pct = m.get("tp_halfway_pct")
-            required_pct = tp_halfway_pct
-            prec_ok = has_21d_precedent(
-                df, dm1, required_pct, lookback_days=prec_lookback, window=prec_window
-            ) if (required_pct is not None and not np.isnan(required_pct)) else False
-            atr_ok = atr_feasible(
-                df, dm1, required_pct, atr_window
-            ) if (required_pct is not None and not np.isnan(required_pct)) else False
-            reasons: List[str] = []
-            if not prec_ok:
-                reasons.append("no_21d_precedent")
-            if not atr_ok:
-                reasons.append("atr_insufficient")
+            m = _compute_metrics(df, D_ts, vol_lookback, atr_window)
+            if not m:
+                fail_count += 1
+                continue
 
-            row = {
-                "ticker": t,
-                **m,
-                "precedent_ok": int(prec_ok),
-                "atr_ok": int(atr_ok),
-                "reasons": ",".join(reasons),
-            }
-            include = ((not use_precedent) or prec_ok) and ((not use_atr_feasible) or atr_ok)
-            if include:
-                cand_rows.append(row)
+            if (
+                (not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close)
+                and (not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol)
+                and m["gap_open_pct"] >= min_gap
+                and (not np.isnan(m["sr_ratio"]) and m["sr_ratio"] >= sr_min)
+            ):
+                tp_halfway_pct = m.get("tp_halfway_pct")
+                required_pct = tp_halfway_pct
+                prec_ok = has_21d_precedent(
+                    df, dm1, required_pct, lookback_days=prec_lookback, window=prec_window
+                ) if (required_pct is not None and not np.isnan(required_pct)) else False
+                atr_ok = atr_feasible(
+                    df, dm1, required_pct, atr_window
+                ) if (required_pct is not None and not np.isnan(required_pct)) else False
+                reasons: List[str] = []
+                if not prec_ok:
+                    reasons.append("no_21d_precedent")
+                if not atr_ok:
+                    reasons.append("atr_insufficient")
 
-                tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
-                stop_price = row["support"]
-                out = replay_trade(
-                    df[["date", "open", "high", "low", "close"]],
-                    pd.to_datetime(D),
-                    row["entry_open"],
-                    tp_price,
-                    stop_price,
-                    horizon_days=horizon,
+                row = {
+                    "ticker": t,
+                    **m,
+                    "precedent_ok": int(prec_ok),
+                    "atr_ok": int(atr_ok),
+                    "reasons": ",".join(reasons),
+                }
+                include = ((not use_precedent) or prec_ok) and (
+                    (not use_atr_feasible) or atr_ok
                 )
-                out_row = {**row, "tp_price": tp_price, **out}
-                out_rows.append(out_row)
-        else:
-            # did not meet basic filters
-            pass
+                if include:
+                    cand_rows.append(row)
+
+                    tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
+                    stop_price = row["support"]
+                    out = replay_trade(
+                        df[["date", "open", "high", "low", "close"]],
+                        pd.to_datetime(D),
+                        row["entry_open"],
+                        tp_price,
+                        stop_price,
+                        horizon_days=horizon,
+                    )
+                    out_row = {**row, "tp_price": tp_price, **out}
+                    out_rows.append(out_row)
+        finally:
+            if on_step:
+                try:
+                    on_step(idx, total, t)
+                except Exception:
+                    pass
 
     cand_df = pd.DataFrame(cand_rows)
     out_df = pd.DataFrame(out_rows)

@@ -8,6 +8,7 @@ import streamlit as st
 from data_lake.storage import Storage
 from engine.signal_scan import ScanParams
 from backtest.run_range import run_range
+from ui.components.progress import status_block
 
 
 def _df_to_markdown_safe(df: pd.DataFrame) -> str:
@@ -175,7 +176,7 @@ def render_page() -> None:
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="range_save_outcomes"
         )
-        run = st.form_submit_button("Run backtest", use_container_width=True)
+        run = st.form_submit_button("Run backtest", use_container_width=True, key="bt_run")
 
     if isinstance(start, (list, tuple)):
         start = start[0]
@@ -183,41 +184,54 @@ def render_page() -> None:
         end = end[0]
 
     if run:
-        storage = Storage()
-        params: ScanParams = {
-            "min_close_up_pct": min_close_up_pct,
-            "min_vol_multiple": min_vol_multiple,
-            "min_gap_open_pct": min_gap_open_pct,
-            "atr_window": atr_window,
-            "lookback_days": vol_lookback,
-            "horizon_days": horizon,
-            "sr_min_ratio": sr_min_ratio,
-            "sr_lookback": sr_lookback,
-            "use_precedent": use_precedent,
-            "use_atr_feasible": use_atr_feasible,
-            "precedent_lookback": precedent_lookback,
-            "precedent_window": precedent_window,
-        }
-        prog = st.progress(0.0)
-        status = st.empty()
+        st.session_state["bt_running"] = True
+        status, prog, log = status_block("Backtest running…", key_prefix="bt")
 
-        def _cb(i: int, total: int, day: pd.Timestamp, cands: int, hits: int) -> None:
-            prog.progress(i / total if total else 0.0)
-            status.text(f"{day.date()}: {cands} matches, {hits} hits")
+        try:
+            storage = Storage()
+            params: ScanParams = {
+                "min_close_up_pct": min_close_up_pct,
+                "min_vol_multiple": min_vol_multiple,
+                "min_gap_open_pct": min_gap_open_pct,
+                "atr_window": atr_window,
+                "lookback_days": vol_lookback,
+                "horizon_days": horizon,
+                "sr_min_ratio": sr_min_ratio,
+                "sr_lookback": sr_lookback,
+                "use_precedent": use_precedent,
+                "use_atr_feasible": use_atr_feasible,
+                "precedent_lookback": precedent_lookback,
+                "precedent_window": precedent_window,
+            }
 
-        trades_df, summary = run_range(
-            storage, str(start), str(end), params, progress_cb=_cb
-        )
-        st.session_state["bt_trades"] = trades_df
-        st.session_state["bt_summary"] = summary
+            def _cb(i: int, total: int, day: pd.Timestamp, cands: int, hits: int) -> None:
+                pct = int(i / max(1, total) * 100)
+                prog.progress(pct, text=f"{pct}% ({day.date()})")
+                log(f"{day.date()} → {cands} matches, {hits} hits")
 
-        if save_outcomes and not trades_df.empty:
-            run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            buf = io.BytesIO()
-            trades_df.to_parquet(buf, index=False)
-            path = f"backtests/{run_id}.parquet"
-            storage.write_bytes(path, buf.getvalue())
-            st.session_state["bt_save_path"] = path
+            trades_df, summary = run_range(
+                storage, str(start), str(end), params, progress_cb=_cb
+            )
+            st.session_state["bt_trades"] = trades_df
+            st.session_state["bt_summary"] = summary
+
+            if save_outcomes and not trades_df.empty:
+                run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                buf = io.BytesIO()
+                trades_df.to_parquet(buf, index=False)
+                path = f"backtests/{run_id}.parquet"
+                storage.write_bytes(path, buf.getvalue())
+                st.session_state["bt_save_path"] = path
+
+            status.update(
+                label=f"Backtest complete ✅ ({len(trades_df)} trades)", state="complete"
+            )
+            st.toast("Backtest finished", icon="✅")
+        except Exception as e:
+            log(f"ERROR: {e}")
+            status.update(label="Backtest failed ❌", state="error")
+        finally:
+            st.session_state["bt_running"] = False
 
     trades_df = st.session_state.get("bt_trades")
     summary = st.session_state.get("bt_summary")

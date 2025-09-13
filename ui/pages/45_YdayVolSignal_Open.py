@@ -7,6 +7,7 @@ import streamlit as st
 
 from engine.signal_scan import scan_day, ScanParams
 from data_lake.storage import Storage
+from ui.components.progress import status_block
 
 
 def _df_to_markdown_safe(df: pd.DataFrame) -> str:
@@ -70,29 +71,49 @@ def render_page() -> None:
     sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
     save_outcomes = st.checkbox("Save outcomes to lake", value=False)
 
-    if st.button("Run scan", type="primary"):
-        storage = Storage()
-        params: ScanParams = {
-            "min_close_up_pct": min_close_up_pct,
-            "min_vol_multiple": min_vol_multiple,
-            "min_gap_open_pct": min_gap_open_pct,
-            "atr_window": atr_window,
-            "lookback_days": vol_lookback,
-            "horizon_days": horizon,
-            "sr_min_ratio": sr_min_ratio,
-        }
-        cand_df, out_df, fails, _dbg = scan_day(storage, pd.to_datetime(D), params)
-        st.session_state["cand_df"] = cand_df
-        st.session_state["out_df"] = out_df
-        st.session_state["fails"] = fails
+    if st.button("Run scan", type="primary", key="scan_run"):
+        st.session_state["scan_running"] = True
+        status, prog, log = status_block("Running filters…", key_prefix="scan")
 
-        if save_outcomes and not out_df.empty:
-            buf = io.BytesIO()
-            out_df.to_parquet(buf, index=False)
-            storage.write_bytes(
-                f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
-                buf.getvalue(),
+        try:
+            storage = Storage()
+            params: ScanParams = {
+                "min_close_up_pct": min_close_up_pct,
+                "min_vol_multiple": min_vol_multiple,
+                "min_gap_open_pct": min_gap_open_pct,
+                "atr_window": atr_window,
+                "lookback_days": vol_lookback,
+                "horizon_days": horizon,
+                "sr_min_ratio": sr_min_ratio,
+            }
+
+            def on_step(i: int, total: int, ticker: str):
+                pct = max(0, min(100, int(i / max(1, total) * 100)))
+                prog.progress(pct, text=f"{pct}%")
+                log(f"{i}/{total} {ticker} ✓")
+
+            cand_df, out_df, fails, _dbg = scan_day(
+                storage, pd.to_datetime(D), params, on_step=on_step
             )
+            st.session_state["cand_df"] = cand_df
+            st.session_state["out_df"] = out_df
+            st.session_state["fails"] = fails
+
+            if save_outcomes and not out_df.empty:
+                buf = io.BytesIO()
+                out_df.to_parquet(buf, index=False)
+                storage.write_bytes(
+                    f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
+                    buf.getvalue(),
+                )
+
+            status.update(label="Scan complete ✅", state="complete")
+            st.toast(f"Scan done: {len(cand_df)} matches", icon="✅")
+        except Exception as e:
+            log(f"ERROR: {e}")
+            status.update(label="Scan failed ❌", state="error")
+        finally:
+            st.session_state["scan_running"] = False
 
     cand_df = st.session_state.get("cand_df")
     out_df = st.session_state.get("out_df")
