@@ -157,7 +157,7 @@ def render_page() -> None:
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
-        run = st.form_submit_button("Run backtest", key="bt_run")
+        run = st.form_submit_button("Run backtest")
 
     if isinstance(start, (list, tuple)):
         start = start[0]
