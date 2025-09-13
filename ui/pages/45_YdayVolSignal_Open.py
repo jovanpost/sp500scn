@@ -1,14 +1,47 @@
 import io
-import json
 import logging
 import pandas as pd
 import numpy as np
 import datetime as dt
 import streamlit as st
-import streamlit.components.v1 as components
 from typing import Dict, Any, Tuple, List
 
 from engine.replay import replay_trade
+
+# Safe table exporters that do not require pandas.to_markdown / tabulate
+def _df_to_markdown_safe(df: pd.DataFrame) -> str:
+    """Return a Markdown table for df without relying on pandas.to_markdown()."""
+    # Try tabulate if present, otherwise build by hand.
+    try:
+        from tabulate import tabulate  # optional; will be absent in this env
+        return tabulate(
+            df.values.tolist(),
+            headers=list(df.columns),
+            tablefmt="pipe",
+            floatfmt="g",
+        )
+    except Exception:
+        cols = [str(c) for c in df.columns]
+        lines = []
+        lines.append("| " + " | ".join(cols) + " |")
+        lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
+        for row in df.itertuples(index=False, name=None):
+            vals = []
+            for v in row:
+                if pd.isna(v):
+                    vals.append("")
+                elif isinstance(v, (int, float)):
+                    # compact numeric formatting
+                    vals.append(f"{v:.6g}")
+                else:
+                    vals.append(str(v))
+            lines.append("| " + " | ".join(vals) + " |")
+        return "\n".join(lines)
+
+
+def _df_to_csv_text(df: pd.DataFrame) -> str:
+    """CSV text (UTF-8) for copy/download."""
+    return df.to_csv(index=False)
 
 
 def _emit(msg: str):
@@ -18,10 +51,7 @@ def _emit(msg: str):
 
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     """
-    Renders a DataFrame with:
-      - Copy CSV to clipboard
-      - Copy Markdown to clipboard
-      - Download CSV (native)
+    Renders a DataFrame with copyable/downloadable table text.
     key_prefix: unique string ('matches', 'outcomes', etc) so Streamlit keys don't collide.
     """
     st.subheader(title)
@@ -29,64 +59,24 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     # Show the table
     st.dataframe(df, use_container_width=True, hide_index=False)
 
-    # Prep CSV & Markdown strings
-    csv_buf = io.StringIO()
-    df.to_csv(csv_buf, index=False)
-    csv_txt = csv_buf.getvalue()
-    md_txt = df.to_markdown(index=False)
-
-    # Download button (native)
-    st.download_button(
-        label="⬇️ Download CSV",
-        data=csv_txt,
-        file_name=f"{key_prefix}.csv",
-        mime="text/csv",
-        key=f"{key_prefix}_dl",
-        use_container_width=False,
+    fmt = st.radio(
+        "Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt"
     )
+    txt = _df_to_markdown_safe(df) if fmt == "Markdown" else _df_to_csv_text(df)
 
-    # Tiny HTML+JS component to copy to clipboard (CSV & Markdown)
-    # We JSON-encode the strings so quotes/newlines are safe in the HTML.
-    csv_js = json.dumps(csv_txt)
-    md_js = json.dumps(md_txt)
+    # Show the text so it can be selected/copied
+    st.text_area("Copy this", txt, height=180, key=f"{key_prefix}_copybox")
 
-    html = f"""
-    <div style="display:flex; gap:.5rem; margin:.5rem 0 1rem 0;">
-      <button id="{key_prefix}_copy_csv"
-              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
-        📋 Copy CSV
-      </button>
-      <button id="{key_prefix}_copy_md"
-              style="padding:.4rem .7rem; border:1px solid #555; border-radius:6px; background:#111; color:#eee; cursor:pointer;">
-        📋 Copy Markdown
-      </button>
-      <span id="{key_prefix}_copied" style="margin-left:.5rem; color:#7ee787;"></span>
-    </div>
-    <script>
-      const csvText_{key_prefix} = {csv_js};
-      const mdText_{key_prefix}  = {md_js};
-
-      async function copyText(text, labelId){{
-        try {{
-          await navigator.clipboard.writeText(text);
-          const el = document.getElementById(labelId);
-          if (el) {{
-            el.textContent = "Copied!";
-            setTimeout(() => el.textContent = "", 1400);
-          }}
-        }} catch (e) {{
-          // Fallback: show text in a prompt so user can Ctrl+C
-          window.prompt("Copy with Ctrl/Cmd+C, then Enter:", text);
-        }}
-      }}
-
-      document.getElementById("{key_prefix}_copy_csv")
-        .addEventListener("click", () => copyText(csvText_{key_prefix}, "{key_prefix}_copied"));
-      document.getElementById("{key_prefix}_copy_md")
-        .addEventListener("click", () => copyText(mdText_{key_prefix}, "{key_prefix}_copied"));
-    </script>
-    """
-    components.html(html, height=60)
+    # Also provide a download button
+    mime = "text/markdown" if fmt == "Markdown" else "text/csv"
+    ext = "md" if fmt == "Markdown" else "csv"
+    st.download_button(
+        f"Download table ({ext.upper()})",
+        txt.encode("utf-8"),
+        file_name=f"{key_prefix}.{ext}",
+        mime=mime,
+        key=f"{key_prefix}_dl",
+    )
 
 
 @st.cache_data(show_spinner=False)
