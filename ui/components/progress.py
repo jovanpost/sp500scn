@@ -38,7 +38,9 @@ class _ProgLike:
         self._bar_slot = bar_slot
         self._last = -1
 
-    def progress(self, v):
+    def progress(self, v, *args, **kwargs):
+        """Update progress, absorbing extra args/kwargs for API compatibility."""
+        # Accept and ignore extra args/kwargs to mimic st.progress signature
         pct = _to_percent(v)
         if pct == self._last:
             return
