@@ -205,9 +205,9 @@ def render_page() -> None:
             log(f"Preloading {len(active_tickers)} tickers…")
             df_all = load_prices_cached(storage, active_tickers, start_date, end_date)
             if df_all.empty:
-                log("No price data loaded.")
+                log("No prices loaded—check Supabase/yfinance.")
                 prog.progress(100, text="Prefetch complete")
-                st.info("No data loaded for backtest.")
+                st.error("No data for backtest.")
                 return
             else:
                 if not df_all.columns.is_unique:
