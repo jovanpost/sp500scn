@@ -13,14 +13,15 @@ from ui.components.progress import status_block
 
 
 @st.cache_data(show_spinner=False)
-def load_prices_cached(storage, ticker: str) -> pd.DataFrame:
+def load_prices_cached(_storage, ticker: str) -> pd.DataFrame:
+    # Prefix _storage so Streamlit cache ignores this unhashable object
     """
     Load one ticker's prices from lake and cache by ticker.
     Returns df with a Date index (tz-naive) and at least columns:
     ['open','high','low','close','volume','dividends','stock_splits'].
     """
     path = f"prices/{ticker}.parquet"
-    df = storage.read_parquet(path)
+    df = _storage.read_parquet(path)
 
     # normalize
     if "date" in df.columns:
