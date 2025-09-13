@@ -46,7 +46,9 @@ def _df_to_csv_text(df: pd.DataFrame) -> str:
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
     st.subheader(title)
     st.dataframe(df, use_container_width=True, hide_index=False)
-    fmt = st.radio("Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt")
+    fmt = st.radio(
+        "Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt"
+    )
     txt = _df_to_markdown_safe(df) if fmt == "Markdown" else _df_to_csv_text(df)
     st.text_area("Copy this", txt, height=180, key=f"{key_prefix}_copybox")
     mime = "text/markdown" if fmt == "Markdown" else "text/csv"
@@ -63,23 +65,88 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 def render_page() -> None:
     st.header("📅 Backtest (range)")
 
-    start = st.date_input("Start date", value=dt.date.today() - dt.timedelta(days=30))
-    end = st.date_input("End date", value=dt.date.today())
+    with st.form("range_controls"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            start = st.date_input(
+                "Start date",
+                value=dt.date.today() - dt.timedelta(days=30),
+                key="range_start",
+            )
+            end = st.date_input("End date", value=dt.date.today(), key="range_end")
+            horizon = int(
+                st.number_input(
+                    "Horizon (days)",
+                    min_value=1,
+                    value=30,
+                    step=1,
+                    key="range_horizon",
+                )
+            )
+        with col2:
+            vol_lookback = int(
+                st.number_input(
+                    "Volume lookback",
+                    min_value=1,
+                    value=63,
+                    step=1,
+                    key="range_vol_lb",
+                )
+            )
+            min_close_up_pct = float(
+                st.number_input(
+                    "Min close-up on D-1 (%)",
+                    value=3.0,
+                    step=0.5,
+                    key="range_min_close_up",
+                )
+            )
+            min_gap_open_pct = float(
+                st.number_input(
+                    "Min gap open (%)",
+                    value=0.0,
+                    step=0.1,
+                    key="range_min_gap",
+                )
+            )
+        with col3:
+            min_vol_multiple = float(
+                st.number_input(
+                    "Min volume multiple",
+                    value=1.5,
+                    step=0.1,
+                    key="range_min_vol_mult",
+                )
+            )
+            atr_window = int(
+                st.number_input(
+                    "ATR window",
+                    min_value=5,
+                    value=21,
+                    step=1,
+                    key="range_atr_win",
+                )
+            )
+            sr_lookback = int(
+                st.number_input(
+                    "S/R lookback (days)",
+                    min_value=10,
+                    value=21,
+                    step=1,
+                    key="range_sr_lb",
+                )
+            )
+        save_outcomes = st.checkbox(
+            "Save outcomes to lake", value=False, key="range_save_outcomes"
+        )
+        run = st.form_submit_button("Run backtest", use_container_width=True)
+
     if isinstance(start, (list, tuple)):
         start = start[0]
     if isinstance(end, (list, tuple)):
         end = end[0]
 
-    vol_lookback = int(st.number_input("Volume lookback", min_value=1, value=63, step=1))
-    min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
-    min_vol_multiple = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
-    min_gap_open_pct = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
-    atr_window = int(st.number_input("ATR window", min_value=1, value=21, step=1))
-    horizon = int(st.number_input("Horizon (days)", min_value=1, value=30, step=1))
-    sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
-    save_outcomes = st.checkbox("Save outcomes to lake", value=False)
-
-    if st.button("Run backtest", type="primary"):
+    if run:
         storage = Storage()
         params: ScanParams = {
             "min_close_up_pct": min_close_up_pct,
@@ -88,7 +155,7 @@ def render_page() -> None:
             "atr_window": atr_window,
             "lookback_days": vol_lookback,
             "horizon_days": horizon,
-            "sr_min_ratio": sr_min_ratio,
+            "sr_lookback": sr_lookback,
         }
         prog = st.progress(0.0)
         status = st.empty()
@@ -97,7 +164,9 @@ def render_page() -> None:
             prog.progress(i / total if total else 0.0)
             status.text(f"{day.date()}: {cands} matches, {hits} hits")
 
-        trades_df, summary = run_range(storage, str(start), str(end), params, progress_cb=_cb)
+        trades_df, summary = run_range(
+            storage, str(start), str(end), params, progress_cb=_cb
+        )
         st.session_state["bt_trades"] = trades_df
         st.session_state["bt_summary"] = summary
 
@@ -115,13 +184,13 @@ def render_page() -> None:
 
     if summary is not None:
         st.subheader("Summary")
-        st.dataframe(pd.DataFrame([summary]))
+        st.dataframe(pd.DataFrame([summary]), key="range_summary_df")
 
     if trades_df is not None:
         if trades_df.empty:
             st.info("No trades found in this range.")
         else:
-            _render_df_with_copy("Trades", trades_df, "trades")
+            _render_df_with_copy("Trades", trades_df, "range_trades")
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
@@ -129,4 +198,3 @@ def render_page() -> None:
 
 def page() -> None:
     render_page()
-
