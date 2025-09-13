@@ -324,7 +324,6 @@ def load_prices_cached(
                 .gte("date", start.strftime("%Y-%m-%d"))
                 .lte("date", end.strftime("%Y-%m-%d"))
                 .order("date")
-                .limit(None)
                 .execute()
             )
             if response.data:
@@ -332,7 +331,7 @@ def load_prices_cached(
                 if not df.empty:
                     df["Date"] = pd.to_datetime(df["date"])
                     df = (
-                        df[["Date", "open", "high", "low", "close", "volume"]]
+                        df[["ticker", "Date", "open", "high", "low", "close", "volume"]]
                         .rename(
                             columns={
                                 "open": "Open",
