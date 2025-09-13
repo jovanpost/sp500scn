@@ -6,5 +6,6 @@ pyarrow==16.1.0
 beautifulsoup4==4.12.3
 lxml>=4.9,<5
 requests==2.32.3
+tabulate>=0.8
 # Supabase client (postgrest/gotrue/storage3 come as transitive deps)
 supabase>=2.6,<3

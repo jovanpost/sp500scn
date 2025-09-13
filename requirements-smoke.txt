@@ -7,3 +7,4 @@ streamlit>=1.33,<1.40
 beautifulsoup4>=4.12
 lxml>=4.9,<5
 requests>=2.31
+tabulate>=0.8
