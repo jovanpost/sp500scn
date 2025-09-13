@@ -136,6 +136,34 @@ def render_page() -> None:
                     key="range_sr_lb",
                 )
             )
+            use_precedent = st.checkbox(
+                "Require 21-day precedent (lookback 252d, window 21d)",
+                value=True,
+                key="range_use_precedent",
+            )
+            use_atr_feasible = st.checkbox(
+                "Require ATR×N feasibility (at D-1)",
+                value=True,
+                key="range_use_atr_ok",
+            )
+            precedent_lookback = int(
+                st.number_input(
+                    "Precedent lookback (days)",
+                    min_value=21,
+                    value=252,
+                    step=1,
+                    key="range_prec_lookback",
+                )
+            )
+            precedent_window = int(
+                st.number_input(
+                    "Precedent window (days)",
+                    min_value=5,
+                    value=21,
+                    step=1,
+                    key="range_prec_window",
+                )
+            )
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="range_save_outcomes"
         )
@@ -156,6 +184,10 @@ def render_page() -> None:
             "lookback_days": vol_lookback,
             "horizon_days": horizon,
             "sr_lookback": sr_lookback,
+            "use_precedent": use_precedent,
+            "use_atr_feasible": use_atr_feasible,
+            "precedent_lookback": precedent_lookback,
+            "precedent_window": precedent_window,
         }
         prog = st.progress(0.0)
         status = st.empty()

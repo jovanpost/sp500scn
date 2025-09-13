@@ -73,6 +73,7 @@ def run_range(
         "tp_halfway_pct",
         "precedent_ok",
         "atr_ok",
+        "reasons",
     ]
     trades_df = trades_df.reindex(columns=needed)
 
