@@ -9,7 +9,11 @@ from datetime import datetime
 from typing import List
 
 import pandas as pd
-import yfinance as yf
+
+try:
+    import yfinance as yf  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    yf = None
 
 from .schemas import IngestJob, IngestResult
 from .storage import Storage
@@ -19,6 +23,8 @@ MAX_RETRIES = 3
 
 
 def _fetch(job: IngestJob) -> pd.DataFrame:
+    if yf is None:
+        raise RuntimeError("yfinance not installed; ingestion disabled")
     ticker = job["ticker"]
     yf_symbol = str(ticker).strip().lstrip("$").replace(".", "-")
     start, end = job["start"], job["end"]
