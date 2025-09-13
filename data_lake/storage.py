@@ -3,10 +3,16 @@ from __future__ import annotations
 import os, io, json, base64, pathlib, tempfile, logging
 from typing import Optional, Tuple, Any
 
+import pandas as pd
+import yfinance as yf
+from requests.exceptions import RequestException
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
 try:
-    from supabase import create_client  # type: ignore
+    from supabase import create_client, Client  # type: ignore
 except Exception:
     create_client = None
+    Client = None
 
 import streamlit as st
 
@@ -99,6 +105,7 @@ class Storage:
             else:
                 url = creds[0]  # type: ignore
                 self.client = create_client(url, key)
+                self.supabase_client = self.client
                 # Ensure a bucket named 'lake' exists (no public kw in storage3==0.12.x)
                 try:
                     resp = self.client.storage.list_buckets()
@@ -115,6 +122,7 @@ class Storage:
                 self.bucket = self.client.storage.from_("lake")
         else:
             LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
+            self.supabase_client = None
 
     def info(self) -> str:
         info = f"storage: {self.mode} (key:{self.key_role})"
@@ -292,3 +300,73 @@ class Storage:
             return info
         except Exception as e:
             return {"error": str(e)}
+
+
+@st.cache_data(show_spinner=False)
+def load_prices_cached(
+    _storage: Storage, tickers: list[str], start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Fetch OHLCV data for tickers using Supabase first, then yfinance."""
+    prices: list[pd.DataFrame] = []
+    missing: list[str] = []
+
+    supabase: Client | None = getattr(_storage, "supabase_client", None)
+    if supabase:
+        for t in tickers:
+            try:
+                query = (
+                    supabase.table("sp500_ohlcv")
+                    .select("*")
+                    .eq("ticker", t)
+                    .gte("date", start.strftime("%Y-%m-%d"))
+                    .lte("date", end.strftime("%Y-%m-%d"))
+                    .execute()
+                )
+                df = pd.DataFrame(query.data)
+                if not df.empty:
+                    df["Date"] = pd.to_datetime(df["date"])
+                    df = df[
+                        ["Date", "Open", "High", "Low", "Close", "Volume", "ticker"]
+                    ].set_index("Date")
+                    prices.append(df)
+                else:
+                    missing.append(t)
+            except Exception as e:
+                st.warning(f"Supabase query failed for {t}: {str(e)[:50]}... Falling back to yfinance.")
+                missing.append(t)
+    else:
+        missing = list(tickers)
+
+    if missing:
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=4, max=10),
+            retry=retry_if_exception_type(
+                (RequestException, json.JSONDecodeError, ConnectionError)
+            ),
+        )
+        def _dl(ticker: str) -> pd.DataFrame:
+            try:
+                return yf.download(
+                    ticker,
+                    start=start.strftime("%Y-%m-%d"),
+                    end=end.strftime("%Y-%m-%d"),
+                    progress=False,
+                )
+            except Exception as e:
+                st.warning(f"yfinance failed for {ticker}: {str(e)[:50]}... Skipping.")
+                return pd.DataFrame()
+
+        for t in missing:
+            df = _dl(t)
+            if not df.empty:
+                df["ticker"] = t
+                prices.append(df)
+
+    if prices:
+        all_prices = pd.concat(prices, ignore_index=False)
+        if not all_prices.columns.is_unique:
+            all_prices = all_prices.loc[:, ~all_prices.columns.duplicated()]
+        return all_prices
+    return pd.DataFrame()

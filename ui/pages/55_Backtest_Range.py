@@ -2,38 +2,19 @@ import io
 import datetime as dt
 from typing import Dict
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import streamlit as st
 
-from data_lake.storage import Storage
+from data_lake.storage import Storage, load_prices_cached
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
 
 
-@st.cache_data(show_spinner=False)
-def load_prices_cached(_storage, ticker: str) -> pd.DataFrame:
-    # Prefix _storage so Streamlit cache ignores this unhashable object
-    """
-    Load one ticker's prices from lake and cache by ticker.
-    Returns df with a Date index (tz-naive) and at least columns:
-    ['open','high','low','close','volume','dividends','stock_splits'].
-    """
-    path = f"prices/{ticker}.parquet"
-    df = _storage.read_parquet(path)
-
-    # normalize
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-        df = df.set_index("date").sort_index()
-    return df
-
-
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
     st.subheader(title)
     if df is None or df.empty:
-        st.info("No rows.")
+        st.info("No data")
         return
 
     # visible table
@@ -206,9 +187,12 @@ def render_page() -> None:
 
             start_date = pd.to_datetime(start)
             end_date = pd.to_datetime(end)
-            df_days = load_prices_cached(storage, "AAPL")
-            day_mask = (df_days.index >= start_date) & (df_days.index <= end_date)
-            date_list = list(pd.DatetimeIndex(df_days.index[day_mask]).sort_values())
+            df_days = load_prices_cached(storage, ["AAPL"], start_date, end_date)
+            df_days = df_days[df_days.get("ticker") == "AAPL"].drop(columns=["ticker"], errors="ignore")
+            if df_days.empty:
+                st.info("No data loaded for backtest.")
+                return
+            date_list = list(pd.DatetimeIndex(df_days.index).sort_values())
 
             members = sigscan._load_members(storage)
 
@@ -219,21 +203,22 @@ def render_page() -> None:
 
             prices: Dict[str, pd.DataFrame] = {}
             log(f"Preloading {len(active_tickers)} tickers…")
-            with ThreadPoolExecutor(max_workers=8) as ex:
-                futs = {ex.submit(load_prices_cached, storage, t): t for t in active_tickers}
-                loaded = 0
-                for fut in as_completed(futs):
-                    t = futs[fut]
-                    try:
-                        prices[t] = fut.result()
-                    except Exception as e:
-                        log(f"load FAIL {t}: {e}")
-                    loaded += 1
-                    prog.progress(
-                        int(loaded / max(1, len(active_tickers)) * 100),
-                        text=f"Prefetch {loaded}/{len(active_tickers)}",
-                    )
-            log("Prefetch complete.")
+            df_all = load_prices_cached(storage, active_tickers, start_date, end_date)
+            if df_all.empty:
+                log("No price data loaded.")
+                prog.progress(100, text="Prefetch complete")
+                st.info("No data loaded for backtest.")
+                return
+            else:
+                if not df_all.columns.is_unique:
+                    df_all = df_all.loc[:, ~df_all.columns.duplicated()]
+                df_all.index = pd.to_datetime(df_all.index)
+                for t in active_tickers:
+                    df_t = df_all[df_all.get("ticker") == t]
+                    if not df_t.empty:
+                        prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
+                prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
+                log("Prefetch complete.")
 
             def _load_prices_patched(_storage, ticker):
                 df = prices.get(ticker)
