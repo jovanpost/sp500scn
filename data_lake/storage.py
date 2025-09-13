@@ -314,12 +314,14 @@ def load_prices_cached(
     if supabase:
         for t in tickers:
             try:
+                row_limit = (end - start).days + 1
                 query = (
                     supabase.table("sp500_ohlcv")
                     .select("*")
                     .eq("ticker", t)
                     .gte("date", start.strftime("%Y-%m-%d"))
                     .lte("date", end.strftime("%Y-%m-%d"))
+                    .limit(row_limit)
                     .execute()
                 )
                 df = pd.DataFrame(query.data)
