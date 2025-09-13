@@ -1,26 +1,19 @@
 import io
-import logging
-import pandas as pd
-import numpy as np
 import datetime as dt
+from typing import Dict
+
+import pandas as pd
 import streamlit as st
-from typing import Dict, Any, Tuple, List
 
-from engine.replay import replay_trade
-from engine.metrics import has_21d_runup_precedent
+from engine.signal_scan import scan_day, ScanParams
+from data_lake.storage import Storage
 
-# Safe table exporters that do not require pandas.to_markdown / tabulate
+
 def _df_to_markdown_safe(df: pd.DataFrame) -> str:
-    """Return a Markdown table for df without relying on pandas.to_markdown()."""
-    # Try tabulate if present, otherwise build by hand.
+    """Return a Markdown table for df without relying on pandas.to_markdown."""
     try:
-        from tabulate import tabulate  # optional; will be absent in this env
-        return tabulate(
-            df.values.tolist(),
-            headers=list(df.columns),
-            tablefmt="pipe",
-            floatfmt="g",
-        )
+        from tabulate import tabulate  # optional dependency
+        return tabulate(df.values.tolist(), headers=list(df.columns), tablefmt="pipe", floatfmt="g")
     except Exception:
         cols = [str(c) for c in df.columns]
         lines = []
@@ -32,7 +25,6 @@ def _df_to_markdown_safe(df: pd.DataFrame) -> str:
                 if pd.isna(v):
                     vals.append("")
                 elif isinstance(v, (int, float)):
-                    # compact numeric formatting
                     vals.append(f"{v:.6g}")
                 else:
                     vals.append(str(v))
@@ -41,34 +33,15 @@ def _df_to_markdown_safe(df: pd.DataFrame) -> str:
 
 
 def _df_to_csv_text(df: pd.DataFrame) -> str:
-    """CSV text (UTF-8) for copy/download."""
     return df.to_csv(index=False)
 
 
-def _emit(msg: str):
-    logging.info(msg)
-    st.write(msg)
-
-
-def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
-    """
-    Renders a DataFrame with copyable/downloadable table text.
-    key_prefix: unique string ('matches', 'outcomes', etc) so Streamlit keys don't collide.
-    """
+def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
     st.subheader(title)
-
-    # Show the table
     st.dataframe(df, use_container_width=True, hide_index=False)
-
-    fmt = st.radio(
-        "Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt"
-    )
+    fmt = st.radio("Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt")
     txt = _df_to_markdown_safe(df) if fmt == "Markdown" else _df_to_csv_text(df)
-
-    # Show the text so it can be selected/copied
     st.text_area("Copy this", txt, height=180, key=f"{key_prefix}_copybox")
-
-    # Also provide a download button
     mime = "text/markdown" if fmt == "Markdown" else "text/csv"
     ext = "md" if fmt == "Markdown" else "csv"
     st.download_button(
@@ -80,276 +53,7 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str):
     )
 
 
-@st.cache_data(show_spinner=False)
-def _load_members(_bucket_key: str) -> pd.DataFrame:
-    from data_lake.storage import Storage
-
-    s = Storage()
-    raw = s.read_bytes("membership/sp500_members.parquet")
-    m = pd.read_parquet(pd.io.common.BytesIO(raw))
-    m["start_date"] = pd.to_datetime(
-        m["start_date"], errors="coerce", utc=True
-    ).dt.tz_localize(None)
-    m["end_date"] = pd.to_datetime(
-        m["end_date"], errors="coerce", utc=True
-    ).dt.tz_localize(None)
-    return m
-
-
-def members_on_date(m: pd.DataFrame, date: dt.date) -> pd.DataFrame:
-    D = pd.to_datetime(date)
-    start = pd.to_datetime(m["start_date"])
-    end = pd.to_datetime(m["end_date"])
-    mask = (start <= D) & (end.isna() | (D <= end))
-    return m.loc[mask]
-
-
-def _load_prices(storage, ticker: str) -> pd.DataFrame | None:
-    try:
-        path = f"prices/{ticker}.parquet"
-        raw = storage.read_bytes(path)
-        df = pd.read_parquet(pd.io.common.BytesIO(raw))
-        df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
-        return df.sort_values("date")
-    except Exception as e:
-        logging.warning("missing or unreadable price file for %s: %s", ticker, e)
-        return None
-
-
-@st.cache_data(show_spinner=False)
-def _cached_prices(ticker: str) -> pd.DataFrame | None:
-    from data_lake.storage import Storage
-
-    s = Storage()
-    try:
-        df = s.read_parquet(f"prices/{ticker}.parquet")
-        if "date" not in df.columns:
-            df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
-        df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-        return df[["date", "open", "high", "low", "close"]].sort_values("date")
-    except Exception as e:
-        logging.warning("price load failed for %s: %s", ticker, e)
-        return None
-
-
-def _compute_metrics(
-    df: pd.DataFrame, D: dt.date, vol_lookback: int
-) -> Dict[str, Any] | None:
-    D = pd.to_datetime(D)
-
-    if D not in df["date"].values:
-        idx = df["date"].searchsorted(D)
-        if idx == 0 or idx >= len(df):
-            return None
-        D = df["date"].iloc[idx]
-
-    idx = df.index[df["date"] == D]
-    if len(idx) == 0:
-        return None
-    i = idx[0]
-    if i == 0:
-        return None
-    dm1 = i - 1
-
-    close_up_pct = (
-        (df.loc[dm1, "close"] / df.loc[dm1 - 1, "close"] - 1.0) * 100
-        if dm1 > 0
-        else np.nan
-    )
-
-    w0 = max(0, dm1 - vol_lookback + 1)
-    lookback_vol = df.loc[w0:dm1, "volume"].mean()
-    vol_multiple = (
-        df.loc[dm1, "volume"] / lookback_vol
-        if lookback_vol and not np.isnan(lookback_vol)
-        else np.nan
-    )
-
-    gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
-
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - df["close"].shift()).abs(),
-            (df["low"] - df["close"].shift()).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(21, min_periods=1).mean()
-    atr21 = float(atr.loc[dm1]) if dm1 in atr.index else np.nan
-    atr21_pct = atr21 / df.loc[dm1, "close"] * 100 if df.loc[dm1, "close"] else np.nan
-
-    if dm1 >= 21:
-        ret21 = (df.loc[dm1, "close"] / df.loc[dm1 - 21, "close"] - 1.0) * 100
-    else:
-        ret21 = np.nan
-
-    lo_win = df.loc[max(0, dm1 - 21) : dm1, "low"].min()
-    hi_win = df.loc[max(0, dm1 - 21) : dm1, "high"].max()
-
-    entry = float(df.loc[i, "open"])
-    support = float(lo_win)
-    resistance = float(hi_win)
-    sr_ratio = np.nan
-    tp_halfway_pct = np.nan
-    if support > 0 and resistance > entry:
-        up = resistance - entry
-        down = entry - support
-        sr_ratio = up / down if down > 0 else np.nan
-        tp_halfway_pct = (entry + up / 2) / entry - 1.0
-
-    return {
-        "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
-        "vol_multiple": float(vol_multiple) if not np.isnan(vol_multiple) else np.nan,
-        "gap_open_pct": float(gap_open_pct),
-        "atr21": float(atr21) if not np.isnan(atr21) else np.nan,
-        "atr21_pct": float(atr21_pct) if not np.isnan(atr21_pct) else np.nan,
-        "ret21_pct": float(ret21) if not np.isnan(ret21) else np.nan,
-        "support": support,
-        "resistance": resistance,
-        "sr_ratio": sr_ratio,
-        "tp_halfway_pct": (
-            float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan
-        ),
-        "entry_open": entry,
-    }
-
-
-def _run_signal_scan(
-    storage,
-    tickers: List[str],
-    D: dt.date,
-    min_close_up_pct: float,
-    vol_lookback: int,
-    min_vol_multiple: float,
-    min_gap_open_pct: float,
-    opts: Dict[str, Any],
-    dry_run_n: int | None = None,
-) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
-
-    from collections import OrderedDict
-
-    stats = OrderedDict(
-        universe=len(tickers),
-        loaded=0,
-        after_close_up=0,
-        after_vol=0,
-        after_gap=0,
-        after_optional=0,
-        after_sr=0,
-        final=0,
-    )
-    dropped_examples: List[str] = []
-
-    if dry_run_n:
-        tickers = sorted(tickers)[:dry_run_n]
-
-    results: List[Dict[str, Any]] = []
-
-    for t in tickers:
-        df = _load_prices(storage, t)
-        if df is None or len(df) < 30:
-            continue
-        stats["loaded"] += 1
-
-        m = _compute_metrics(df, D, vol_lookback)
-        if not m:
-            continue
-
-        if not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close_up_pct:
-            pass
-        else:
-            dropped_examples.append(f"{t} close_up {m['close_up_pct']}")
-            continue
-        stats["after_close_up"] += 1
-
-        if not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol_multiple:
-            pass
-        else:
-            dropped_examples.append(f"{t} vol_mult {m['vol_multiple']}")
-            continue
-        stats["after_vol"] += 1
-
-        if m["gap_open_pct"] >= min_gap_open_pct:
-            pass
-        else:
-            dropped_examples.append(f"{t} gap {m['gap_open_pct']}")
-            continue
-        stats["after_gap"] += 1
-
-        ok = True
-        if v := opts.get("min_atr_dollars"):
-            ok &= not np.isnan(m["atr21"]) and (m["atr21"] >= v)
-        if v := opts.get("min_atr_pct"):
-            ok &= not np.isnan(m["atr21_pct"]) and (m["atr21_pct"] >= v)
-        if v := opts.get("min_close_dollars"):
-            ok &= m["entry_open"] >= v
-        if v := opts.get("min_ret21_pct"):
-            ok &= not np.isnan(m["ret21_pct"]) and (m["ret21_pct"] >= v)
-        if not ok:
-            dropped_examples.append(f"{t} optional filters")
-            continue
-        stats["after_optional"] += 1
-
-        if opts.get("require_sr", True):
-            if np.isnan(m["sr_ratio"]) or m["sr_ratio"] < opts.get("sr_ratio_min", 2.0):
-                dropped_examples.append(f"{t} sr {m['sr_ratio']}")
-                continue
-        stats["after_sr"] += 1
-
-        # Advanced feasibility checks
-        require_precedent = opts.get("require_precedent", True)
-        precedent_lookback_days = int(opts.get("precedent_lookback_days", 252))
-        require_atr_feas = opts.get("require_atr_feas", True)
-        atr_multiple = float(opts.get("atr_multiple", 1.0))
-
-        history_before_D = df[df["date"] < pd.to_datetime(D)]
-        tp_halfway_pct = m.get("tp_halfway_pct")
-        atr21_pct = m.get("atr21_pct")
-
-        precedent_ok = has_21d_runup_precedent(
-            history_before_D, precedent_lookback_days, 21, tp_halfway_pct
-        ) if not np.isnan(tp_halfway_pct) else False
-
-        atr_ok = (
-            (atr21_pct / 100.0) * 21 >= tp_halfway_pct * atr_multiple
-            if (atr21_pct is not None and not np.isnan(atr21_pct) and not np.isnan(tp_halfway_pct))
-            else False
-        )
-
-        reasons: List[str] = []
-        if not precedent_ok:
-            reasons.append(
-                f"no 21d precedent ≥ {tp_halfway_pct:.2%} in {precedent_lookback_days}d"
-            )
-        if not atr_ok:
-            reasons.append(f"ATR×21 < target×{atr_multiple:.2f}")
-
-        row = {
-            "ticker": t,
-            **m,
-            "precedent_ok": precedent_ok,
-            "atr_ok": atr_ok,
-            "reasons": "; ".join(reasons),
-        }
-
-        if (require_precedent and not precedent_ok) or (
-            require_atr_feas and not atr_ok
-        ):
-            dropped_examples.append(f"{t} feasibility")
-            continue
-
-        results.append(row)
-
-    res_df = pd.DataFrame(results)
-    if not res_df.empty and "gap_open_pct" in res_df.columns:
-        res_df = res_df.sort_values("gap_open_pct", ascending=False)
-    stats["final"] = len(res_df)
-
-    return res_df, stats, dropped_examples[:10]
-
-
-def render_page():
+def render_page() -> None:
     st.header("⚡ Yesterday Close+Volume → Buy Next Open")
 
     _d = st.date_input("Entry day (D)", value=dt.date.today())
@@ -357,254 +61,57 @@ def render_page():
         _d = _d[0]
     D = pd.to_datetime(_d).date()
 
-    vol_lookback = int(
-        st.number_input("Volume lookback", min_value=1, value=63, step=1)
-    )
-    min_close_up_pct = float(
-        st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5)
-    )
-    min_vol_multiple = float(
-        st.number_input("Min volume multiple", value=1.5, step=0.1)
-    )
+    vol_lookback = int(st.number_input("Volume lookback", min_value=1, value=63, step=1))
+    min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
+    min_vol_multiple = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
     min_gap_open_pct = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
-    min_close_dollars = float(
-        st.number_input("Min entry price ($)", value=0.0, step=1.0)
-    )
-
-    use_atr_dollars = st.checkbox("Use ATR $ filter", value=False)
-    min_atr_dollars = (
-        float(st.number_input("Min ATR ($)", value=1.0, step=0.1))
-        if use_atr_dollars
-        else 0.0
-    )
-
-    use_atr_pct = st.checkbox("Use ATR% filter", value=False)
-    min_atr_pct = (
-        float(st.number_input("Min ATR (%)", value=2.0, step=0.1))
-        if use_atr_pct
-        else 0.0
-    )
-
-    use_ret21 = st.checkbox("Use 21-day return filter", value=False)
-    min_ret21_pct = (
-        float(st.number_input("Min 21-day return (%)", value=0.0, step=0.1))
-        if use_ret21
-        else 0.0
-    )
-
-    with st.expander("Advanced feasibility filters"):
-        require_precedent = st.checkbox("Require 21d run-up precedent", value=True)
-        precedent_lookback_days = st.slider(
-            "Precedent lookback days", min_value=63, max_value=504, value=252, step=21
-        )
-        require_atr_feas = st.checkbox("Require ATR×21 feasibility", value=True)
-        atr_multiple = st.slider(
-            "ATR multiple", min_value=0.5, max_value=3.0, value=1.0, step=0.1
-        )
-
-    dry_n = st.number_input(
-        "Dry-run N tickers", min_value=0, max_value=3000, value=30, step=10
-    )
-    show_debug = st.checkbox("Show debug", value=True)
+    atr_window = int(st.number_input("ATR window", min_value=1, value=21, step=1))
+    horizon = int(st.number_input("Horizon (days)", min_value=1, value=30, step=1))
+    sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
+    save_outcomes = st.checkbox("Save outcomes to lake", value=False)
 
     if st.button("Run scan", type="primary"):
-        with st.status("Running filters...", expanded=True):
-            from data_lake.storage import Storage
+        storage = Storage()
+        params: ScanParams = {
+            "min_close_up_pct": min_close_up_pct,
+            "min_vol_multiple": min_vol_multiple,
+            "min_gap_open_pct": min_gap_open_pct,
+            "atr_window": atr_window,
+            "lookback_days": vol_lookback,
+            "horizon_days": horizon,
+            "sr_min_ratio": sr_min_ratio,
+        }
+        cand_df, out_df, fails, _dbg = scan_day(storage, pd.to_datetime(D), params)
+        st.session_state["cand_df"] = cand_df
+        st.session_state["out_df"] = out_df
+        st.session_state["fails"] = fails
 
-            s = Storage()
-            members = _load_members("anon")
-            active = members_on_date(members, D)["ticker"].dropna().unique().tolist()
-            st.write(f"Loaded membership: {len(members)} rows")
-            st.write(f"Universe size: {len(active)}")
-
-            res_df, stats, drops = _run_signal_scan(
-                s,
-                active,
-                D,
-                min_close_up_pct,
-                vol_lookback,
-                min_vol_multiple,
-                min_gap_open_pct,
-                opts={
-                    "min_atr_dollars": min_atr_dollars if use_atr_dollars else None,
-                    "min_atr_pct": min_atr_pct if use_atr_pct else None,
-                    "min_close_dollars": min_close_dollars,
-                    "min_ret21_pct": min_ret21_pct if use_ret21 else None,
-                    "require_sr": True,
-                    "sr_ratio_min": 2.0,
-                    "require_precedent": require_precedent,
-                    "precedent_lookback_days": int(precedent_lookback_days),
-                    "require_atr_feas": require_atr_feas,
-                    "atr_multiple": float(atr_multiple),
-                },
-                dry_run_n=(dry_n or None) if dry_n > 0 else None,
+        if save_outcomes and not out_df.empty:
+            buf = io.BytesIO()
+            out_df.to_parquet(buf, index=False)
+            storage.write_bytes(
+                f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
+                buf.getvalue(),
             )
 
-        st.session_state["res_df"] = res_df
-        st.session_state["stats"] = stats
-        st.session_state["drops"] = drops
+    cand_df = st.session_state.get("cand_df")
+    out_df = st.session_state.get("out_df")
+    fails = st.session_state.get("fails")
 
-    res_df = st.session_state.get("res_df")
-    stats = st.session_state.get("stats")
-    drops = st.session_state.get("drops")
-
-    if res_df is not None:
-        st.dataframe(pd.DataFrame([stats]))
-        if not res_df.empty:
-            _render_df_with_copy("✅ Candidates (matches)", res_df, "matches")
-
-            use_stop = st.checkbox("Use stop at support", value=True)
-            horizon = int(
-                st.number_input("Horizon (days)", min_value=1, value=30, step=1)
-            )
-            save_outcomes = st.checkbox("Save outcomes to lake", value=False)
-
-            run_df = res_df.copy()
-            limit_n = 50
-            if len(run_df) > limit_n:
-                st.warning(
-                    f"{len(run_df)} matches; limiting to top {limit_n} by sr_ratio unless confirmed"
-                )
-                if not st.checkbox("Process all matches", value=False):
-                    if "sr_ratio" in run_df.columns:
-                        run_df = run_df.sort_values("sr_ratio", ascending=False).head(
-                            limit_n
-                        )
-                    else:
-                        run_df = run_df.head(limit_n)
-
-            if st.button("Run outcomes for matches"):
-                from data_lake.storage import Storage
-
-                storage = Storage()
-                rows: List[Dict[str, Any]] = []
-                run_df["tp_price"] = run_df["entry_open"] * (
-                    1 + run_df["tp_halfway_pct"]
-                )
-                for r in run_df.itertuples(index=False):
-                    try:
-                        df = storage.read_parquet(f"prices/{r.ticker}.parquet")
-
-                        # Ensure we have a date column
-                        if "date" not in df.columns:
-                            idx_col = (
-                                "index"
-                                if "index" in df.columns
-                                else ("Date" if "Date" in df.columns else None)
-                            )
-                            if idx_col is not None:
-                                df["date"] = df[idx_col]
-                            else:
-                                raise ValueError(
-                                    f"{r.ticker}: could not find a date/index column in parquet"
-                                )
-
-                        # Canonicalize to tz-naive midnight
-                        d = pd.to_datetime(df["date"], errors="coerce")
-                        # Drop timezone without shifting local timestamps
-                        d = d.dt.tz_localize(None)
-                        df["date"] = d.dt.normalize()
-
-                        # Keep only needed columns
-                        df = (
-                            df[["date", "open", "high", "low", "close"]]
-                            .dropna()
-                            .sort_values("date")
-                        )
-
-                        # Build normalized entry timestamp
-                        entry_ts = pd.to_datetime(D)
-                        try:
-                            entry_ts = entry_ts.tz_localize(None)
-                        except Exception:
-                            pass
-                        entry_ts = entry_ts.normalize()
-
-                        # Diagnostics for missing windows
-                        first_dt = df["date"].min()
-                        last_dt = df["date"].max()
-                        st.write(
-                            f"ᴅɪᴀɢ: {r.ticker} bars {first_dt.date() if pd.notna(first_dt) else 'NA'} → {last_dt.date() if pd.notna(last_dt) else 'NA'}"
-                        )
-
-                        tp_price = float(r.entry_open * (1 + r.tp_halfway_pct))
-                        stop_price = float(r.support) if use_stop else None
-                        out = replay_trade(
-                            df,
-                            entry_ts,
-                            float(r.entry_open),
-                            tp_price,
-                            stop_price,
-                            horizon_days=horizon,
-                        )
-                        out["ticker"] = r.ticker
-                        rows.append(out)
-                    except Exception as e:
-                        rows.append(
-                            {
-                                "ticker": r.ticker,
-                                "hit": False,
-                                "exit_reason": f"error:{e}",
-                                "exit_price": float("nan"),
-                                "days_to_exit": 0,
-                                "mae_pct": float("nan"),
-                                "mfe_pct": float("nan"),
-                            }
-                        )
-
-                outcomes = pd.DataFrame(rows)
-                res = run_df.merge(outcomes, on="ticker", how="left")
-
-                hits = res["hit"].fillna(False)
-                st.subheader("Outcomes summary")
-                st.write(
-                    {
-                        "hit_rate": float(hits.mean()),
-                        "median_days_to_exit": (
-                            float(res.loc[hits, "days_to_exit"].median())
-                            if hits.any()
-                            else None
-                        ),
-                        "avg_MAE_pct": (
-                            float(res["mae_pct"].dropna().mean())
-                            if res["mae_pct"].notna().any()
-                            else None
-                        ),
-                        "avg_MFE_pct": (
-                            float(res["mfe_pct"].dropna().mean())
-                            if res["mfe_pct"].notna().any()
-                            else None
-                        ),
-                    }
-                )
-                outcomes_df = res.sort_values(
-                    ["hit", "days_to_exit"], ascending=[False, True]
-                )
-                if not outcomes_df.empty:
-                    _render_df_with_copy("🎯 Outcomes", outcomes_df, "outcomes")
-                else:
-                    st.info("No outcomes to display.")
-
-                if save_outcomes:
-                    buf = io.BytesIO()
-                    res.to_parquet(buf, index=False)
-                    storage.write_bytes(
-                        f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
-                        buf.getvalue(),
-                    )
+    if cand_df is not None:
+        summary: Dict[str, float] = {
+            "candidates": len(cand_df),
+            "fails": fails or 0,
+            "hits": int(out_df["hit"].sum()) if out_df is not None and not out_df.empty else 0,
+        }
+        st.dataframe(pd.DataFrame([summary]))
+        if not cand_df.empty:
+            _render_df_with_copy("✅ Candidates (matches)", cand_df, "matches")
+        if out_df is not None and not out_df.empty:
+            _render_df_with_copy("🎯 Outcomes", out_df, "outcomes")
         else:
-            gates = []
-            if require_precedent:
-                gates.append("21d precedent")
-            if require_atr_feas:
-                gates.append(f"ATR×21 ≥ target×{atr_multiple:.2f}")
-            msg = "No matches for the selected filters."
-            if gates:
-                msg += " Enabled feasibility gates: " + ", ".join(gates)
-            st.info(msg)
-            if show_debug and drops:
-                st.write("First few drops:", drops)
+            st.info("No outcomes to display.")
 
 
-def page():
+def page() -> None:
     render_page()
