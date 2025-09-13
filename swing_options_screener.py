@@ -1,4 +1,6 @@
 # swing_options_screener.py
+from __future__ import annotations
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -7,7 +9,11 @@ from datetime import datetime, timedelta, time
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import yfinance as yf
+
+try:
+    import yfinance as yf  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    yf = None
 
 from utils.numeric import safe_float
 from utils.prices import fetch_history

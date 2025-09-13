@@ -2,7 +2,6 @@
 pandas>=2.2,<2.3
 numpy>=1.26,<1.27
 pyarrow>=16,<17
-yfinance>=0.2.40,<0.3
 streamlit>=1.33,<1.40
 beautifulsoup4>=4.12
 lxml>=4.9,<5
