@@ -3,38 +3,33 @@ from __future__ import annotations
 import streamlit as st
 
 
-class _DummyStatus:
-    def update(self, **kwargs):
-        pass
+class _StatusLike:
+    """Drop-in for st.status(): supports .update(label=..., state=...)."""
+
+    def __init__(self, title_slot):
+        self._title_slot = title_slot
+
+    def update(self, label: str | None = None, state: str | None = None):
+        if label:
+            self._title_slot.markdown(f"**{label}**")  # ignore state for compat
 
 
 def status_block(title: str, key_prefix: str = "prog"):
     """
-    Returns (status, prog, log) where:
-      - status has .update(label=..., state=...) (noop in fallback)
-      - prog is st.progress
-      - log(msg: str) appends a message
+    Version-proof progress block.
+    Returns: (status_like, prog_widget, log_fn)
+      - status_like.update(label=..., state=...)
+      - prog_widget.progress(int 0..100)
+      - log_fn(text) appends to a code block
     """
-    root = st.container()
+    title_slot = st.empty()
+    title_slot.markdown(f"**{title}**")
+    prog_widget = st.progress(0, key=f"{key_prefix}_prog")
+    log_slot = st.empty()
+    _buf: list[str] = []
 
-    try:
-        status = st.status(title, expanded=True, key=f"{key_prefix}_status")
-        prog = st.progress(0, text="", key=f"{key_prefix}_prog")
+    def log_fn(msg: str):
+        _buf.append(str(msg))
+        log_slot.code("\n".join(_buf[-80:]), language="text")
 
-        def log(msg: str):
-            status.write(msg)
-
-        return status, prog, log
-    except Exception:
-        # Fallback for environments without st.status or when it errors
-        root.markdown(f"**{title}**", key=f"{key_prefix}_title")
-        prog = root.progress(0, text="", key=f"{key_prefix}_prog")
-        log_area = root.empty(key=f"{key_prefix}_log")
-        _buffer: list[str] = []
-
-        def log(msg: str):
-            _buffer.append(str(msg))
-            log_area.code("\n".join(_buffer[-50:]), language="text")
-
-        return _DummyStatus(), prog, log
-
+    return _StatusLike(title_slot), prog_widget, log_fn
