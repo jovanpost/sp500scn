@@ -13,13 +13,28 @@ setup_page()
 render_header()
 
 # Create tabs once with unique variable names
-tab_gap, tab_history, tab_lake, tab_debug = st.tabs(
-    ["⚡ Gap Scanner", "📈 History & Outcomes", "💧 Data Lake (Phase 1)", "🐞 Debugger"]
+tab_gap, tab_backtest, tab_history, tab_lake, tab_debug = st.tabs(
+    [
+        "⚡ Gap Scanner",
+        "📅 Backtest (range)",
+        "📈 History & Outcomes",
+        "💧 Data Lake (Phase 1)",
+        "🐞 Debugger",
+    ]
 )
 
 with tab_gap:
     spec = importlib.util.spec_from_file_location(
         "ui.pages.yday_vol_signal_open", Path("ui/pages/45_YdayVolSignal_Open.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    mod.page()
+
+with tab_backtest:
+    spec = importlib.util.spec_from_file_location(
+        "ui.pages.backtest_range", Path("ui/pages/55_Backtest_Range.py")
     )
     mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
