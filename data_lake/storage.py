@@ -334,17 +334,29 @@ def load_prices_cached(
                     df = pd.DataFrame(response.data)
                     if not df.empty:
                         df["Date"] = pd.to_datetime(df["date"])
-                        df = df[
-                            ["Date", "open", "high", "low", "close", "volume"]
-                        ].rename(
-                            columns={
-                                "open": "Open",
-                                "high": "High",
-                                "low": "Low",
-                                "close": "Close",
-                                "volume": "Volume",
-                            }
-                        ).set_index("Date")
+                        df = (
+                            df[
+                                [
+                                    "Date",
+                                    "ticker",
+                                    "open",
+                                    "high",
+                                    "low",
+                                    "close",
+                                    "volume",
+                                ]
+                            ]
+                            .rename(
+                                columns={
+                                    "open": "Open",
+                                    "high": "High",
+                                    "low": "Low",
+                                    "close": "Close",
+                                    "volume": "Volume",
+                                }
+                            )
+                            .set_index("Date")
+                        )
                         prices.append(df)
                         missing_tickers.discard(ticker)
             except Exception as e:
@@ -376,6 +388,7 @@ def load_prices_cached(
                 ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
             )
             if not df.empty:
+                df["ticker"] = ticker
                 prices.append(df)
                 missing_tickers.discard(ticker)
 
