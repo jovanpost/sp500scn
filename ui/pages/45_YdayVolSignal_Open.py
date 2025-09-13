@@ -10,48 +10,36 @@ from data_lake.storage import Storage
 from ui.components.progress import status_block
 
 
-def _df_to_markdown_safe(df: pd.DataFrame) -> str:
-    """Return a Markdown table for df without relying on pandas.to_markdown."""
-    try:
-        from tabulate import tabulate  # optional dependency
-        return tabulate(df.values.tolist(), headers=list(df.columns), tablefmt="pipe", floatfmt="g")
-    except Exception:
-        cols = [str(c) for c in df.columns]
-        lines = []
-        lines.append("| " + " | ".join(cols) + " |")
-        lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
-        for row in df.itertuples(index=False, name=None):
-            vals = []
-            for v in row:
-                if pd.isna(v):
-                    vals.append("")
-                elif isinstance(v, (int, float)):
-                    vals.append(f"{v:.6g}")
-                else:
-                    vals.append(str(v))
-            lines.append("| " + " | ".join(vals) + " |")
-        return "\n".join(lines)
-
-
-def _df_to_csv_text(df: pd.DataFrame) -> str:
-    return df.to_csv(index=False)
-
-
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
+    import io, streamlit as st
+
     st.subheader(title)
-    st.dataframe(df, use_container_width=True, hide_index=False)
-    fmt = st.radio("Copy format", ["Markdown", "CSV"], horizontal=True, key=f"{key_prefix}_fmt")
-    txt = _df_to_markdown_safe(df) if fmt == "Markdown" else _df_to_csv_text(df)
-    st.text_area("Copy this", txt, height=180, key=f"{key_prefix}_copybox")
-    mime = "text/markdown" if fmt == "Markdown" else "text/csv"
-    ext = "md" if fmt == "Markdown" else "csv"
+
+    # CSV buffer for download + manual copy
+    csv_buf = io.StringIO()
+    df.to_csv(csv_buf, index=False)
+    csv_txt = csv_buf.getvalue()
+
+    # Download button (native)
     st.download_button(
-        f"Download table ({ext.upper()})",
-        txt.encode("utf-8"),
-        file_name=f"{key_prefix}.{ext}",
-        mime=mime,
+        f"\u2b07\ufe0f Download CSV — {title}",
+        data=csv_txt.encode("utf-8"),
+        file_name=f"{key_prefix}.csv",
+        mime="text/csv",
         key=f"{key_prefix}_dl",
     )
+
+    # Copy UX (plain textarea users can select/copy)
+    with st.expander("\ud83d\udccb Copy table (CSV text)", expanded=False):
+        st.text_area(
+            label="Select and copy:",
+            value=csv_txt,
+            height=200,
+            key=f"{key_prefix}_copy",
+        )
+
+    # Render visually
+    st.dataframe(df, use_container_width=True)
 
 
 def render_page() -> None:

@@ -65,16 +65,16 @@ def status_block(title: str, key_prefix: str = "prog"):
       - log_fn(text) appends to a code block (keeps last ~200 lines)
     """
 
-    title_slot = st.empty()
+    title_slot = st.container(key=f"{key_prefix}_status").empty()
     try:
         title_slot.markdown(f"**{title}**")
     except Exception:
         pass
 
-    bar_slot = st.empty()
+    bar_slot = st.container(key=f"{key_prefix}_prog").empty()
     prog_widget = _ProgLike(bar_slot)
 
-    log_slot = st.empty()
+    log_slot = st.container(key=f"{key_prefix}_log").empty()
     _buf: list[str] = []
 
     def log_fn(msg: str):
