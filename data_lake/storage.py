@@ -341,7 +341,7 @@ def load_prices_cached(
         prices.append(df)
 
     if not prices:
-        st.error("No price data loaded from storage.")
+        st.error("No price data loaded from Supabase Storage.")
         return pd.DataFrame()
 
     all_prices = pd.concat(prices, axis=0, ignore_index=True)
@@ -350,3 +350,6 @@ def load_prices_cached(
         all_prices = all_prices.loc[:, ~all_prices.columns.duplicated()]
         st.info("Dropped duplicate columns in prices.")
     return all_prices
+
+
+__all__ = ["Storage", "load_prices_cached"]

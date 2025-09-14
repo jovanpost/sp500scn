@@ -11,16 +11,6 @@ from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
 
 
-def _submit_button(label: str) -> bool:
-    """Compatibility wrapper for Streamlit form submit button.
-
-    Streamlit 1.39.1 does not accept a ``key`` parameter on
-    ``st.form_submit_button``. Use this helper to avoid passing unsupported
-    arguments in older versions.
-    """
-    return st.form_submit_button(label)
-
-
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
     st.subheader(title)
     if df is None or df.empty:
@@ -167,7 +157,7 @@ def render_page() -> None:
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
-        run = _submit_button("Run backtest")
+        run = st.form_submit_button("Run backtest")
 
     if isinstance(start, (list, tuple)):
         start = start[0]
