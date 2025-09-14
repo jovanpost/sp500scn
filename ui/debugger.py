@@ -3,7 +3,6 @@ import html as _html
 import pandas as pd
 import streamlit as st
 import swing_options_screener as sos
-from utils.prices import fetch_history
 from utils.tickers import normalize_symbol
 from utils.formatting import _usd, _pct
 
@@ -116,12 +115,11 @@ def diagnose_ticker(
     symbol = normalize_symbol(original)
 
     df = sos._get_history(symbol) if symbol else None
-
-    if df is None and symbol:
-        df = fetch_history(
-            symbol,
-            start=pd.Timestamp.today() - pd.DateOffset(months=6),
+    if df is not None and df.empty:
+        st.warning(
+            "No OHLCV found for this ticker in storage; skipping legacy fetch."
         )
+        df = None
 
     entry = prev_close = today_vol = None
     src = {}

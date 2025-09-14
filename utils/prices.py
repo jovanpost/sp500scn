@@ -22,12 +22,24 @@ def fetch_history(
     start_ts = pd.to_datetime(start or "1990-01-01")
     end_ts = pd.to_datetime(end) if end else pd.Timestamp.today()
     df = load_prices_cached(storage, [ticker], start_ts, end_ts)
-    if df.empty:
-        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
-        return pd.DataFrame(columns=cols)
-    df = df[df.get("ticker") == ticker]
-    df = df.drop(columns=["ticker"], errors="ignore")
-    df["Adj Close"] = df.get("Close")
+    rename_map = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "adj_close": "Adj Close",
+        "volume": "Volume",
+    }
+    if not df.empty:
+        df = df[df.get("ticker") == ticker].drop(columns=["ticker"], errors="ignore")
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    needed = {"Open", "High", "Low", "Close", "Volume"}
+    missing = needed - set(df.columns)
+    if missing:
+        return pd.DataFrame(columns=list(needed | {"Adj Close", "Ticker"}))
+
+    df["Adj Close"] = df.get("Adj Close", df.get("Close"))
     cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
     df = df[cols]
     df["Ticker"] = ticker

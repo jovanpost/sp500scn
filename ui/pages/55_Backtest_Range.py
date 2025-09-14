@@ -203,52 +203,43 @@ def render_page() -> None:
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
 
-            if prices_df.empty:
-                st.info("No price data loaded for backtest.")
-                return
-
-            prices: Dict[str, pd.DataFrame] = {}
-            g = prices_df.groupby("ticker", sort=False)
-            series = []
-            dups_count = int(prices_df.attrs.get("dups_dropped", 0))
-            for t, df_t in g:
-                df_t = df_t.sort_index()
-                s = df_t["close"].copy()
-                dups_count += int(s.index.duplicated().sum())
-                s = s[~s.index.duplicated(keep="last")]
-                s.name = t
-                series.append(s)
-                df_t = df_t[~df_t.index.duplicated(keep="last")]
-                prices[t] = df_t.drop(columns=["ticker"], errors="ignore").rename(columns=str.lower)
+            tidy = prices_df.reset_index().sort_values(["ticker", "date"])
+            rows_before = len(tidy)
+            tidy = tidy.drop_duplicates(["ticker", "date"], keep="last")
+            rows_after = len(tidy)
             try:
-                wide_close = pd.concat(series, axis=1, join="outer").sort_index()
+                wide_close = tidy.pivot_table(
+                    index="date", columns="ticker", values="close", aggfunc="last"
+                )
+                wide_close = wide_close.loc[:, ~wide_close.columns.duplicated()]
+                wide_close.sort_index(inplace=True)
             except Exception as e:
                 st.error(f"Failed to assemble price matrix: {e}")
                 return
 
+            if tidy.empty:
+                st.error("No price data loaded from storage.")
+                return
+
+            prices: Dict[str, pd.DataFrame] = {}
+            g = tidy.groupby("ticker", sort=False)
+            for t, df_t in g:
+                df_t = df_t.set_index("date").sort_index()
+                df_t = df_t[~df_t.index.duplicated(keep="last")]
+                prices[t] = df_t.drop(columns=["ticker"], errors="ignore").rename(columns=str.lower)
+
+            stats = st.session_state.get("prices_stats", {})
             with st.expander("\U0001F50E Data preflight (debug)"):
                 req = len(active_tickers)
-                loaded = 0 if prices_df.empty else prices_df["ticker"].nunique()
+                loaded = int(stats.get("loaded_series", 0))
                 st.write(f"Tickers requested: {req}")
                 st.write(f"Loaded series: {loaded}")
-                if not prices_df.empty:
-                    st.write(
-                        {
-                            "index_dtype": str(prices_df.index.dtype),
-                            "tz": getattr(prices_df.index.tz, "zone", None),
-                            "min": repr(prices_df.index.min()),
-                            "max": repr(prices_df.index.max()),
-                            "dups_dropped_total": dups_count,
-                        }
-                    )
-
-            if prices_df.empty:
-                log("No prices loaded—check storage paths.")
-                prog.progress(100, text="Prefetch complete")
-                st.error(
-                    "No price data loaded from Supabase Storage. Expected 'lake/prices/{TICKER}.parquet'."
-                )
-                return
+                st.write({
+                    "rows_before_dedupe": int(rows_before),
+                    "rows_after_dedupe": int(rows_after),
+                    "dups_dropped_total": int(stats.get("dups_dropped_total", 0)),
+                    "dups_after_tidy": int(tidy.duplicated(subset=["ticker", "date"]).sum()),
+                })
 
             prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
             log("Prefetch complete.")
