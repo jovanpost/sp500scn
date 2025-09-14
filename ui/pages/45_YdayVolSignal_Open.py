@@ -5,8 +5,9 @@ from typing import Dict
 import pandas as pd
 import streamlit as st
 
-from engine.signal_scan import scan_day, ScanParams
-from data_lake.storage import Storage
+import engine.signal_scan as sigscan
+from engine.signal_scan import scan_day, ScanParams, members_on_date
+from data_lake.storage import Storage, load_prices_cached
 from ui.components.progress import status_block
 
 
@@ -76,14 +77,69 @@ def render_page() -> None:
                 "sr_min_ratio": sr_min_ratio,
             }
 
+            members = sigscan._load_members(storage)
+            active_tickers = members_on_date(members, D)["ticker"].dropna().unique().tolist()
+            start_date = pd.to_datetime(D) - pd.Timedelta(days=365)
+            end_date = pd.to_datetime(D) + pd.Timedelta(days=horizon)
+            log(f"Preloading {len(active_tickers)} tickers…")
+            prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
+            with st.expander("\U0001F50E Data preflight (debug)"):
+                st.write(f"Tickers requested: {len(active_tickers)}")
+                if prices_df.empty:
+                    st.warning(
+                        "No prices loaded from storage. Check bucket paths: lake/prices/{TICKER}.parquet"
+                    )
+                else:
+                    loaded = sorted(
+                        set(prices_df.get("ticker", pd.Series(dtype=str)).tolist())
+                    )
+                    st.write(
+                        f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
+                    )
+                    st.write(
+                        f"Date range: {prices_df.index.min()} \u2192 {prices_df.index.max()}"
+                    )
+            if prices_df.empty:
+                status.update(label="Scan failed ❌", state="error")
+                st.error(
+                    "No price data loaded from Supabase Storage. Expected 'lake/prices/{TICKER}.parquet'."
+                )
+                return
+
+            prices: Dict[str, pd.DataFrame] = {}
+            for t in active_tickers:
+                df_t = prices_df[prices_df.get("ticker") == t]
+                if not df_t.empty:
+                    prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
+
+            def _load_prices_patched(_storage, ticker):
+                df = prices.get(ticker)
+                if df is None:
+                    return None
+                out = df.reset_index().rename(columns={"index": "date"})
+                out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
+                return out[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
+
+            def _load_members_patched(_storage):
+                return members
+
+            orig_load_prices = sigscan._load_prices
+            orig_load_members = sigscan._load_members
+            sigscan._load_prices = _load_prices_patched
+            sigscan._load_members = _load_members_patched
+
             def on_step(i: int, total: int, ticker: str):
                 pct = max(0, min(100, int(i / max(1, total) * 100)))
                 prog.progress(pct, text=f"{pct}%")
                 log(f"{i}/{total} {ticker} ✓")
 
-            cand_df, out_df, fails, _dbg = scan_day(
-                storage, pd.to_datetime(D), params, on_step=on_step
-            )
+            try:
+                cand_df, out_df, fails, _dbg = scan_day(
+                    storage, pd.to_datetime(D), params, on_step=on_step
+                )
+            finally:
+                sigscan._load_prices = orig_load_prices
+                sigscan._load_members = orig_load_members
             st.session_state["cand_df"] = cand_df
             st.session_state["out_df"] = out_df
             st.session_state["fails"] = fails

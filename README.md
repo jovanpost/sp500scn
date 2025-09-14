@@ -2,9 +2,9 @@
 
 ## Data Source
 
-All price data is fetched from Supabase (`sp500_ohlcv`) using a paginated loader.
-Legacy `yfinance` imports have been removed in favor of Supabase-only
-backtests.
+Price history is loaded from Supabase Storage parquet files under
+`lake/prices/{TICKER}.parquet`. Legacy database table reads and `yfinance`
+imports have been removed in favor of this storage-based approach.
 
 ## Outcome Evaluation
 

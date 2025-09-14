@@ -1,47 +1,85 @@
+import io
 import pandas as pd
+
 from data_lake import storage as stg
 
-def test_load_prices_cached_reads_parquet(tmp_path, monkeypatch):
-    monkeypatch.setattr(stg, "LOCAL_ROOT", tmp_path)
+
+def test_load_prices_cached_concat_and_filter(monkeypatch):
     s = stg.Storage()
+
+    df_a = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=3),
+            "open": [1, 2, 3],
+            "high": [1, 2, 3],
+            "low": [1, 2, 3],
+            "close": [1, 2, 3],
+            "volume": [10, 20, 30],
+        }
+    )
+    buf_a = io.BytesIO()
+    df_a.to_parquet(buf_a, index=False)
+
+    df_b = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=3),
+            "open": [4, 5, 6],
+            "high": [4, 5, 6],
+            "low": [4, 5, 6],
+            "close": [4, 5, 6],
+            "volume": [40, 50, 60],
+        }
+    )
+    buf_b = io.BytesIO()
+    df_b.to_parquet(buf_b, index=False)
+
+    def fake_read_bytes(self, path: str) -> bytes:
+        if path == "prices/AAA.parquet":
+            return buf_a.getvalue()
+        if path == "prices/BBB.parquet":
+            return buf_b.getvalue()
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(stg.Storage, "read_bytes", fake_read_bytes)
+
+    out = stg.load_prices_cached(
+        s,
+        ["AAA", "BBB", "CCC"],
+        pd.Timestamp("2020-01-02"),
+        pd.Timestamp("2020-01-03"),
+    )
+
+    assert sorted(out["ticker"].unique()) == ["AAA", "BBB"]
+    assert out.index.min() == pd.Timestamp("2020-01-02")
+    assert out.index.max() == pd.Timestamp("2020-01-03")
+
+
+def test_load_prices_cached_uses_cache(monkeypatch):
+    s = stg.Storage()
+
     df = pd.DataFrame(
         {
             "date": pd.date_range("2020-01-01", periods=2),
-            "open": [1.0, 2.0],
-            "high": [1.0, 2.0],
-            "low": [1.0, 2.0],
-            "close": [1.0, 2.0],
+            "open": [1, 2],
+            "high": [1, 2],
+            "low": [1, 2],
+            "close": [1, 2],
             "volume": [10, 20],
         }
     )
-    p = tmp_path / "prices" / "AAA.parquet"
-    p.parent.mkdir(parents=True)
-    df.to_parquet(p)
-    out = stg.load_prices_cached(s, ["AAA"], pd.Timestamp("2020-01-01"), pd.Timestamp("2020-01-02"))
-    assert not out.empty
-    assert out["ticker"].unique().tolist() == ["AAA"]
-
-
-def test_load_prices_cached_uses_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(stg, "LOCAL_ROOT", tmp_path)
-    s = stg.Storage()
-    df = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=1), "open": [1], "high": [1], "low": [1], "close": [1], "volume": [1]})
-    p = tmp_path / "prices" / "AAA.parquet"
-    p.parent.mkdir(parents=True)
-    df.to_parquet(p)
+    buf = io.BytesIO()
+    df.to_parquet(buf, index=False)
 
     calls = {"n": 0}
 
-    orig = stg.Storage.read_bytes
-
-    def fake_read_bytes(self, path):
+    def fake_read_bytes(self, path: str) -> bytes:
         calls["n"] += 1
-        return orig(self, path)
+        return buf.getvalue()
 
     monkeypatch.setattr(stg.Storage, "read_bytes", fake_read_bytes)
 
     start = pd.Timestamp("2020-01-01")
-    end = pd.Timestamp("2020-01-01")
+    end = pd.Timestamp("2020-01-02")
     stg.load_prices_cached(s, ["AAA"], start, end)
     stg.load_prices_cached(s, ["AAA"], start, end)
 

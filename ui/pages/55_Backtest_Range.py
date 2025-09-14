@@ -205,18 +205,27 @@ def render_page() -> None:
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
             with st.expander("\U0001F50E Data preflight (debug)"):
-                st.write(f"Tickers chosen (first 10): {active_tickers[:10]}")
-                loaded = prices_df.get("ticker").unique().tolist() if not prices_df.empty else []
-                st.write(f"Loaded price series: {len(loaded)} / {len(active_tickers)}")
-                if loaded:
-                    df_sample = prices_df[prices_df.get("ticker") == loaded[0]]
+                st.write(f"Tickers requested: {len(active_tickers)}")
+                if prices_df.empty:
+                    st.warning(
+                        "No prices loaded from storage. Check bucket paths: lake/prices/{TICKER}.parquet"
+                    )
+                else:
+                    loaded = sorted(
+                        set(prices_df.get("ticker", pd.Series(dtype=str)).tolist())
+                    )
                     st.write(
-                        f"{loaded[0]}: {df_sample.shape}, range: {df_sample.index.min()} \u2192 {df_sample.index.max()}"
+                        f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
+                    )
+                    st.write(
+                        f"Date range: {prices_df.index.min()} \u2192 {prices_df.index.max()}"
                     )
             if prices_df.empty:
-                log("No prices loaded—check Supabase table/data.")
+                log("No prices loaded—check storage paths.")
                 prog.progress(100, text="Prefetch complete")
-                st.error("No data for backtest.")
+                st.error(
+                    "No price data loaded from Supabase Storage. Expected 'lake/prices/{TICKER}.parquet'."
+                )
                 return
             if not prices_df.columns.is_unique:
                 prices_df = prices_df.loc[:, ~prices_df.columns.duplicated()]
