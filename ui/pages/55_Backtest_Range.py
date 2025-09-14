@@ -203,6 +203,10 @@ def render_page() -> None:
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
 
+            if prices_df.empty:
+                st.info("No price data loaded for backtest.")
+                return
+
             prices: Dict[str, pd.DataFrame] = {}
             g = prices_df.groupby("ticker", sort=False)
             series = []
