@@ -117,7 +117,7 @@ def diagnose_ticker(
     df = sos._get_history(symbol) if symbol else None
     if df is not None and df.empty:
         st.warning(
-            "No OHLCV found for this ticker in storage; skipping legacy fetch."
+            f"No normalized OHLCV found for {symbol}. Check that prices/{symbol}.parquet exists and has date/open/high/low/close/volume."
         )
         df = None
 
