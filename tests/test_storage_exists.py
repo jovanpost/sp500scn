@@ -53,3 +53,18 @@ def test_exists_handles_fileobject():
     st.bucket = Bucket()
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
+
+
+def test_exists_handles_string_list():
+    st = storage.Storage()
+    st.mode = "supabase"
+
+    class Bucket:
+        def list(self, folder, *args, **kwargs):
+            if folder == "prices":
+                return ["AAPL.parquet"]
+            return []
+
+    st.bucket = Bucket()
+    assert st.exists("prices/AAPL.parquet") is True
+    assert st.exists("prices/MSFT.parquet") is False
