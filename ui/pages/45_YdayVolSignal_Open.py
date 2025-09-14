@@ -92,7 +92,7 @@ def render_page() -> None:
                     )
                 else:
                     loaded = sorted(
-                        set(prices_df.get("ticker", pd.Series(dtype=str)).tolist())
+                        set(prices_df.get("Ticker", pd.Series(dtype=str)).tolist())
                     )
                     st.write(
                         f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
@@ -114,9 +114,9 @@ def render_page() -> None:
 
             prices: Dict[str, pd.DataFrame] = {}
             for t in active_tickers:
-                df_t = prices_df[prices_df.get("ticker") == t]
+                df_t = prices_df[prices_df.get("Ticker") == t]
                 if not df_t.empty:
-                    prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
+                    prices[t] = df_t.drop(columns=["Ticker"]).rename(columns=str.lower)
 
             def _load_prices_patched(_storage, ticker):
                 df = prices.get(ticker)
