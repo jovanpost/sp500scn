@@ -14,6 +14,29 @@ from data_lake.ingest import ingest_batch
 from data_lake.schemas import IngestJob
 
 
+def _storage_has_file(storage: Storage, path: str) -> bool:
+    """Return ``True`` if ``path`` exists on ``storage``.
+
+    Some storage backends used in tests or development may not implement an
+    ``exists`` method.  This helper mirrors the expected behaviour using
+    ``read_bytes`` as a fallback so that the UI can safely check for files
+    without raising an ``AttributeError``.
+    """
+
+    exists_fn = getattr(storage, "exists", None)
+    if callable(exists_fn):
+        try:
+            return bool(exists_fn(path))
+        except Exception:
+            return False
+
+    try:
+        storage.read_bytes(path)
+    except Exception:
+        return False
+    return True
+
+
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
     if "auto_run" not in st.session_state:
@@ -201,7 +224,7 @@ def render_data_lake_tab() -> None:
                 st.write(f"manifest: {summary['manifest_path']}")
                 for res in summary["results"][:2]:
                     st.write(res)
-                    if not res["error"] and storage.exists(res["path"]):
+                    if not res["error"] and _storage_has_file(storage, res["path"]):
                         df = pd.read_parquet(
                             io.BytesIO(storage.read_bytes(res["path"]))
                         )
@@ -210,7 +233,7 @@ def render_data_lake_tab() -> None:
             st.exception(e)
 
     st.markdown("### Sanity check")
-    if storage.exists("prices/AAPL.parquet"):
+    if _storage_has_file(storage, "prices/AAPL.parquet"):
         df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
         st.dataframe(df.tail(5))
         st.line_chart(df.set_index("date")["close"])
