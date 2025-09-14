@@ -1,12 +1,16 @@
 import base64
 import json
+import logging
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
 
 
-LOCAL_ROOT = Path("data")
+# Default root for local storage operations
+DEFAULT_LOCAL_ROOT = Path("data")
+# Backwards compatibility for tests that patch ``LOCAL_ROOT``
+LOCAL_ROOT = DEFAULT_LOCAL_ROOT
 
 
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
@@ -107,18 +111,28 @@ def _classify_key(key: str) -> str:
 
 
 class Storage:
-    """Simple wrapper around local file operations for tests."""
+    """Simple wrapper around local file operations for tests.
+
+    The real application supports multiple backends (e.g. Supabase storage).
+    The simplified test version only uses the local filesystem but mirrors the
+    interface expected by the Streamlit UI.  ``local_root`` defaults to the
+    ``data`` directory but can be overridden (the tests use this to point at a
+    temporary directory).
+    """
 
     def __init__(self) -> None:
         self.mode = "local"
         self.bucket = None
+        # Where local files are stored; tests may monkeypatch ``LOCAL_ROOT``
+        self.local_root = LOCAL_ROOT
         self._prices_cache: dict[str, pd.DataFrame] = {}
         # mimic interface of production storage for UI diagnostics
         self.key_info: dict[str, str] = {"kind": "service_role"}
+        self.log = logging.getLogger(__name__)
 
     # The tests monkeypatch this method, so the implementation can be minimal.
     def read_parquet(self, path: str) -> pd.DataFrame:
-        return pd.read_parquet(LOCAL_ROOT / path)
+        return pd.read_parquet(self.local_root / path)
 
     # --- simple byte-level helpers used by the UI ---
     def read_bytes(self, path: str) -> bytes:
@@ -129,78 +143,91 @@ class Storage:
         used by the Streamlit app.
         """
 
-        return (LOCAL_ROOT / path).read_bytes()
+        return (self.local_root / path).read_bytes()
 
     def write_bytes(self, path: str, data: bytes) -> None:
         """Write ``data`` to ``path`` under the local ``data`` directory."""
 
-        dest = LOCAL_ROOT / path
+        dest = self.local_root / path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
 
     # ------------------------------------------------------------------
     # helpers
-    def list_prefix(self, prefix: str = "") -> list[dict]:
-        """Return list of files under ``prefix``.
+    def list_prefix(self, prefix: str) -> list[str]:
+        """Return a list of file paths under ``prefix``.
 
-        Each entry is a mapping with at least a ``name`` key.  The implementation
-        supports both the local filesystem backend used in tests and the
-        Supabase storage API.  Responses from the Supabase ``list`` call can be
-        either a plain list or a ``{"data": [...]}`` payload; this normalises
-        both forms to a simple list.
+        The return value is a list of paths relative to ``local_root`` (using
+        forward slashes) so the caller sees uniform results across storage
+        backends.  The method is defensive and tolerates missing directories or
+        Supabase errors.
         """
 
+        pfx = prefix.lstrip("/")
         if self.mode == "local":
-            base = LOCAL_ROOT / prefix
-            if not base.exists():
-                return []
+            base = (
+                (self.local_root / pfx).parent
+                if pfx.endswith(".parquet")
+                else (self.local_root / pfx)
+            ).resolve()
+            results: list[str] = []
             if base.is_file():
-                return [{"name": base.name}]
-            out: list[dict] = []
-            for p in base.iterdir():
-                if p.is_file():
-                    out.append({"name": p.name})
-            return out
+                results.append(str(base.relative_to(self.local_root)).replace("\\", "/"))
+            elif base.exists():
+                for path in base.rglob("*"):
+                    if path.is_file():
+                        rel = str(path.relative_to(self.local_root)).replace("\\", "/")
+                        results.append(rel)
+            return sorted(results)
 
         if self.bucket:
+            path_arg = pfx[:-1] if pfx.endswith("/") and pfx != "/" else pfx
             try:
-                res = self.bucket.list(prefix)
-                if isinstance(res, dict) and "data" in res:
-                    files = res.get("data")
-                elif hasattr(res, "data"):
-                    files = res.data
-                else:
-                    files = res
-                return files or []
-            except Exception:
+                res = self.bucket.list(path_arg)
+            except Exception as e:  # pragma: no cover - defensive
+                self.log.warning("list_prefix failed for '%s': %s", pfx, e)
                 return []
+            if isinstance(res, dict) and "data" in res:
+                items = res["data"]
+            elif hasattr(res, "data"):
+                items = res.data
+            else:
+                items = res
+            results: list[str] = []
+            for it in items or []:
+                name = getattr(it, "name", None)
+                if name is None and isinstance(it, dict):
+                    name = it.get("name")
+                if name is None and isinstance(it, str):
+                    name = it
+                if not name:
+                    continue
+                base = path_arg.rstrip("/")
+                full = f"{base}/{name}" if base else name
+                results.append(full)
+            return sorted(results)
 
         return []
 
     def exists(self, path: str) -> bool:
         """Return ``True`` if ``path`` exists in storage."""
 
-        if self.mode == "local":
-            return (LOCAL_ROOT / path).exists()
+        norm = path.lstrip("/")
 
-        # Supabase: list the parent prefix and look for the filename.
-        parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
-        for item in self.list_prefix(parent):
-            if isinstance(item, dict):
-                item_name = item.get("name")
-            elif hasattr(item, "name"):
-                item_name = getattr(item, "name")
-            elif isinstance(item, str):
-                item_name = item
-            else:
-                item_name = None
-            if str(item_name).strip() == name:
+        # Directory-style check: any file under this prefix?
+        if norm.endswith("/"):
+            return len(self.list_prefix(norm)) > 0
+
+        parent = Path(norm).parent.as_posix()
+        base = Path(norm).name
+        for full in self.list_prefix(parent + "/"):
+            if full.replace("\\", "/").endswith("/" + base) or full == norm:
                 return True
         return False
 
     def info(self) -> str:
         """Return a short description of the storage configuration."""
-        return f"mode={self.mode} root={LOCAL_ROOT}"
+        return f"mode={self.mode} root={self.local_root}"
 
     def selftest(self) -> dict[str, str | bool]:
         """Basic self-test used by the Streamlit diagnostics pane."""
@@ -208,7 +235,7 @@ class Storage:
 
     def list_all(self, prefix: str) -> list[str]:
         if self.mode == "local":
-            base = LOCAL_ROOT / prefix
+            base = self.local_root / prefix
             if not base.exists():
                 return []
             return [str(Path(prefix) / p.name) for p in sorted(base.iterdir()) if p.is_file()]
