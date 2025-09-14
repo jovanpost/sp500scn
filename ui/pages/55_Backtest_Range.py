@@ -202,6 +202,9 @@ def render_page() -> None:
 
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+            if prices_df.empty:
+                st.error("No price data loaded from storage.")
+                return
 
             tidy = prices_df.reset_index().sort_values(["ticker", "date"])
             rows_before = len(tidy)
