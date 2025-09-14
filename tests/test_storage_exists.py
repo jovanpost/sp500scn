@@ -68,3 +68,15 @@ def test_exists_handles_string_list():
     st.bucket = Bucket()
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
+
+
+def test_exists_local_custom_root(tmp_path):
+    """exists() and list_prefix should respect ``local_root`` overrides."""
+    lake = tmp_path / ".lake" / "prices"
+    lake.mkdir(parents=True)
+    (lake / "AAPL.parquet").write_text("x")
+    st = storage.Storage()
+    st.local_root = tmp_path / ".lake"
+    assert st.exists("prices/")
+    assert st.exists("prices/AAPL.parquet")
+    assert not st.exists("prices/MSFT.parquet")

@@ -234,20 +234,27 @@ def render_data_lake_tab() -> None:
 
     st.markdown("### Sanity check")
     try:
-        have = getattr(storage, "exists", None)
-        sample_path = "prices/AAPL.parquet"
-        if callable(have):
-            ok = storage.exists(sample_path)
-        else:
-            # fallback: attempt read, errors handled below
-            ok = True
-        if ok:
-            raw = storage.read_bytes(sample_path)
-            df = pd.read_parquet(io.BytesIO(raw))
-            st.write(f"Loaded {sample_path} → {df.shape} rows")
-            st.dataframe(df.tail(5))
-            st.line_chart(df.set_index("date")["close"])
-        else:
-            st.info("No sample file found at prices/AAPL.parquet yet.")
+        has_aapl = getattr(storage, "exists", None) and storage.exists("prices/AAPL.parquet")
     except Exception as e:
-        st.warning(f"Sanity check could not read prices/AAPL.parquet: {e}")
+        has_aapl = False
+        st.warning(f"exists() check failed: {e}")
+
+    cols = st.columns(2)
+    with cols[0]:
+        st.caption("🔎 First few objects under prices/")
+        try:
+            sample = storage.list_prefix("prices/")
+            st.write(sample[:10] if sample else "— (none) —")
+        except Exception as e:
+            st.warning(f"list_prefix failed: {e}")
+    with cols[1]:
+        st.caption("📄 AAPL preview")
+        if has_aapl:
+            try:
+                df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
+                st.dataframe(df.tail(5))
+                st.line_chart(df.set_index("date")["close"])
+            except Exception as e:
+                st.error(f"Failed to read prices/AAPL.parquet: {e}")
+        else:
+            st.info("No AAPL.parquet found under prices/.")

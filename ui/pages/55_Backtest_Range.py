@@ -202,10 +202,33 @@ def render_page() -> None:
 
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+            with st.expander("\U0001F50E Data preflight (debug)"):
+                st.write(f"Tickers requested: {len(active_tickers)}")
+                sample_check = active_tickers[:5]
+                presence = {}
+                for t in sample_check:
+                    p = f"prices/{t}.parquet"
+                    try:
+                        presence[t] = bool(getattr(storage, "exists", None) and storage.exists(p))
+                    except Exception as e:
+                        presence[t] = f"exists() error: {e}"
+                st.write({"presence": presence})
+                loaded = prices_df.get("Ticker").unique().tolist() if not prices_df.empty else []
+                st.write(f"Loaded series: {len(loaded)}")
+                if not prices_df.empty:
+                    st.write(
+                        {
+                            "index_dtype": str(prices_df.index.dtype),
+                            "tz": getattr(prices_df.index, "tz", None),
+                            "min": prices_df.index.min(),
+                            "max": prices_df.index.max(),
+                        }
+                    )
             if prices_df.empty:
-                log("No prices loaded from storage.")
-                st.error("No price data loaded.")
-                return
+                log(
+                    "No data loaded for backtest. Check presence above (exists) and list_prefix in Data Lake tab."
+                )
+                st.stop()
 
             rows_before = len(prices_df)
             prices_df = prices_df.reset_index(names="date")
@@ -238,17 +261,6 @@ def render_page() -> None:
                     columns=str.lower
                 )
 
-            stats = st.session_state.get("price_load_stats", {})
-            with st.expander("\U0001F50E Data preflight (debug)"):
-                st.write(stats)
-                st.write(
-                    {
-                        "rows_before_dedupe": int(rows_before),
-                        "rows_after_dedupe": int(rows_after),
-                        "dups_dropped": int(rows_before - rows_after),
-                        "close_wide_shape": close_wide.shape,
-                    }
-                )
 
             prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
             log("Prefetch complete.")
