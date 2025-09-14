@@ -9,7 +9,7 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
 
     df_a = pd.DataFrame(
         {
-            "date": pd.date_range("2020-01-01", periods=3),
+            "date": pd.date_range("2020-01-01", periods=3, tz="America/New_York"),
             "open": [1, 2, 3],
             "high": [1, 2, 3],
             "low": [1, 2, 3],
@@ -22,7 +22,7 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
 
     df_b = pd.DataFrame(
         {
-            "date": pd.date_range("2020-01-01", periods=3),
+            "date": pd.date_range("2020-01-01", periods=3, tz="America/New_York"),
             "open": [4, 5, 6],
             "high": [4, 5, 6],
             "low": [4, 5, 6],

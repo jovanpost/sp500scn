@@ -185,9 +185,9 @@ def render_page() -> None:
                 "precedent_window": precedent_window,
             }
 
-            start_date = pd.to_datetime(start)
-            end_date = pd.to_datetime(end)
-            df_days = load_prices_cached(storage, ["AAPL"], start_date, end_date)
+            start_ts = pd.Timestamp(start).normalize()
+            end_ts = pd.Timestamp(end).normalize()
+            df_days = load_prices_cached(storage, ["AAPL"], start_ts, end_ts)
             df_days = df_days[df_days.get("ticker") == "AAPL"].drop(columns=["ticker"], errors="ignore")
             if df_days.empty:
                 st.info("No data loaded for backtest.")
@@ -203,7 +203,8 @@ def render_page() -> None:
 
             prices: Dict[str, pd.DataFrame] = {}
             log(f"Preloading {len(active_tickers)} tickers…")
-            prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
+            prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+            prices_df = prices_df.loc[(prices_df.index >= start_ts) & (prices_df.index <= end_ts)]
             with st.expander("\U0001F50E Data preflight (debug)"):
                 st.write(f"Tickers requested: {len(active_tickers)}")
                 if prices_df.empty:
@@ -218,7 +219,12 @@ def render_page() -> None:
                         f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
                     )
                     st.write(
-                        f"Date range: {prices_df.index.min()} \u2192 {prices_df.index.max()}"
+                        {
+                            "index_dtype": str(prices_df.index.dtype),
+                            "tz": getattr(prices_df.index, "tz", None),
+                            "min": prices_df.index.min(),
+                            "max": prices_df.index.max(),
+                        }
                     )
             if prices_df.empty:
                 log("No prices loaded—check storage paths.")

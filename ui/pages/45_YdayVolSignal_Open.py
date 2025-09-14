@@ -50,7 +50,7 @@ def render_page() -> None:
     _d = st.date_input("Entry day (D)", value=dt.date.today())
     if isinstance(_d, (list, tuple)):
         _d = _d[0]
-    D = pd.to_datetime(_d).date()
+    D = pd.Timestamp(_d).normalize()
 
     vol_lookback = int(st.number_input("Volume lookback", min_value=1, value=63, step=1))
     min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
@@ -79,10 +79,11 @@ def render_page() -> None:
 
             members = sigscan._load_members(storage)
             active_tickers = members_on_date(members, D)["ticker"].dropna().unique().tolist()
-            start_date = pd.to_datetime(D) - pd.Timedelta(days=365)
-            end_date = pd.to_datetime(D) + pd.Timedelta(days=horizon)
+            start_date = D - pd.Timedelta(days=365)
+            end_date = D + pd.Timedelta(days=horizon)
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
+            prices_df = prices_df.loc[(prices_df.index >= start_date) & (prices_df.index <= end_date)]
             with st.expander("\U0001F50E Data preflight (debug)"):
                 st.write(f"Tickers requested: {len(active_tickers)}")
                 if prices_df.empty:
@@ -97,7 +98,12 @@ def render_page() -> None:
                         f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
                     )
                     st.write(
-                        f"Date range: {prices_df.index.min()} \u2192 {prices_df.index.max()}"
+                        {
+                            "index_dtype": str(prices_df.index.dtype),
+                            "tz": getattr(prices_df.index, "tz", None),
+                            "min": prices_df.index.min(),
+                            "max": prices_df.index.max(),
+                        }
                     )
             if prices_df.empty:
                 status.update(label="Scan failed ❌", state="error")
@@ -135,7 +141,7 @@ def render_page() -> None:
 
             try:
                 cand_df, out_df, fails, _dbg = scan_day(
-                    storage, pd.to_datetime(D), params, on_step=on_step
+                    storage, D, params, on_step=on_step
                 )
             finally:
                 sigscan._load_prices = orig_load_prices
@@ -148,7 +154,7 @@ def render_page() -> None:
                 buf = io.BytesIO()
                 out_df.to_parquet(buf, index=False)
                 storage.write_bytes(
-                    f"runs/{pd.to_datetime(D).date().isoformat()}/outcomes.parquet",
+                    f"runs/{D.date().isoformat()}/outcomes.parquet",
                     buf.getvalue(),
                 )
 

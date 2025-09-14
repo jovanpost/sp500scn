@@ -338,10 +338,18 @@ def load_prices_cached(
     out = pd.concat(frames, ignore_index=True)
     out = out.drop_duplicates()
     out = out.set_index("date").sort_index()
+
+    # ensure datetime index with no timezone; daily-normalized
+    idx = pd.to_datetime(out.index, utc=True)
+    idx = idx.tz_convert("America/New_York").tz_localize(None)
+    out.index = idx.normalize()
+
     if start is not None:
-        out = out.loc[out.index >= pd.to_datetime(start)]
+        start = pd.Timestamp(start).normalize()
+        out = out.loc[out.index >= start]
     if end is not None:
-        out = out.loc[out.index <= pd.to_datetime(end)]
+        end = pd.Timestamp(end).normalize()
+        out = out.loc[out.index <= end]
     return out
 
 
