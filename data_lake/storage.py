@@ -155,7 +155,13 @@ class Storage:
                 name = Path(path).name
                 resp = self.bucket.list(folder, search=name)
                 data = getattr(resp, "data", resp)
-                return any(item.get("name") == name for item in data)
+                for item in data:
+                    item_name = getattr(item, "name", None)
+                    if item_name is None and isinstance(item, dict):
+                        item_name = item.get("name")
+                    if item_name == name:
+                        return True
+                return False
             except Exception:
                 return False
 

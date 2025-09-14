@@ -30,3 +30,26 @@ def test_exists_handles_apiresponse():
     st.bucket = Bucket()
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
+
+
+def test_exists_handles_fileobject():
+    st = storage.Storage()
+    st.mode = "supabase"
+
+    class FileObject:
+        def __init__(self, name: str):
+            self.name = name
+
+    class APIResp:
+        def __init__(self, data):
+            self.data = data
+
+    class Bucket:
+        def list(self, folder, *args, **kwargs):
+            if folder == "prices":
+                return APIResp([FileObject("AAPL.parquet")])
+            return APIResp([])
+
+    st.bucket = Bucket()
+    assert st.exists("prices/AAPL.parquet") is True
+    assert st.exists("prices/MSFT.parquet") is False
