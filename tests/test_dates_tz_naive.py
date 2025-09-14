@@ -22,11 +22,11 @@ def test_load_prices_index_tz_naive(monkeypatch):
     buf = io.BytesIO()
     df.to_parquet(buf, index=False)
 
-    def fake_read_bytes(self, path: str) -> bytes:
+    def fake_read_parquet(self, path: str):
         assert path == "prices/AAA.parquet"
-        return buf.getvalue()
+        return pd.read_parquet(io.BytesIO(buf.getvalue()))
 
-    monkeypatch.setattr(stg.Storage, "read_bytes", fake_read_bytes)
+    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-04")

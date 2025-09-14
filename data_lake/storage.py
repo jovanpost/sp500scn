@@ -20,6 +20,35 @@ LOCAL_ROOT = pathlib.Path(".lake").resolve()
 log = logging.getLogger(__name__)
 
 
+def _tidy_prices(df: pd.DataFrame) -> pd.DataFrame:
+    """Canonicalize price frame.
+
+    - ensure 'date' is datetime64[ns] tz-naive
+    - sort by date
+    - drop duplicate (ticker, date) rows keeping the last
+    - keep expected columns and a 'ticker' column
+    """
+
+    if "date" not in df.columns:
+        raise ValueError("prices df missing 'date'")
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if hasattr(df["date"].dt, "tz") and df["date"].dt.tz is not None:
+        df["date"] = df["date"].dt.tz_localize(None)
+
+    df = df.dropna(subset=["date"]).sort_values("date")
+
+    if "ticker" in df.columns:
+        df = (
+            df[~df.set_index(["ticker", "date"]).index.duplicated(keep="last")]
+            .reset_index(drop=True)
+        )
+    else:
+        df = df[~df["date"].duplicated(keep="last")]
+
+    return df.set_index("date")
+
+
 def _supabase_creds() -> Optional[Tuple[str, str]]:
     try:
         cfg = st.secrets.get("supabase", {})
@@ -313,46 +342,40 @@ def load_prices_cached(
     ``date`` and includes a ``ticker`` column.
     """
 
-    frames: list[pd.DataFrame] = []
+    prices: list[pd.DataFrame] = []
+    dups_total = 0
     for t in tickers:
         path = f"prices/{t}.parquet"
         try:
-            b = storage.read_bytes(path)
-            df = pd.read_parquet(io.BytesIO(b))
-            if "date" in df.columns:
-                df["date"] = pd.to_datetime(df["date"])
-            elif "Date" in df.columns:
-                df = df.rename(columns={"Date": "date"})
-                df["date"] = pd.to_datetime(df["date"])
-            else:
-                continue
-            if "ticker" not in df.columns:
-                df["ticker"] = t
-            frames.append(df)
+            tmp = storage.read_parquet(path)
+            tmp["ticker"] = t
+            if not tmp.empty:
+                dups_total += int(tmp.duplicated(subset=["date"]).sum())
+            tmp = _tidy_prices(tmp)
+            prices.append(tmp)
+        except FileNotFoundError:
+            continue
         except Exception as e:
             logging.info(f"[prices] skip {t}: {e}")
 
-    if not frames:
+    if not prices:
+        st.error("No price data loaded from storage.")
         return pd.DataFrame()
 
-    out = pd.concat(frames, ignore_index=True)
-    out = out.drop_duplicates()
-    out = out.set_index("date").sort_index()
+    out = pd.concat(prices, axis=0, ignore_index=False).sort_index()
 
-    # ensure datetime index with no timezone; daily-normalized
-    idx = pd.to_datetime(out.index)
-    if idx.tz is None:
-        idx = idx.tz_localize("America/New_York")
-    else:
-        idx = idx.tz_convert("America/New_York")
-    out.index = idx.normalize().tz_localize(None)
+    if "ticker" not in out.columns:
+        out = out.reset_index().set_index("date")
+
+    out.attrs["dups_dropped"] = int(dups_total)
 
     if start is not None:
-        start = pd.Timestamp(start).normalize()
+        start = pd.Timestamp(start).tz_localize(None)
         out = out.loc[out.index >= start]
     if end is not None:
-        end = pd.Timestamp(end).normalize()
+        end = pd.Timestamp(end).tz_localize(None)
         out = out.loc[out.index <= end]
+
     return out
 
 
