@@ -1,16 +1,29 @@
 import pandas as pd
 
 
-def members_on_date(members: pd.DataFrame, date) -> pd.DataFrame:
+def _as_naive(ts):
+    ts = pd.to_datetime(ts, errors="coerce")
+    if isinstance(ts, pd.Series):
+        if getattr(ts.dt, "tz", None) is not None:
+            ts = ts.dt.tz_localize(None)
+    else:
+        if getattr(ts, "tz", None) is not None:
+            ts = ts.tz_localize(None)
+    return ts
+
+
+def members_on_date(members: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
     """Return rows where ticker is active on ``date`` (inclusive bounds)."""
+
+    d = pd.to_datetime(date)
+    if getattr(d, "tz", None) is not None:
+        d = d.tz_localize(None)
+
     m = members.copy()
-
-    m["start_date"] = pd.to_datetime(m["start_date"]).dt.tz_localize(None)
-    if "end_date" not in m.columns:
+    m["start_date"] = _as_naive(m["start_date"])
+    if "end_date" in m.columns:
+        m["end_date"] = _as_naive(m["end_date"])
+    else:
         m["end_date"] = pd.NaT
-    m["end_date"] = pd.to_datetime(m["end_date"], errors="coerce").dt.tz_localize(None)
 
-    ts = pd.Timestamp(date).tz_localize(None)
-
-    mask = (m["start_date"] <= ts) & (m["end_date"].isna() | (ts <= m["end_date"]))
-    return m.loc[mask]
+    return m[(m["start_date"] <= d) & (m["end_date"].isna() | (d <= m["end_date"]))]

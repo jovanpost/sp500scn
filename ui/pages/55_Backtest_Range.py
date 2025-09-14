@@ -50,12 +50,16 @@ def render_page() -> None:
     with st.form("bt_controls"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            start = st.date_input(
-                "Start date",
-                value=dt.date.today() - dt.timedelta(days=30),
-                key="bt_start",
-            )
-            end = st.date_input("End date", value=dt.date.today(), key="bt_end")
+            start_date = pd.Timestamp(
+                st.date_input(
+                    "Start date",
+                    value=dt.date.today() - dt.timedelta(days=30),
+                    key="bt_start",
+                )
+            ).tz_localize(None)
+            end_date = pd.Timestamp(
+                st.date_input("End date", value=dt.date.today(), key="bt_end")
+            ).tz_localize(None)
             horizon = int(
                 st.number_input(
                     "Horizon (days)",
@@ -159,11 +163,6 @@ def render_page() -> None:
         )
         run = st.form_submit_button("Run backtest")
 
-    if isinstance(start, (list, tuple)):
-        start = start[0]
-    if isinstance(end, (list, tuple)):
-        end = end[0]
-
     if run:
         st.session_state["bt_running"] = True
         status, prog, log = status_block("Backtest running…", key_prefix="bt")
@@ -185,8 +184,8 @@ def render_page() -> None:
                 "precedent_window": precedent_window,
             }
 
-            start_ts = pd.Timestamp(start).normalize()
-            end_ts = pd.Timestamp(end).normalize()
+            start_ts = start_date.normalize()
+            end_ts = end_date.normalize()
             df_days = load_prices_cached(storage, ["AAPL"], start_ts, end_ts)
             df_days = df_days[df_days.get("ticker") == "AAPL"].drop(columns=["ticker"], errors="ignore")
             if df_days.empty:
@@ -201,31 +200,44 @@ def render_page() -> None:
                 active_tickers.update(members_on_date(members, D)["ticker"].tolist())
             active_tickers = sorted(active_tickers)
 
-            prices: Dict[str, pd.DataFrame] = {}
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
-            prices_df = prices_df.loc[(prices_df.index >= start_ts) & (prices_df.index <= end_ts)]
+
+            prices: Dict[str, pd.DataFrame] = {}
+            g = prices_df.groupby("ticker", sort=False)
+            series = []
+            dups_count = int(prices_df.attrs.get("dups_dropped", 0))
+            for t, df_t in g:
+                df_t = df_t.sort_index()
+                s = df_t["close"].copy()
+                dups_count += int(s.index.duplicated().sum())
+                s = s[~s.index.duplicated(keep="last")]
+                s.name = t
+                series.append(s)
+                df_t = df_t[~df_t.index.duplicated(keep="last")]
+                prices[t] = df_t.drop(columns=["ticker"], errors="ignore").rename(columns=str.lower)
+            try:
+                wide_close = pd.concat(series, axis=1, join="outer").sort_index()
+            except Exception as e:
+                st.error(f"Failed to assemble price matrix: {e}")
+                return
+
             with st.expander("\U0001F50E Data preflight (debug)"):
-                st.write(f"Tickers requested: {len(active_tickers)}")
-                if prices_df.empty:
-                    st.warning(
-                        "No prices loaded from storage. Check bucket paths: lake/prices/{TICKER}.parquet"
-                    )
-                else:
-                    loaded = sorted(
-                        set(prices_df.get("ticker", pd.Series(dtype=str)).tolist())
-                    )
-                    st.write(
-                        f"Loaded series: {len(loaded)} (showing up to 10): {loaded[:10]}"
-                    )
+                req = len(active_tickers)
+                loaded = 0 if prices_df.empty else prices_df["ticker"].nunique()
+                st.write(f"Tickers requested: {req}")
+                st.write(f"Loaded series: {loaded}")
+                if not prices_df.empty:
                     st.write(
                         {
                             "index_dtype": str(prices_df.index.dtype),
-                            "tz": getattr(prices_df.index, "tz", None),
-                            "min": prices_df.index.min(),
-                            "max": prices_df.index.max(),
+                            "tz": getattr(prices_df.index.tz, "zone", None),
+                            "min": repr(prices_df.index.min()),
+                            "max": repr(prices_df.index.max()),
+                            "dups_dropped_total": dups_count,
                         }
                     )
+
             if prices_df.empty:
                 log("No prices loaded—check storage paths.")
                 prog.progress(100, text="Prefetch complete")
@@ -233,14 +245,7 @@ def render_page() -> None:
                     "No price data loaded from Supabase Storage. Expected 'lake/prices/{TICKER}.parquet'."
                 )
                 return
-            if not prices_df.columns.is_unique:
-                prices_df = prices_df.loc[:, ~prices_df.columns.duplicated()]
-                log("Dropped duplicate columns in backtest data.")
-            prices_df.index = pd.to_datetime(prices_df.index)
-            for t in active_tickers:
-                df_t = prices_df[prices_df.get("ticker") == t]
-                if not df_t.empty:
-                    prices[t] = df_t.drop(columns=["ticker"]).rename(columns=str.lower)
+
             prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
             log("Prefetch complete.")
 

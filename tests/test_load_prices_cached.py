@@ -33,14 +33,14 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
     buf_b = io.BytesIO()
     df_b.to_parquet(buf_b, index=False)
 
-    def fake_read_bytes(self, path: str) -> bytes:
+    def fake_read_parquet(self, path: str):
         if path == "prices/AAA.parquet":
-            return buf_a.getvalue()
+            return pd.read_parquet(io.BytesIO(buf_a.getvalue()))
         if path == "prices/BBB.parquet":
-            return buf_b.getvalue()
+            return pd.read_parquet(io.BytesIO(buf_b.getvalue()))
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(stg.Storage, "read_bytes", fake_read_bytes)
+    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
 
     out = stg.load_prices_cached(
         s,
@@ -72,11 +72,11 @@ def test_load_prices_cached_uses_cache(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_read_bytes(self, path: str) -> bytes:
+    def fake_read_parquet(self, path: str):
         calls["n"] += 1
-        return buf.getvalue()
+        return pd.read_parquet(io.BytesIO(buf.getvalue()))
 
-    monkeypatch.setattr(stg.Storage, "read_bytes", fake_read_bytes)
+    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-02")
