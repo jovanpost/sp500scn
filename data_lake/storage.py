@@ -373,12 +373,16 @@ def load_prices_cached(
             )
             df = df.set_index("Date")
             prices.append(df)
-    else:
+    if not prices:
+        # Fall back to loading local cached data if available
         for ticker in tickers:
-            path = f"prices/{ticker}.parquet"
+            rel_path = f"prices/{ticker}.parquet"
             try:
-                buf = _storage.read_bytes(path)
-                df = pd.read_parquet(io.BytesIO(buf))
+                if _storage.mode == "supabase":
+                    df = pd.read_parquet(LOCAL_ROOT / rel_path)
+                else:
+                    buf = _storage.read_bytes(rel_path)
+                    df = pd.read_parquet(io.BytesIO(buf))
             except Exception:
                 continue
             if df.empty:
@@ -396,7 +400,7 @@ def load_prices_cached(
             prices.append(df.set_index("date"))
 
     if not prices:
-        st.error("No price data loaded from Supabase.")
+        st.error("No price data loaded from Supabase or local cache.")
         return pd.DataFrame()
 
     all_prices = pd.concat(prices, axis=0)
