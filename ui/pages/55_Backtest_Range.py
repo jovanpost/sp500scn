@@ -187,7 +187,7 @@ def render_page() -> None:
             start_ts = start_date.normalize()
             end_ts = end_date.normalize()
             df_days = load_prices_cached(storage, ["AAPL"], start_ts, end_ts)
-            df_days = df_days[df_days.get("ticker") == "AAPL"].drop(columns=["ticker"], errors="ignore")
+            df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
                 st.info("No data loaded for backtest.")
                 return
