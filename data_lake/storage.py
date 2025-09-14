@@ -20,36 +20,55 @@ LOCAL_ROOT = pathlib.Path(".lake").resolve()
 log = logging.getLogger(__name__)
 
 
-def _tidy_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Canonicalize price frame and report dropped duplicate rows.
+def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
+    """Normalize OHLCV schema to Yahoo-style columns and drop duplicates."""
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input price data which may contain duplicates or mixed-case tickers.
+    df = df.copy()
 
-    Returns
-    -------
-    tuple[pd.DataFrame, int]
-        The tidied DataFrame (with a ``date`` column untouched by index and
-        upper-cased ``ticker``) and the number of duplicate (ticker, date)
-        rows removed.
-    """
+    rename_map = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "volume": "Volume",
+        "adjclose": "Adj Close",
+        "adj_close": "Adj Close",
+        "adj close": "Adj Close",
+        "ticker": "Ticker",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
-    required = ["ticker", "date", "open", "high", "low", "close", "volume"]
-    for col in required:
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
         if col not in df.columns:
             df[col] = pd.NA
 
-    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
-    df["date"] = pd.to_datetime(df["date"], utc=False).dt.tz_localize(None)
+    if "Adj Close" not in df.columns:
+        df["Adj Close"] = df.get("Close")
 
-    df = df[required].sort_values(["ticker", "date"]).dropna(subset=["date"])
-    before = len(df)
-    df = df.drop_duplicates(subset=["ticker", "date"], keep="last")
-    dropped = before - len(df)
+    if "Ticker" in df.columns:
+        df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
+    elif ticker is not None:
+        df["Ticker"] = str(ticker).upper()
+    else:
+        df["Ticker"] = pd.NA
 
-    return df, int(dropped)
+    idx = pd.to_datetime(df.get("date", df.index), utc=False).dt.tz_localize(None)
+    df.index = idx
+    df.index.name = "date"
+    if "date" in df.columns:
+        df = df.drop(columns=["date"])
+
+    df = df.sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    df = (
+        df.reset_index()
+        .drop_duplicates(subset=["Ticker", "date"], keep="last")
+        .set_index("date")
+        .sort_index()
+    )
+
+    cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    return df[cols]
 
 
 def _supabase_creds() -> Optional[Tuple[str, str]]:
@@ -117,6 +136,10 @@ def _bucket_name(b: Any) -> Optional[str]:
 
 
 class Storage:
+    @classmethod
+    def from_env(cls) -> "Storage":
+        return cls()
+
     def __init__(self) -> None:
         creds = _supabase_creds()
         key = creds[1] if creds else ""
@@ -345,50 +368,47 @@ def load_prices_cached(
     ``date`` and includes a ``ticker`` column.
     """
 
-    prices: list[pd.DataFrame] = []
+    frames: list[pd.DataFrame] = []
+    rows_before = 0
+    rows_after = 0
     for t in tickers:
         path = f"prices/{t}.parquet"
         try:
-            tmp = storage.read_parquet(path)
-            tmp["ticker"] = t
-            prices.append(tmp)
+            raw = storage.read_parquet(path)
         except FileNotFoundError:
             continue
         except Exception as e:
             logging.info(f"[prices] skip {t}: {e}")
+            continue
+        rows_before += len(raw)
+        tidy = _tidy_prices(raw, t)
+        rows_after += len(tidy)
+        frames.append(tidy)
 
-    if not prices:
+    if not frames:
         st.error("No price data loaded from storage.")
         return pd.DataFrame()
 
-    raw = pd.concat(prices, axis=0, ignore_index=True)
-    tidy, dups_total = _tidy_prices(raw)
+    out = pd.concat(frames, axis=0).sort_index()
 
-    out = tidy.set_index("date").sort_index()
+    if start is not None or end is not None:
+        start = pd.Timestamp(start).tz_localize(None) if start is not None else out.index.min()
+        end = pd.Timestamp(end).tz_localize(None) if end is not None else out.index.max()
+        out = out.loc[start:end]
 
-    if start is not None:
-        start = pd.Timestamp(start).tz_localize(None)
-        out = out.loc[out.index >= start]
-    if end is not None:
-        end = pd.Timestamp(end).tz_localize(None)
-        out = out.loc[out.index <= end]
-
+    dups_dropped = rows_before - rows_after
     stats = {
-        "requested": len(tickers),
-        "loaded_series": int(out["ticker"].nunique()) if not out.empty else 0,
-        "dups_dropped_total": int(dups_total),
-        "date_min": out.index.min(),
-        "date_max": out.index.max(),
+        "rows_before": int(rows_before),
+        "rows_after": int(len(out)),
+        "dups_dropped": int(dups_dropped),
     }
     try:
-        st.session_state["prices_stats"] = stats
+        st.session_state["price_load_stats"] = stats
     except Exception:
         pass
 
-    out.attrs["dups_dropped"] = int(dups_total)
+    out.attrs["dups_dropped"] = int(dups_dropped)
     return out
 
 
 __all__ = ["Storage", "load_prices_cached"]
-
-print("load_prices_cached defined and imported successfully")
