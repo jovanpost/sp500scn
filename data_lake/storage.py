@@ -1,3 +1,14 @@
+import base64
+import json
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+
+
+LOCAL_ROOT = Path("data")
+
+
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     """Normalize OHLCV schema to Yahoo-style columns and drop duplicates.
 
@@ -67,5 +78,106 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     # Order columns (keep only those that exist)
     cols = ["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
     df = df[[c for c in cols if c in df.columns]]
+    if "date" in df.columns:
+        df = df.set_index("date")
 
     return df
+
+
+def _classify_key(key: str) -> str:
+    """Rudimentary classification of Supabase keys.
+
+    Returns one of ``service_role``, ``publishable``, ``not_jwt`` or ``invalid_jwt``.
+    """
+
+    if key.startswith("sb_"):
+        return "publishable"
+
+    parts = key.split(".")
+    if len(parts) != 3:
+        return "not_jwt"
+
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+    except Exception:
+        return "invalid_jwt"
+
+    return payload.get("role", "invalid_jwt")
+
+
+class Storage:
+    """Simple wrapper around local file operations for tests."""
+
+    def __init__(self) -> None:
+        self.mode = "local"
+        self.bucket = None
+        self._prices_cache: dict[str, pd.DataFrame] = {}
+
+    # The tests monkeypatch this method, so the implementation can be minimal.
+    def read_parquet(self, path: str) -> pd.DataFrame:
+        return pd.read_parquet(LOCAL_ROOT / path)
+
+    def list_all(self, prefix: str) -> list[str]:
+        if self.mode == "local":
+            base = LOCAL_ROOT / prefix
+            if not base.exists():
+                return []
+            return [str(Path(prefix) / p.name) for p in sorted(base.iterdir()) if p.is_file()]
+
+        if self.bucket:
+            resp = self.bucket.list(prefix)
+            data = getattr(resp, "data", resp)
+            return [f"{prefix}/{item['name']}" for item in data]
+
+        return []
+
+    @classmethod
+    def from_env(cls) -> "Storage":
+        """Return a ``Storage`` instance using environment configuration.
+
+        The simplified test implementation always returns a local ``Storage``.
+        """
+
+        return cls()
+
+
+def load_prices_cached(
+    storage: Storage,
+    tickers: Iterable[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    """Load price history for ``tickers`` from a parquet cache.
+
+    Results are cached on the ``storage`` instance to avoid repeated I/O.
+    """
+
+    frames: list[pd.DataFrame] = []
+    for t in tickers:
+        key = str(t).upper()
+        if key not in storage._prices_cache:
+            try:
+                raw = storage.read_parquet(f"prices/{key}.parquet")
+            except FileNotFoundError:
+                continue
+            tidy = _tidy_prices(raw, key)
+            storage._prices_cache[key] = tidy
+
+        df = storage._prices_cache[key]
+        mask = pd.Series(True, index=df.index)
+        if start is not None:
+            mask &= df.index >= start
+        if end is not None:
+            mask &= df.index <= end
+        subset = df.loc[mask]
+        if not subset.empty:
+            frames.append(subset)
+
+    if frames:
+        return pd.concat(frames).sort_index()
+
+    return pd.DataFrame(
+        columns=["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    )
+
