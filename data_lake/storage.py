@@ -211,18 +211,41 @@ class Storage:
     def exists(self, path: str) -> bool:
         """Return ``True`` if ``path`` exists in storage."""
 
-        norm = path.lstrip("/")
+        try:
+            # Local filesystem: direct check
+            if self.mode == "local":
+                return (self.local_root / path).exists()
 
-        # Directory-style check: any file under this prefix?
-        if norm.endswith("/"):
-            return len(self.list_prefix(norm)) > 0
+            # Supabase storage: require a bucket
+            if self.bucket is None:
+                return False
 
-        parent = Path(norm).parent.as_posix()
-        base = Path(norm).name
-        for full in self.list_prefix(parent + "/"):
-            if full.replace("\\", "/").endswith("/" + base) or full == norm:
+            # Allow prefix-style queries (trailing slash) by delegating to list_prefix
+            if path.endswith("/"):
+                return len(self.list_prefix(path)) > 0
+
+            parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
+            try:
+                items = self.bucket.list(parent.lstrip("/"))
+                if isinstance(items, dict) and "data" in items:
+                    items = items["data"]
+                elif hasattr(items, "data"):
+                    items = items.data
+                for it in items or []:
+                    fname = getattr(it, "name", None)
+                    if fname is None and isinstance(it, dict):
+                        fname = it.get("name")
+                    if fname is None and isinstance(it, str):
+                        fname = it
+                    if fname == name:
+                        return True
+                return False
+            except Exception:
+                # Fallback: probe a lightweight read
+                _ = self.read_bytes(path)
                 return True
-        return False
+        except Exception:
+            return False
 
     def info(self) -> str:
         """Return a short description of the storage configuration."""
