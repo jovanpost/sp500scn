@@ -34,3 +34,19 @@ def test_tidy_prices_renames_ticker_column():
     assert "Ticker" in out.columns
     assert "ticker" not in out.columns
     assert out.loc[pd.Timestamp("2020-01-02"), "Ticker"] == "BBB"
+
+
+def test_tidy_prices_prefers_existing_Ticker_column():
+    df = pd.DataFrame({
+        "date": [pd.Timestamp("2020-01-03")],
+        "open": [1],
+        "high": [1],
+        "low": [1],
+        "close": [1],
+        "volume": [10],
+        "ticker": ["ccc"],
+        "Ticker": ["ddd"],
+    })
+    out = stg._tidy_prices(df)
+    assert "ticker" not in out.columns
+    assert out.loc[pd.Timestamp("2020-01-03"), "Ticker"] == "DDD"

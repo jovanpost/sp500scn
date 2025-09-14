@@ -24,6 +24,8 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     """Normalize OHLCV schema to Yahoo-style columns and drop duplicates."""
 
     df = df.copy()
+    if "ticker" in df.columns and "Ticker" in df.columns:
+        df = df.drop(columns=["ticker"])
 
     rename_map = {
         "open": "Open",
