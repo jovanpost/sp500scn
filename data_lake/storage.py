@@ -340,9 +340,12 @@ def load_prices_cached(
     out = out.set_index("date").sort_index()
 
     # ensure datetime index with no timezone; daily-normalized
-    idx = pd.to_datetime(out.index, utc=True)
-    idx = idx.tz_convert("America/New_York").tz_localize(None)
-    out.index = idx.normalize()
+    idx = pd.to_datetime(out.index)
+    if idx.tz is None:
+        idx = idx.tz_localize("America/New_York")
+    else:
+        idx = idx.tz_convert("America/New_York")
+    out.index = idx.normalize().tz_localize(None)
 
     if start is not None:
         start = pd.Timestamp(start).normalize()
