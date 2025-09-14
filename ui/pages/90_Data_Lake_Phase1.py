@@ -233,9 +233,21 @@ def render_data_lake_tab() -> None:
             st.exception(e)
 
     st.markdown("### Sanity check")
-    if _storage_has_file(storage, "prices/AAPL.parquet"):
-        df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
-        st.dataframe(df.tail(5))
-        st.line_chart(df.set_index("date")["close"])
-    else:
-        st.caption("No AAPL price file found")
+    try:
+        have = getattr(storage, "exists", None)
+        sample_path = "prices/AAPL.parquet"
+        if callable(have):
+            ok = storage.exists(sample_path)
+        else:
+            # fallback: attempt read, errors handled below
+            ok = True
+        if ok:
+            raw = storage.read_bytes(sample_path)
+            df = pd.read_parquet(io.BytesIO(raw))
+            st.write(f"Loaded {sample_path} → {df.shape} rows")
+            st.dataframe(df.tail(5))
+            st.line_chart(df.set_index("date")["close"])
+        else:
+            st.info("No sample file found at prices/AAPL.parquet yet.")
+    except Exception as e:
+        st.warning(f"Sanity check could not read prices/AAPL.parquet: {e}")

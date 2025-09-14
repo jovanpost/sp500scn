@@ -138,36 +138,64 @@ class Storage:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
 
-    def exists(self, path: str) -> bool:
-        """Return ``True`` if ``path`` exists in storage.
+    # ------------------------------------------------------------------
+    # helpers
+    def list_prefix(self, prefix: str = "") -> list[dict]:
+        """Return list of files under ``prefix``.
 
-        For the local backend this is simply a filesystem check.  A very small
-        subset of the Supabase storage API is also supported so that the method
-        can be exercised in tests without requiring network access.
+        Each entry is a mapping with at least a ``name`` key.  The implementation
+        supports both the local filesystem backend used in tests and the
+        Supabase storage API.  Responses from the Supabase ``list`` call can be
+        either a plain list or a ``{"data": [...]}`` payload; this normalises
+        both forms to a simple list.
         """
+
+        if self.mode == "local":
+            base = LOCAL_ROOT / prefix
+            if not base.exists():
+                return []
+            if base.is_file():
+                return [{"name": base.name}]
+            out: list[dict] = []
+            for p in base.iterdir():
+                if p.is_file():
+                    out.append({"name": p.name})
+            return out
+
+        if self.bucket:
+            try:
+                res = self.bucket.list(prefix)
+                if isinstance(res, dict) and "data" in res:
+                    files = res.get("data")
+                elif hasattr(res, "data"):
+                    files = res.data
+                else:
+                    files = res
+                return files or []
+            except Exception:
+                return []
+
+        return []
+
+    def exists(self, path: str) -> bool:
+        """Return ``True`` if ``path`` exists in storage."""
 
         if self.mode == "local":
             return (LOCAL_ROOT / path).exists()
 
-        if self.bucket:
-            try:
-                folder = str(Path(path).parent)
-                name = Path(path).name
-                resp = self.bucket.list(folder)
-                data = getattr(resp, "data", resp) or []
-                for item in data:
-                    item_name = getattr(item, "name", None)
-                    if item_name is None:
-                        if isinstance(item, dict):
-                            item_name = item.get("name")
-                        elif isinstance(item, str):
-                            item_name = item
-                    if item_name == name:
-                        return True
-                return False
-            except Exception:
-                return False
-
+        # Supabase: list the parent prefix and look for the filename.
+        parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
+        for item in self.list_prefix(parent):
+            if isinstance(item, dict):
+                item_name = item.get("name")
+            elif hasattr(item, "name"):
+                item_name = getattr(item, "name")
+            elif isinstance(item, str):
+                item_name = item
+            else:
+                item_name = None
+            if str(item_name).strip() == name:
+                return True
         return False
 
     def info(self) -> str:
