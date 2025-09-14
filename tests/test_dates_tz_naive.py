@@ -11,7 +11,7 @@ def test_load_prices_index_tz_naive(monkeypatch):
     s = stg.Storage()
     df = pd.DataFrame(
         {
-            "date": pd.date_range("2020-01-01", periods=4, tz="America/New_York"),
+            "date": pd.date_range("2020-01-01", periods=4),
             "open": [1, 2, 3, 4],
             "high": [1, 2, 3, 4],
             "low": [1, 2, 3, 4],
@@ -34,6 +34,8 @@ def test_load_prices_index_tz_naive(monkeypatch):
 
     assert out.index.tz is None
     assert out.index.equals(out.index.normalize())
+    assert out.index.min() == start
+    assert out.index.max() == end
 
     start2 = pd.Timestamp("2020-01-02").normalize()
     end2 = pd.Timestamp("2020-01-03").normalize()
