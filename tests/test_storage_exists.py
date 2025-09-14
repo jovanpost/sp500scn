@@ -80,3 +80,16 @@ def test_exists_local_custom_root(tmp_path):
     assert st.exists("prices/")
     assert st.exists("prices/AAPL.parquet")
     assert not st.exists("prices/MSFT.parquet")
+
+
+def test_list_prefix_relative_root(tmp_path, monkeypatch):
+    """list_prefix and exists work when ``local_root`` is relative."""
+    monkeypatch.chdir(tmp_path)
+    rel = Path("lake")
+    (rel / "history").mkdir(parents=True)
+    (rel / "history" / "AAPL.parquet").write_text("x")
+    monkeypatch.setattr(storage, "LOCAL_ROOT", rel)
+    st = storage.Storage()
+    assert st.list_prefix("history/") == ["history/AAPL.parquet"]
+    assert st.exists("history/")
+    assert st.exists("history/AAPL.parquet")

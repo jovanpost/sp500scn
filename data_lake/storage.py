@@ -165,18 +165,17 @@ class Storage:
 
         pfx = prefix.lstrip("/")
         if self.mode == "local":
+            root = self.local_root.resolve()
             base = (
-                (self.local_root / pfx).parent
-                if pfx.endswith(".parquet")
-                else (self.local_root / pfx)
+                (root / pfx).parent if pfx.endswith(".parquet") else (root / pfx)
             ).resolve()
             results: list[str] = []
             if base.is_file():
-                results.append(str(base.relative_to(self.local_root)).replace("\\", "/"))
+                results.append(str(base.relative_to(root)).replace("\\", "/"))
             elif base.exists():
                 for path in base.rglob("*"):
                     if path.is_file():
-                        rel = str(path.relative_to(self.local_root)).replace("\\", "/")
+                        rel = str(path.relative_to(root)).replace("\\", "/")
                         results.append(rel)
             return sorted(results)
 
