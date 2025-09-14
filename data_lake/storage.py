@@ -113,10 +113,20 @@ class Storage:
         self.mode = "local"
         self.bucket = None
         self._prices_cache: dict[str, pd.DataFrame] = {}
+        # mimic interface of production storage for UI diagnostics
+        self.key_info: dict[str, str] = {"kind": "service_role"}
 
     # The tests monkeypatch this method, so the implementation can be minimal.
     def read_parquet(self, path: str) -> pd.DataFrame:
         return pd.read_parquet(LOCAL_ROOT / path)
+
+    def info(self) -> str:
+        """Return a short description of the storage configuration."""
+        return f"mode={self.mode} root={LOCAL_ROOT}"
+
+    def selftest(self) -> dict[str, str | bool]:
+        """Basic self-test used by the Streamlit diagnostics pane."""
+        return {"ok": True, "mode": self.mode}
 
     def list_all(self, prefix: str) -> list[str]:
         if self.mode == "local":
