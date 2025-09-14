@@ -301,113 +301,48 @@ class Storage:
 
 @st.cache_data(hash_funcs={Storage: lambda _: 0}, show_spinner=False)
 def load_prices_cached(
-    _storage: Storage,
-    tickers: List[str],
-    start: pd.Timestamp,
-    end: pd.Timestamp,
+    storage: Storage,
+    tickers: list[str],
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Load OHLCV data between ``start`` and ``end``.
+    """Load OHLCV from Supabase Storage Parquet files.
 
-    If a Supabase ``Client`` is available, rows are fetched from the
-    ``sp500_ohlcv`` table using paginated queries.  Otherwise parquet files in
-    the ``prices/`` prefix are read.  A DataFrame indexed by ``Date`` with a
-    ``ticker`` column is returned; missing tickers are skipped silently.
+    Parquet files are expected at ``prices/{TICKER}.parquet`` within the
+    ``lake`` bucket. Missing files are skipped. Returned DataFrame is indexed by
+    ``date`` and includes a ``ticker`` column.
     """
 
-    supabase: Client | None = getattr(_storage, "supabase_client", None)
-    prices: list[pd.DataFrame] = []
-    failed: set[str] = set()
+    frames: list[pd.DataFrame] = []
+    for t in tickers:
+        path = f"prices/{t}.parquet"
+        try:
+            b = storage.read_bytes(path)
+            df = pd.read_parquet(io.BytesIO(b))
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"])
+            elif "Date" in df.columns:
+                df = df.rename(columns={"Date": "date"})
+                df["date"] = pd.to_datetime(df["date"])
+            else:
+                continue
+            if "ticker" not in df.columns:
+                df["ticker"] = t
+            frames.append(df)
+        except Exception as e:
+            logging.info(f"[prices] skip {t}: {e}")
 
-    if supabase is not None:
-        page_size = 1000
-        for ticker in tickers:
-            offset = 0
-            rows: list[dict] = []
-            while True:
-                try:
-                    resp = (
-                        supabase.table("sp500_ohlcv")
-                        .select("ticker, date, open, high, low, close, volume")
-                        .eq("ticker", ticker)
-                        .gte("date", start.strftime("%Y-%m-%d"))
-                        .lte("date", end.strftime("%Y-%m-%d"))
-                        .order("date")
-                        .range(offset, offset + page_size - 1)
-                        .execute()
-                    )
-                except Exception as e:
-                    failed.add(ticker)
-                    st.error(f"Supabase query failed for {ticker}: {e}")
-                    break
-                if not resp.data:
-                    break
-                rows.extend(resp.data)
-                if len(resp.data) < page_size:
-                    break
-                offset += page_size
-
-            if not rows:
-                failed.add(ticker)
-                continue
-            df = pd.DataFrame(rows)
-            if df.empty:
-                failed.add(ticker)
-                continue
-            df["Date"] = pd.to_datetime(df["date"], errors="coerce")
-            df = df[[
-                "Date",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "ticker",
-            ]].rename(
-                columns={
-                    "open": "Open",
-                    "high": "High",
-                    "low": "Low",
-                    "close": "Close",
-                    "volume": "Volume",
-                }
-            )
-            df = df.set_index("Date")
-            prices.append(df)
-    if not prices:
-        # Fall back to loading local cached data if available
-        for ticker in tickers:
-            rel_path = f"prices/{ticker}.parquet"
-            try:
-                if _storage.mode == "supabase":
-                    df = pd.read_parquet(LOCAL_ROOT / rel_path)
-                else:
-                    buf = _storage.read_bytes(rel_path)
-                    df = pd.read_parquet(io.BytesIO(buf))
-            except Exception:
-                continue
-            if df.empty:
-                continue
-            if "date" not in df.columns:
-                if "Date" in df.columns:
-                    df = df.rename(columns={"Date": "date"})
-                else:
-                    continue
-            df["date"] = pd.to_datetime(df["date"], utc=False).dt.tz_localize(None)
-            df = df[(df["date"] >= start) & (df["date"] <= end)]
-            if df.empty:
-                continue
-            df["ticker"] = ticker
-            prices.append(df.set_index("date"))
-
-    if not prices:
-        st.error("No price data loaded from Supabase or local cache.")
+    if not frames:
         return pd.DataFrame()
 
-    all_prices = pd.concat(prices, axis=0)
-    if not all_prices.columns.is_unique:
-        all_prices = all_prices.loc[:, ~all_prices.columns.duplicated()]
-        st.info("Dropped duplicate columns in prices.")
-    return all_prices
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates()
+    out = out.set_index("date").sort_index()
+    if start is not None:
+        out = out.loc[out.index >= pd.to_datetime(start)]
+    if end is not None:
+        out = out.loc[out.index <= pd.to_datetime(end)]
+    return out
 
 
 __all__ = ["Storage", "load_prices_cached"]
