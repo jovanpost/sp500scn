@@ -203,46 +203,52 @@ def render_page() -> None:
             log(f"Preloading {len(active_tickers)} tickers…")
             prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
             if prices_df.empty:
-                st.error("No price data loaded from storage.")
+                log("No prices loaded from storage.")
+                st.error("No price data loaded.")
                 return
 
-            tidy = prices_df.reset_index().sort_values(["ticker", "date"])
-            rows_before = len(tidy)
-            tidy = tidy.drop_duplicates(["ticker", "date"], keep="last")
-            rows_after = len(tidy)
+            rows_before = len(prices_df)
+            prices_df = prices_df.reset_index(names="date")
+            prices_df = (
+                prices_df.drop_duplicates(subset=["Ticker", "date"], keep="last")
+                .set_index("date")
+                .sort_index()
+            )
+            rows_after = len(prices_df)
+
             try:
-                wide_close = tidy.pivot_table(
-                    index="date", columns="ticker", values="close", aggfunc="last"
+                close_wide = prices_df.pivot_table(
+                    index=prices_df.index, columns="Ticker", values="Close", aggfunc="last"
                 )
-                wide_close = wide_close.loc[:, ~wide_close.columns.duplicated()]
-                wide_close.sort_index(inplace=True)
+                open_wide = prices_df.pivot_table(
+                    index=prices_df.index, columns="Ticker", values="Open", aggfunc="last"
+                )
+                vol_wide = prices_df.pivot_table(
+                    index=prices_df.index, columns="Ticker", values="Volume", aggfunc="last"
+                )
             except Exception as e:
                 st.error(f"Failed to assemble price matrix: {e}")
                 return
 
-            if tidy.empty:
-                st.error("No price data loaded from storage.")
-                return
-
             prices: Dict[str, pd.DataFrame] = {}
-            g = tidy.groupby("ticker", sort=False)
-            for t, df_t in g:
+            for t, df_t in prices_df.reset_index().groupby("Ticker", sort=False):
                 df_t = df_t.set_index("date").sort_index()
                 df_t = df_t[~df_t.index.duplicated(keep="last")]
-                prices[t] = df_t.drop(columns=["ticker"], errors="ignore").rename(columns=str.lower)
+                prices[t] = df_t[["Open", "High", "Low", "Close", "Volume"]].rename(
+                    columns=str.lower
+                )
 
-            stats = st.session_state.get("prices_stats", {})
+            stats = st.session_state.get("price_load_stats", {})
             with st.expander("\U0001F50E Data preflight (debug)"):
-                req = len(active_tickers)
-                loaded = int(stats.get("loaded_series", 0))
-                st.write(f"Tickers requested: {req}")
-                st.write(f"Loaded series: {loaded}")
-                st.write({
-                    "rows_before_dedupe": int(rows_before),
-                    "rows_after_dedupe": int(rows_after),
-                    "dups_dropped_total": int(stats.get("dups_dropped_total", 0)),
-                    "dups_after_tidy": int(tidy.duplicated(subset=["ticker", "date"]).sum()),
-                })
+                st.write(stats)
+                st.write(
+                    {
+                        "rows_before_dedupe": int(rows_before),
+                        "rows_after_dedupe": int(rows_after),
+                        "dups_dropped": int(rows_before - rows_after),
+                        "close_wide_shape": close_wide.shape,
+                    }
+                )
 
             prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
             log("Prefetch complete.")

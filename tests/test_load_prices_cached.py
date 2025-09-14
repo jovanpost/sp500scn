@@ -1,6 +1,7 @@
 import io
-import pandas as pd
+import os, sys, pandas as pd
 
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from data_lake import storage as stg
 
 
@@ -49,7 +50,7 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
         pd.Timestamp("2020-01-03"),
     )
 
-    assert sorted(out["ticker"].unique()) == ["AAA", "BBB"]
+    assert sorted(out["Ticker"].unique()) == ["AAA", "BBB"]
     assert out.index.min() == pd.Timestamp("2020-01-02")
     assert out.index.max() == pd.Timestamp("2020-01-03")
 
