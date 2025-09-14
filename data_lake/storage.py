@@ -120,6 +120,47 @@ class Storage:
     def read_parquet(self, path: str) -> pd.DataFrame:
         return pd.read_parquet(LOCAL_ROOT / path)
 
+    # --- simple byte-level helpers used by the UI ---
+    def read_bytes(self, path: str) -> bytes:
+        """Return raw bytes from ``path``.
+
+        The test implementation only supports the local ``data`` directory,
+        but the method mirrors the interface of the production storage layer
+        used by the Streamlit app.
+        """
+
+        return (LOCAL_ROOT / path).read_bytes()
+
+    def write_bytes(self, path: str, data: bytes) -> None:
+        """Write ``data`` to ``path`` under the local ``data`` directory."""
+
+        dest = LOCAL_ROOT / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+
+    def exists(self, path: str) -> bool:
+        """Return ``True`` if ``path`` exists in storage.
+
+        For the local backend this is simply a filesystem check.  A very small
+        subset of the Supabase storage API is also supported so that the method
+        can be exercised in tests without requiring network access.
+        """
+
+        if self.mode == "local":
+            return (LOCAL_ROOT / path).exists()
+
+        if self.bucket:
+            try:
+                folder = str(Path(path).parent)
+                name = Path(path).name
+                resp = self.bucket.list(folder, search=name)
+                data = getattr(resp, "data", resp)
+                return any(item.get("name") == name for item in data)
+            except Exception:
+                return False
+
+        return False
+
     def info(self) -> str:
         """Return a short description of the storage configuration."""
         return f"mode={self.mode} root={LOCAL_ROOT}"
