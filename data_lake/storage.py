@@ -153,12 +153,15 @@ class Storage:
             try:
                 folder = str(Path(path).parent)
                 name = Path(path).name
-                resp = self.bucket.list(folder, search=name)
-                data = getattr(resp, "data", resp)
+                resp = self.bucket.list(folder)
+                data = getattr(resp, "data", resp) or []
                 for item in data:
                     item_name = getattr(item, "name", None)
-                    if item_name is None and isinstance(item, dict):
-                        item_name = item.get("name")
+                    if item_name is None:
+                        if isinstance(item, dict):
+                            item_name = item.get("name")
+                        elif isinstance(item, str):
+                            item_name = item
                     if item_name == name:
                         return True
                 return False
