@@ -345,7 +345,8 @@ class Storage:
 def load_prices_cached(_storage: "Storage",
                        tickers: list[str],
                        start: pd.Timestamp | None = None,
-                       end: pd.Timestamp | None = None) -> pd.DataFrame:
+                       end: pd.Timestamp | None = None,
+                       cache_salt: str = "") -> pd.DataFrame:
     """Load OHLCV for `tickers` from object storage Parquet files only.
     Output columns: Open, High, Low, Close, Adj Close, Volume, Ticker; index is naive datetime."""
     frames: list[pd.DataFrame] = []
