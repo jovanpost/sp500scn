@@ -12,6 +12,7 @@ from data_lake.storage import Storage
 from data_lake.membership import build_membership, load_membership
 from data_lake.ingest import ingest_batch
 from data_lake.schemas import IngestJob
+from ui.components.debug import debug_panel, _get_dbg
 
 
 def _storage_has_file(storage: Storage, path: str) -> bool:
@@ -37,11 +38,13 @@ def _storage_has_file(storage: Storage, path: str) -> bool:
 
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
+    dbg = _get_dbg("lake")
     if "auto_run" not in st.session_state:
         st.session_state.auto_run = False
     if "auto_meta" not in st.session_state:
         st.session_state.auto_meta = {}
     storage = Storage()
+    dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
     with st.expander("Diagnostics"):
         st.caption(storage.info())
         if st.button("Run Supabase self-test"):
@@ -50,6 +53,7 @@ def render_data_lake_tab() -> None:
         st.error(
             "Supabase key is not a valid JWT (service_role/anon). Use Legacy API Keys. Skipping remote writes."
         )
+        debug_panel("lake")
         return
     if storage.mode == "local":
         st.caption("Using local .lake/ fallback")
@@ -231,9 +235,31 @@ def render_data_lake_tab() -> None:
             st.exception(e)
 
     st.markdown("### Sanity check")
-    if storage.exists("prices/AAPL.parquet"):
-        df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
-        st.dataframe(df.tail(5))
-        st.line_chart(df.set_index("date")["close"])
-    else:
-        st.warning("AAPL.parquet not found in storage.")
+    try:
+        with dbg.step("lake_exists_probe"):
+            exists = False
+            if callable(getattr(storage, "exists", None)):
+                exists = storage.exists("prices/AAPL.parquet")
+            else:
+                _ = storage.read_bytes("prices/AAPL.parquet")
+                exists = True
+            dbg.event("exists:AAPL", exists=exists)
+        if exists:
+            with dbg.step("load_sample_AAPL"):
+                df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
+                dbg.event(
+                    "sample_shape",
+                    rows=len(df),
+                    cols=len(df.columns),
+                    min=str(df["date"].min()),
+                    max=str(df["date"].max()),
+                )
+            st.dataframe(df.tail(5))
+            st.line_chart(df.set_index("date")["close"])
+        else:
+            st.warning("AAPL.parquet not found in storage.")
+    except Exception as e:
+        dbg.error("sanity_check", e)
+        st.warning(f"Sanity check failed: {e}")
+
+    debug_panel("lake")
