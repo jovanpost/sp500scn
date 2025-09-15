@@ -359,9 +359,8 @@ def load_prices_cached(
     """
 
     # Backwards compatibility: detect old call signature
-    if tickers is None and isinstance(cache_salt, list):
-        tickers = cache_salt
-        cache_salt = ""
+    if isinstance(cache_salt, list):
+        tickers, cache_salt, start, end = cache_salt, "", tickers, start
     if tickers is None:
         tickers = []
 
