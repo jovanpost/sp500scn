@@ -74,7 +74,7 @@ def render_data_lake_tab() -> None:
         else:
             if "date" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
                 df = df.reset_index().rename(columns={df.index.name or "index": "date"})
-            st.dataframe(df.tail(5))
+            st.dataframe(df.tail(5), use_container_width=True)
             date_col = "date" if "date" in df.columns else None
             if date_col is not None:
                 date_series = pd.to_datetime(df[date_col], errors="coerce")
@@ -165,7 +165,7 @@ def render_data_lake_tab() -> None:
                     "source": "github",
                 }
             )
-            st.dataframe(df_mem.head(20))
+            st.dataframe(df_mem.head(20), use_container_width=True)
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
 
@@ -299,7 +299,7 @@ def render_data_lake_tab() -> None:
                     st.write(res)
                     if not res["error"] and _storage_has_file(storage, res["path"]):
                         df = storage.read_parquet_df(res["path"])
-                        st.dataframe(df.head())
+                        st.dataframe(df.head(), use_container_width=True)
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
 
@@ -323,7 +323,7 @@ def render_data_lake_tab() -> None:
                     min=str(df2["date"].min()),
                     max=str(df2["date"].max()),
                 )
-            st.dataframe(df2.tail(5))
+            st.dataframe(df2.tail(5), use_container_width=True)
             try:
                 st.line_chart(df2.set_index("date")["close"])
             except Exception:

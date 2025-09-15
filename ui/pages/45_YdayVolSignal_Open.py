@@ -10,39 +10,7 @@ from engine.signal_scan import scan_day, ScanParams, members_on_date
 from data_lake.storage import Storage, load_prices_cached
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
-
-
-def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
-    st.subheader(title)
-    if df is None or df.empty:
-        st.info("No rows.")
-        return
-
-    # visible table
-    st.dataframe(df, width="stretch")
-
-    # text for controls
-    csv_buf = io.StringIO()
-    df.to_csv(csv_buf, index=False)
-    csv_txt = csv_buf.getvalue()
-    md_txt = df.to_markdown(index=False)
-
-    # download
-    st.download_button(
-        label="\u2b07\ufe0f Download CSV",
-        data=csv_txt.encode("utf-8"),
-        file_name=f"{key_prefix}.csv",
-        mime="text/csv",
-        key=f"{key_prefix}_dl",
-    )
-
-    # copyable textarea
-    st.text_area(
-        "Copy Markdown",
-        value=md_txt,
-        height=160,
-        key=f"{key_prefix}_copy",
-    )
+from ui.components.tables import show_df
 
 
 def render_page() -> None:
@@ -192,6 +160,11 @@ def render_page() -> None:
             finally:
                 sigscan._load_prices = orig_load_prices
                 sigscan._load_members = orig_load_members
+            if cand_df is not None:
+                cand_df = cand_df.reset_index(drop=True)
+            if out_df is not None:
+                out_df = out_df.reset_index(drop=True)
+
             st.session_state["cand_df"] = cand_df
             st.session_state["out_df"] = out_df
             st.session_state["fails"] = fails
@@ -223,9 +196,9 @@ def render_page() -> None:
             "fails": fails or 0,
             "hits": int(out_df["hit"].sum()) if out_df is not None and not out_df.empty else 0,
         }
-        st.dataframe(pd.DataFrame([summary]))
-        _render_df_with_copy("✅ Candidates (matches)", cand_df, "matches")
-        _render_df_with_copy("🎯 Outcomes", out_df, "outcomes")
+        show_df("Summary", pd.DataFrame([summary]), "scan_summary")
+        show_df("✅ Candidates (matches)", cand_df, "matches")
+        show_df("🎯 Outcomes", out_df, "outcomes")
 
     debug_panel("scan")
 
