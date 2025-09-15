@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - tests may not have package
     create_client = None  # type: ignore
     Client = None  # type: ignore
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 DEFAULT_LOCAL_ROOT = pathlib.Path("data")
 LOCAL_ROOT = DEFAULT_LOCAL_ROOT
@@ -176,7 +176,7 @@ class Storage:
             self.supabase_client = create_client(self.supabase_url, self.supabase_key)  # type: ignore
             return True
         except Exception as e:  # pragma: no cover - defensive
-            log.warning("Supabase init failed: %s", e)
+            logger.warning("Supabase init failed: %s", e)
             self.supabase_client = None
             return False
 
@@ -342,12 +342,31 @@ class Storage:
 
 
 @st.cache_data(hash_funcs={Storage: lambda _: 0}, show_spinner=False)
-def load_prices_cached(_storage: "Storage",
-                       tickers: list[str],
-                       start: pd.Timestamp | None = None,
-                       end: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Load OHLCV for `tickers` from object storage Parquet files only.
-    Output columns: Open, High, Low, Close, Adj Close, Volume, Ticker; index is naive datetime."""
+def load_prices_cached(
+    _storage: "Storage",
+    cache_salt: str | list[str] = "",
+    tickers: list[str] | None = None,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Load OHLCV for ``tickers`` from object storage Parquet files only.
+
+    ``cache_salt`` is included in the cache key so callers can bust the
+    cache when the underlying storage mode changes. For backwards
+    compatibility, the function still accepts the old positional
+    arguments where ``tickers`` was the second parameter.
+    Output columns: Open, High, Low, Close, Adj Close, Volume, Ticker; index is naive datetime.
+    """
+
+    # Backwards compatibility: detect old call signature
+    if tickers is None and isinstance(cache_salt, list):
+        tickers = cache_salt
+        cache_salt = ""
+    if tickers is None:
+        tickers = []
+
+    logger.debug("load_prices_cached cache_salt=%s tickers=%s", cache_salt, tickers)
+
     frames: list[pd.DataFrame] = []
     for t in tickers:
         path = f"prices/{t}.parquet"

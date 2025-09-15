@@ -226,9 +226,10 @@ def render_page() -> None:
             end_ts = end_date.normalize()
             df_days = load_prices_cached(
                 storage,
-                ["AAPL"],
-                start_ts,
-                end_ts,
+                cache_salt=storage.cache_salt(),
+                tickers=["AAPL"],
+                start=start_ts,
+                end=end_ts,
             )
             df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
@@ -248,9 +249,10 @@ def render_page() -> None:
             with dbg.step("preload_prices"):
                 prices_df = load_prices_cached(
                     storage,
-                    active_tickers,
-                    start_ts,
-                    end_ts,
+                    cache_salt=storage.cache_salt(),
+                    tickers=active_tickers,
+                    start=start_ts,
+                    end=end_ts,
                 )
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
