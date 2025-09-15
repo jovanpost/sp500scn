@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import io
-from datetime import date
 import time
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,12 +17,11 @@ from ui.components.debug import debug_panel, _get_dbg
 
 
 def _storage_has_file(storage: Storage, path: str) -> bool:
-    """Return ``True`` if ``path`` exists on ``storage``.
+    """Return True if `path` exists on `storage`.
 
-    Retains backward compatibility for environments where ``Storage`` may not
-    implement ``exists``; falls back to a ``read_bytes`` probe.
+    Retains backward compatibility for environments where `Storage` may not
+    implement `exists`; falls back to a `read_bytes` probe.
     """
-
     exists_fn = getattr(storage, "exists", None)
     if callable(exists_fn):
         try:
@@ -40,20 +39,23 @@ def _storage_has_file(storage: Storage, path: str) -> bool:
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
     dbg = _get_dbg("lake")
+
     if "auto_run" not in st.session_state:
         st.session_state.auto_run = False
     if "auto_meta" not in st.session_state:
         st.session_state.auto_meta = {}
+
     storage = Storage()
     diag = storage.diagnostics()
-    dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+    dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"),
+                bucket=getattr(storage, "bucket", None))
     st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
 
     ok, reason = supabase_available()
     if storage.mode == "supabase":
         host = urlparse(storage.supabase_url or "").netloc
         st.success(f"✅ Supabase mode ({host}, bucket: {storage.bucket})")
-    elif storage.force_supabase:
+    elif getattr(storage, "force_supabase", False):
         st.error(f"❌ Forced Supabase requested but unavailable: {reason}")
     else:
         st.info("Using local mode")
@@ -63,10 +65,15 @@ def render_data_lake_tab() -> None:
         st.experimental_rerun()
 
     st.markdown("### Sanity check")
-    if storage.exists("prices/AAPL.parquet"):
+    if _storage_has_file(storage, "prices/AAPL.parquet"):
         df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
         st.dataframe(df.tail(5))
-        st.line_chart(df.set_index("date")["close"])
+        try:
+            st.line_chart(df.set_index("date")["close"])
+        except Exception:
+            # Some schemas may be upper-case or different
+            if "Close" in df.columns:
+                st.line_chart(df.set_index("date")["Close"])
     else:
         st.warning("AAPL.parquet not found in storage.")
 
@@ -74,12 +81,57 @@ def render_data_lake_tab() -> None:
         st.caption(storage.info())
         if st.button("Run Supabase self-test"):
             st.json(storage.selftest())
+
     if storage.key_info.get("kind") in {"publishable", "not_jwt", "invalid_jwt"}:
         st.error(
             "Supabase key is not a valid JWT (service_role/anon). Use Legacy API Keys. Skipping remote writes."
         )
         debug_panel("lake")
+        # ---- RAW SUPABASE LIST DEBUG (kept available even if key invalid) ----
+        with st.expander("🔎 Raw Supabase list() response (temporary debug)"):
+            try:
+                s = storage
+                client = getattr(s, "supabase_client", None)
+                bucket_name = getattr(s, "bucket", "lake")
+                st.write({"storage_mode": getattr(s, "mode", None),
+                          "bucket_name": bucket_name})
+
+                if client:
+                    api = client.storage.from_(bucket_name)
+                    try:
+                        resp = api.list("prices")
+                    except TypeError:
+                        resp = api.list(prefix="prices")
+                    data = getattr(resp, "data", resp)
+                    st.write({"resp_type": type(resp).__name__})
+                    st.write("Has .data:", hasattr(resp, "data"))
+                    if isinstance(data, (list, tuple)):
+                        st.write("Count:", len(data))
+                        head = data[:10]
+                        st.write("Head raw:", head)
+                        st.write("Head names:", [
+                            (d.get("name") if isinstance(d, dict) else getattr(d, "name", None))
+                            for d in head
+                        ])
+                    elif isinstance(data, dict):
+                        st.json(data)
+                    else:
+                        st.write(data)
+
+                    # Also try helper if present
+                    try:
+                        if hasattr(s, "list_prefix"):
+                            lp = s.list_prefix("prices")
+                            st.write({"list_prefix_len": len(lp), "list_prefix_sample": lp[:10]})
+                    except Exception as e2:
+                        st.error(f"list_prefix() raised: {repr(e2)}")
+                else:
+                    st.info("No Supabase client (likely local mode).")
+            except Exception as e:
+                st.error(repr(e))
+        # ----------------------------------------------------------------------
         return
+
     if storage.mode == "local":
         st.caption("Using local .lake/ fallback")
 
@@ -90,25 +142,23 @@ def render_data_lake_tab() -> None:
                 summary = build_membership(storage)
                 progress.progress(100)
             st.success(summary)
-            df = load_membership(storage, cache_salt=storage.cache_salt())
+            df_mem = load_membership(storage, cache_salt=storage.cache_salt())
             st.write(
                 {
-                    "rows": len(df),
-                    "tickers": df["ticker"].nunique(),
-                    "current": df["end_date"].isna().sum(),
+                    "rows": len(df_mem),
+                    "tickers": df_mem["ticker"].nunique(),
+                    "current": df_mem["end_date"].isna().sum(),
                     "source": "github",
                 }
             )
-            st.dataframe(df.head(20))
+            st.dataframe(df_mem.head(20))
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
 
     st.markdown("### Prices coverage")
     try:
         mdf = load_membership(storage, cache_salt=storage.cache_salt())
-        scope = st.radio(
-            "Scope", ["Historical (since 1996)", "Current only"], horizontal=True
-        )
+        scope = st.radio("Scope", ["Historical (since 1996)", "Current only"], horizontal=True)
         if scope.startswith("Historical"):
             total = sorted(
                 mdf["ticker"].astype(str).str.upper().str.strip().unique().tolist()
@@ -121,13 +171,10 @@ def render_data_lake_tab() -> None:
 
         files = storage.list_all("prices")
         present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
-
         total_set = set(total)
         missing = sorted(total_set - present)
 
-        st.write(
-            f"Coverage: **{len(present)} / {len(total_set)}** tickers with price files"
-        )
+        st.write(f"Coverage: **{len(present)} / {len(total_set)}** tickers with price files")
         st.caption(f"files discovered {len(files)} | coverage {len(present)} unique tickers")
         if missing:
             with st.expander("Show first 25 missing tickers"):
@@ -154,15 +201,9 @@ def render_data_lake_tab() -> None:
                 f"post-run coverage {len(present)} / {len(total_set)}; {len(missing)} remaining"
             )
 
-        batch_size = st.number_input(
-            "batch size", 1, 200, 50, key="auto_batch_size"
-        )
-        max_minutes = st.number_input(
-            "max minutes", 1, 120, 15, key="auto_max_minutes"
-        )
-        max_iters = st.number_input(
-            "max iters", 1, 1000, 50, key="auto_max_iters"
-        )
+        batch_size = st.number_input("batch size", 1, 200, 50, key="auto_batch_size")
+        max_minutes = st.number_input("max minutes", 1, 120, 15, key="auto_max_minutes")
+        max_iters = st.number_input("max iters", 1, 1000, 50, key="auto_max_iters")
         pause_seconds_between_batches = st.number_input(
             "pause seconds between batches", 0, 60, 5, key="auto_pause_seconds"
         )
@@ -178,16 +219,15 @@ def render_data_lake_tab() -> None:
         elapsed = time.time() - meta.get("start_ts", time.time())
         elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
         last = meta.get("last")
-        last_str = (
-            f"ok {last['ok']}, failed {last['failed']}" if isinstance(last, dict) else "n/a"
-        )
+        last_str = (f"ok {last['ok']}, failed {last['failed']}"
+                    if isinstance(last, dict) else "n/a")
         st.info(
             f"present {len(present)} / {len(total_set)} | remaining {len(missing)} | "
             f"iters {meta.get('iters', 0)} | elapsed {elapsed_str} | last batch {last_str}"
         )
 
         if st.session_state.auto_run:
-            if not missing or meta.get("iters", 0) >= int(max_iters) or elapsed >= int(max_minutes) * 60:
+            if (not missing) or (meta.get("iters", 0) >= int(max_iters)) or (elapsed >= int(max_minutes) * 60):
                 st.session_state.auto_run = False
                 if not missing:
                     st.success("Coverage complete")
@@ -196,19 +236,13 @@ def render_data_lake_tab() -> None:
             else:
                 chunk = missing[: int(batch_size)]
                 jobs = [
-                    {
-                        "ticker": t,
-                        "start": "1990-01-01",
-                        "end": str(date.today()),
-                    }
+                    {"ticker": t, "start": "1990-01-01", "end": str(date.today())}
                     for t in chunk
                 ]
                 progress_placeholder = st.empty()
                 progress_bar = progress_placeholder.progress(0)
                 summary = ingest_batch(
-                    storage,
-                    jobs,
-                    progress_cb=lambda d, t: progress_bar.progress(d / t),
+                    storage, jobs, progress_cb=lambda d, t: progress_bar.progress(d / t)
                 )
                 progress_placeholder.empty()
                 meta["iters"] = meta.get("iters", 0) + 1
@@ -229,9 +263,7 @@ def render_data_lake_tab() -> None:
     st.markdown("### Ingest prices")
     start = st.date_input("start date", date(1990, 1, 1), key="start_date")
     end = st.date_input("end date", date.today(), key="end_date")
-    max_tickers = st.number_input(
-        "max tickers per run", 1, 1000, 25, key="max_tickers"
-    )
+    max_tickers = st.number_input("max tickers per run", 1, 1000, 25, key="max_tickers")
     dry_run = st.checkbox("dry run", value=False)
     if st.button("Ingest prices (batch)"):
         try:
@@ -251,7 +283,7 @@ def render_data_lake_tab() -> None:
                 st.write(f"manifest: {summary['manifest_path']}")
                 for res in summary["results"][:2]:
                     st.write(res)
-                    if not res["error"] and storage.exists(res["path"]):
+                    if not res["error"] and _storage_has_file(storage, res["path"]):
                         df = storage.read_parquet_df(res["path"])
                         st.dataframe(df.head())
         except Exception as e:  # pragma: no cover - UI
@@ -269,16 +301,20 @@ def render_data_lake_tab() -> None:
             dbg.event("exists:AAPL", exists=exists)
         if exists:
             with dbg.step("load_sample_AAPL"):
-                df = storage.read_parquet_df("prices/AAPL.parquet")
+                df2 = storage.read_parquet_df("prices/AAPL.parquet")
                 dbg.event(
                     "sample_shape",
-                    rows=len(df),
-                    cols=len(df.columns),
-                    min=str(df["date"].min()),
-                    max=str(df["date"].max()),
+                    rows=len(df2),
+                    cols=len(df2.columns),
+                    min=str(df2["date"].min()),
+                    max=str(df2["date"].max()),
                 )
-            st.dataframe(df.tail(5))
-            st.line_chart(df.set_index("date")["close"])
+            st.dataframe(df2.tail(5))
+            try:
+                st.line_chart(df2.set_index("date")["close"])
+            except Exception:
+                if "Close" in df2.columns:
+                    st.line_chart(df2.set_index("date")["Close"])
         else:
             st.warning("AAPL.parquet not found in storage.")
     except Exception as e:
@@ -287,26 +323,50 @@ def render_data_lake_tab() -> None:
 
     debug_panel("lake")
 
-with st.expander("🔎 Raw Supabase list() response (temporary debug)"):
-    try:
-        from data_lake.storage import Storage
-        s = Storage()
-        api = getattr(s, "supabase_client", None).storage.from_(s.bucket)
+    # --- TEMP DEBUG: raw Supabase list() response (inside the function) -------
+    with st.expander("🔎 Raw Supabase list() response (temporary debug)"):
         try:
-            resp = api.list("prices")
-        except TypeError:
-            resp = api.list(prefix="prices")
-        data = getattr(resp, "data", resp)
-        st.write({"resp_type": type(resp).__name__})
-        st.write("Has .data:", hasattr(resp, "data"))
-        if isinstance(data, (list, tuple)):
-            st.write("Count:", len(data))
-            st.write("Head raw:", data[:3])
-            st.write("Head names:", [ (d.get("name") if isinstance(d, dict) else getattr(d, "name", None)) for d in data[:10] ])
-        elif isinstance(data, dict):
-            st.json(data)
-        else:
-            st.write(data)
-    except Exception as e:
-        st.error(repr(e))
+            s = storage
+            client = getattr(s, "supabase_client", None)
+            bucket_name = getattr(s, "bucket", "lake")
+            st.write({"storage_mode": getattr(s, "mode", None),
+                      "bucket_name": bucket_name})
+
+            if client:
+                api = client.storage.from_(bucket_name)
+                # Different SDKs accept either list("prefix") or list(prefix="prefix")
+                try:
+                    resp = api.list("prices")
+                except TypeError:
+                    resp = api.list(prefix="prices")
+
+                data = getattr(resp, "data", resp)
+                st.write({"resp_type": type(resp).__name__})
+                st.write("Has .data:", hasattr(resp, "data"))
+                if isinstance(data, (list, tuple)):
+                    st.write("Count:", len(data))
+                    head = data[:10]
+                    st.write("Head raw:", head)
+                    st.write("Head names:", [
+                        (d.get("name") if isinstance(d, dict) else getattr(d, "name", None))
+                        for d in head
+                    ])
+                elif isinstance(data, dict):
+                    st.json(data)
+                else:
+                    st.write(data)
+
+                # Also try helper if present
+                try:
+                    if hasattr(s, "list_prefix"):
+                        lp = s.list_prefix("prices")
+                        st.write({"list_prefix_len": len(lp), "list_prefix_sample": lp[:10]})
+                except Exception as e2:
+                    st.error(f"list_prefix() raised: {repr(e2)}")
+            else:
+                st.info("No Supabase client (likely local mode).")
+        except Exception as e:
+            st.error(repr(e))
+    # -------------------------------------------------------------------------
+
 
