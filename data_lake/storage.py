@@ -343,30 +343,7 @@ def load_prices_cached(
                 if ticker_rows:
                     df = pd.DataFrame(ticker_rows)
                     if not df.empty:
-                        df["Date"] = pd.to_datetime(df["date"])
-                        df = (
-                            df[
-                                [
-                                    "Date",
-                                    "open",
-                                    "high",
-                                    "low",
-                                    "close",
-                                    "volume",
-                                    "ticker",
-                                ]
-                            ]
-                            .rename(
-                                columns={
-                                    "open": "Open",
-                                    "high": "High",
-                                    "low": "Low",
-                                    "close": "Close",
-                                    "volume": "Volume",
-                                }
-                            )
-                            .set_index("Date")
-                        )
+                        df = _tidy_prices(df, ticker)
                         prices.append(df)
                     else:
                         failed_tickers.add(ticker)
