@@ -8,10 +8,11 @@
 
     def list_all(self, prefix: str) -> List[str]:
         """
-        Return list of file paths directly under `prefix` for both local and supabase.
+        Return list of file paths directly under `prefix` for both local and Supabase.
 
-        Supabase SDK variants sometimes return a raw list (no `.data`), and some
-        reject keyword argument `prefix=`. We prefer positional usage and handle both.
+        Notes:
+        - Some Supabase SDK builds don't accept keyword `prefix=`, so we prefer positional.
+        - Some return an object with `.data`; others return a plain list — we handle both.
         """
         norm = prefix.rstrip("/")
 
@@ -26,10 +27,10 @@
 
             if api is not None:
                 try:
-                    # Prefer positional (some builds don't support prefix=)
+                    # Prefer positional (compatible across versions)
                     res = api.list(norm)
                 except TypeError:
-                    # Try with kwargs if positional signature fails
+                    # Fallback to kwarg if positional signature fails
                     res = api.list(prefix=norm)
 
                 items = getattr(res, "data", res)
@@ -69,34 +70,18 @@ def load_prices_cached(
     Load OHLCV for `tickers` from object storage *Parquet* files only (no SQL).
 
     Accepts BOTH calling styles:
-      - load_prices_cached(storage, tickers, start, end)
-      - load_prices_cached(storage, cache_salt="...", tickers=[...], start=..., end=...)
+      1) load_prices_cached(storage, tickers, start, end)
+      2) load_prices_cached(storage, cache_salt="...", tickers=[...], start=..., end=...)
 
     Output columns: ['date','Open','High','Low','Close','Adj Close','Volume','Ticker']
     Dates are tz-naive pandas Timestamps. Rows are de-duped (last write wins).
     """
-    # --- Backward-compat for positional calls: (storage, tickers, start, end)
-    # If cache_salt is actually a list of tickers, and "tickers" is timestamp-like,
-    # reshuffle into the new keyword layout.
-    def _is_ts_like(x: Any) -> bool:
-        return isinstance(x, pd.Timestamp) or isinstance(x, str)
-
+    # --- Backward-compat for positional calls: (storage, tickers, start, end) ---
+    # If caller used the old signature, `cache_salt` will actually be a list of tickers.
     if tickers is None and isinstance(cache_salt, (list, tuple)):
-        # Legacy call path: cache_salt received the tickers list
-        legacy_tickers = list(cache_salt)
-        # If caller also passed (start, end) positionally, they landed in `start` and `end`
-        tickers = legacy_tickers
-        cache_salt = ""  # strip from cache key
+        tickers = list(cache_salt)
+        cache_salt = ""
 
-    # If someone passed (storage, tickers, start, end) *and* our parameters got shifted
-    # so that "tickers" is ts-like and "start" is ts-like, fix it:
-    if _is_ts_like(tickers) and _is_ts_like(start) and isinstance(cache_salt, (list, tuple)):
-        legacy_tickers = list(cache_salt)
-        tickers = legacy_tickers
-        # remap: tickers(param) -> start, start(param) -> end
-        start, end = pd.Timestamp(tickers), (pd.Timestamp(start) if start is not None else None)  # type: ignore[assignment]
-
-    # Normalize tickers to list[str]
     tickers = list(tickers or [])
     if not tickers:
         return pd.DataFrame()
@@ -105,7 +90,8 @@ def load_prices_cached(
 
     for t in tickers:
         path = f"prices/{t}.parquet"
-        # Best-effort existence check
+
+        # Best-effort existence check (works with both local & supabase)
         exists_fn = getattr(_storage, "exists", None)
         has_file = bool(exists_fn(path)) if callable(exists_fn) else True
         if not has_file:
@@ -113,17 +99,17 @@ def load_prices_cached(
 
         # Load parquet via helper if present, else bytes->parquet
         try:
-            raw = _storage.read_parquet_df(path)  # provided by Storage in this repo
+            raw = _storage.read_parquet_df(path)  # repo helper
         except Exception:
             raw = pd.read_parquet(io.BytesIO(_storage.read_bytes(path)))
 
-        tidy = _tidy_prices(raw, ticker=t)
+        tidy = _tidy_prices(raw, ticker=t)  # must exist in this module
 
-        # Date window filter on index
+        # Date window filter on index (tidy returns DatetimeIndex)
         if start is not None:
             s = pd.Timestamp(start)
             try:
-                s = s.tz_localize(None)  # make naive if tz-aware
+                s = s.tz_localize(None)
             except Exception:
                 pass
             tidy = tidy[tidy.index >= s]
@@ -137,7 +123,6 @@ def load_prices_cached(
 
         # Keep 'date' as a column for downstream code
         tidy = tidy.reset_index().rename(columns={"index": "date"})
-        # Ensure naive datetime
         tidy["date"] = pd.to_datetime(tidy["date"], errors="coerce")
         try:
             tidy["date"] = tidy["date"].dt.tz_localize(None)
@@ -152,14 +137,18 @@ def load_prices_cached(
 
     out = pd.concat(frames, ignore_index=True)
 
-    # Column order & dtypes
+    # Ensure expected columns exist and order them
     cols = ["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
     for c in cols:
         if c not in out.columns:
             out[c] = pd.NA
     out = out[cols]
 
-    # Deduplicate per (date, Ticker) keep last
-    out = out.sort_values(["Ticker", "date"]).drop_duplicates(["Ticker", "date"], keep="last").reset_index(drop=True)
+    # Deduplicate per (date, Ticker): keep last
+    out = (
+        out.sort_values(["Ticker", "date"])
+           .drop_duplicates(["Ticker", "date"], keep="last")
+           .reset_index(drop=True)
+    )
 
     return out 
