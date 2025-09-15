@@ -2,9 +2,11 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 import pandas as pd
+import streamlit as st
+from supabase import Client
 
 
 # Default root for local storage operations
@@ -209,42 +211,59 @@ class Storage:
         return []
 
     def exists(self, path: str) -> bool:
-        """Return ``True`` if ``path`` exists in storage."""
+        """Check if ``path`` exists in Supabase Storage or locally."""
 
         try:
-            # Local filesystem: direct check
-            if self.mode == "local":
+            if self.local_root and self.mode == "local":
                 return (self.local_root / path).exists()
 
-            # Supabase storage: require a bucket
-            if self.bucket is None:
-                return False
-
-            # Allow prefix-style queries (trailing slash) by delegating to list_prefix
-            if path.endswith("/"):
-                return len(self.list_prefix(path)) > 0
-
-            parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
-            try:
-                items = self.bucket.list(parent.lstrip("/"))
-                if isinstance(items, dict) and "data" in items:
-                    items = items["data"]
-                elif hasattr(items, "data"):
-                    items = items.data
-                for it in items or []:
-                    fname = getattr(it, "name", None)
-                    if fname is None and isinstance(it, dict):
-                        fname = it.get("name")
-                    if fname is None and isinstance(it, str):
-                        fname = it
-                    if fname == name:
+            if self.bucket is not None:
+                parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
+                try:
+                    items = self.bucket.list(parent.lstrip("/"))
+                    if isinstance(items, dict) and "data" in items:
+                        items = items["data"]
+                    elif hasattr(items, "data"):
+                        items = items.data
+                    for it in items or []:
+                        fname = getattr(it, "name", None)
+                        if fname is None and isinstance(it, dict):
+                            fname = it.get("name")
+                        if fname is None and isinstance(it, str):
+                            fname = it
+                        if fname == name:
+                            return True
+                    return False
+                except Exception:
+                    try:
+                        _ = self.read_bytes(path)
                         return True
-                return False
-            except Exception:
-                # Fallback: probe a lightweight read
-                _ = self.read_bytes(path)
-                return True
-        except Exception:
+                    except Exception:
+                        return False
+
+            supabase: Client | None = getattr(self, "supabase_client", None)
+            if supabase is not None:
+                try:
+                    resp = supabase.storage.from_("prices").list(path)
+                    items = getattr(resp, "data", resp) or []
+                    files = []
+                    for it in items:
+                        name = getattr(it, "name", None)
+                        if name is None and isinstance(it, dict):
+                            name = it.get("name")
+                        if name:
+                            files.append(name)
+                    return any(Path(path).name == f for f in files)
+                except Exception:
+                    try:
+                        _ = self.read_bytes(path)
+                        return True
+                    except Exception:
+                        return False
+
+            return False
+        except Exception as e:  # pragma: no cover - defensive
+            st.warning(f"Exists check for {path} failed: {str(e)[:50]}.")
             return False
 
     def info(self) -> str:
@@ -279,29 +298,111 @@ class Storage:
         return cls()
 
 
+@st.cache_data
 def load_prices_cached(
-    storage: Storage,
+    _storage: Storage,
     tickers: Iterable[str],
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
-    """Load price history for ``tickers`` from a parquet cache.
+    """Load OHLCV history for ``tickers``.
 
-    Results are cached on the ``storage`` instance to avoid repeated I/O.
+    Uses Supabase table ``sp500_ohlcv`` when a client is available, otherwise
+    falls back to the local parquet cache used in tests.  Results are cached
+    via :func:`st.cache_data` to avoid repeated queries.
     """
+
+    supabase: Client | None = getattr(_storage, "supabase_client", None)
+    if supabase is not None and _storage.local_root is None:
+        prices: list[pd.DataFrame] = []
+        failed_tickers: set[str] = set()
+        PAGE_SIZE = 1000
+
+        for ticker in tickers:
+            try:
+                offset = 0
+                ticker_rows: list[dict] = []
+                while True:
+                    resp = (
+                        supabase.table("sp500_ohlcv")
+                        .select("ticker, date, open, high, low, close, volume")
+                        .eq("ticker", ticker)
+                        .gte("date", start.strftime("%Y-%m-%d"))
+                        .lte("date", end.strftime("%Y-%m-%d"))
+                        .order("date")
+                        .range(offset, offset + PAGE_SIZE - 1)
+                        .execute()
+                    )
+                    if not resp.data:
+                        break
+                    ticker_rows.extend(resp.data)
+                    if len(resp.data) < PAGE_SIZE:
+                        break
+                    offset += PAGE_SIZE
+
+                if ticker_rows:
+                    df = pd.DataFrame(ticker_rows)
+                    if not df.empty:
+                        df["Date"] = pd.to_datetime(df["date"])
+                        df = (
+                            df[
+                                [
+                                    "Date",
+                                    "open",
+                                    "high",
+                                    "low",
+                                    "close",
+                                    "volume",
+                                    "ticker",
+                                ]
+                            ]
+                            .rename(
+                                columns={
+                                    "open": "Open",
+                                    "high": "High",
+                                    "low": "Low",
+                                    "close": "Close",
+                                    "volume": "Volume",
+                                }
+                            )
+                            .set_index("Date")
+                        )
+                        prices.append(df)
+                    else:
+                        failed_tickers.add(ticker)
+                else:
+                    failed_tickers.add(ticker)
+            except Exception as e:
+                failed_tickers.add(ticker)
+                st.error(f"Supabase query failed for {ticker}: {str(e)[:50]}.")
+
+        if failed_tickers:
+            st.warning(
+                f"Failed to load data for {len(failed_tickers)} tickers: {', '.join(sorted(failed_tickers))}"
+            )
+
+        if prices:
+            all_prices = pd.concat(prices, axis=0)
+            if not all_prices.columns.is_unique:
+                all_prices = all_prices.loc[:, ~all_prices.columns.duplicated(keep="first")]
+                st.info("Dropped duplicate columns in prices.")
+            return all_prices
+
+        st.error("No price data loaded from Supabase. Check table name or data availability.")
+        return pd.DataFrame()
 
     frames: list[pd.DataFrame] = []
     for t in tickers:
         key = str(t).upper()
-        if key not in storage._prices_cache:
+        if key not in _storage._prices_cache:
             try:
-                raw = storage.read_parquet(f"prices/{key}.parquet")
+                raw = _storage.read_parquet(f"prices/{key}.parquet")
             except FileNotFoundError:
                 continue
             tidy = _tidy_prices(raw, key)
-            storage._prices_cache[key] = tidy
+            _storage._prices_cache[key] = tidy
 
-        df = storage._prices_cache[key]
+        df = _storage._prices_cache[key]
         mask = pd.Series(True, index=df.index)
         if start is not None:
             mask &= df.index >= start
@@ -317,4 +418,7 @@ def load_prices_cached(
     return pd.DataFrame(
         columns=["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
     )
+
+
+print("load_prices_cached defined and imported successfully")
 
