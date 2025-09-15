@@ -17,10 +17,8 @@ from data_lake.schemas import IngestJob
 def _storage_has_file(storage: Storage, path: str) -> bool:
     """Return ``True`` if ``path`` exists on ``storage``.
 
-    Some storage backends used in tests or development may not implement an
-    ``exists`` method.  This helper mirrors the expected behaviour using
-    ``read_bytes`` as a fallback so that the UI can safely check for files
-    without raising an ``AttributeError``.
+    Retains backward compatibility for environments where ``Storage`` may not
+    implement ``exists``; falls back to a ``read_bytes`` probe.
     """
 
     exists_fn = getattr(storage, "exists", None)
@@ -224,7 +222,7 @@ def render_data_lake_tab() -> None:
                 st.write(f"manifest: {summary['manifest_path']}")
                 for res in summary["results"][:2]:
                     st.write(res)
-                    if not res["error"] and _storage_has_file(storage, res["path"]):
+                    if not res["error"] and storage.exists(res["path"]):
                         df = pd.read_parquet(
                             io.BytesIO(storage.read_bytes(res["path"]))
                         )
@@ -233,19 +231,9 @@ def render_data_lake_tab() -> None:
             st.exception(e)
 
     st.markdown("### Sanity check")
-    try:
-        has_file = getattr(storage, "exists", None)
-        if callable(has_file):
-            ok = storage.exists("prices/AAPL.parquet")
-        else:
-            # Fallback: attempt read
-            ok = True
-            _ = storage.read_bytes("prices/AAPL.parquet")
-        if ok:
-            df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
-            st.dataframe(df.tail(5))
-            st.line_chart(df.set_index("date")["close"])
-        else:
-            st.info("No AAPL parquet found under prices/.")
-    except Exception as e:
-        st.warning(f"Sanity check could not load sample file: {e}")
+    if storage.exists("prices/AAPL.parquet"):
+        df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
+        st.dataframe(df.tail(5))
+        st.line_chart(df.set_index("date")["close"])
+    else:
+        st.warning("AAPL.parquet not found in storage.")

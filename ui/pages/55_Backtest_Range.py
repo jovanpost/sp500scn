@@ -47,7 +47,10 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 def render_page() -> None:
     st.header("📅 Backtest (range)")
 
-    with st.form("bt_controls"):
+    def form_submit_wrapper(label: str) -> bool:
+        return st.form_submit_button(label)
+
+    with st.form(key="backtest_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
             start_date = pd.Timestamp(
@@ -161,7 +164,7 @@ def render_page() -> None:
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
-        run = st.form_submit_button("Run backtest")
+        run = form_submit_wrapper("Run backtest")
 
     if run:
         st.session_state["bt_running"] = True
