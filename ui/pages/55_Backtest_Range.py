@@ -9,6 +9,7 @@ from data_lake.storage import Storage, load_prices_cached
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
+from ui.components.debug import debug_panel, _get_dbg
 
 
 def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
@@ -46,6 +47,9 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 
 def render_page() -> None:
     st.header("📅 Backtest (range)")
+    storage = Storage()
+    dbg = _get_dbg("backtest")
+    dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
 
     def form_submit_wrapper(label: str) -> bool:
         return st.form_submit_button(label)
@@ -171,7 +175,6 @@ def render_page() -> None:
         status, prog, log = status_block("Backtest running…", key_prefix="bt")
 
         try:
-            storage = Storage()
             params: ScanParams = {
                 "min_close_up_pct": min_close_up_pct,
                 "min_vol_multiple": min_vol_multiple,
@@ -186,6 +189,22 @@ def render_page() -> None:
                 "precedent_lookback": precedent_lookback,
                 "precedent_window": precedent_window,
             }
+            dbg.set_params(
+                start=str(start_date),
+                end=str(end_date),
+                horizon=horizon,
+                vol_lookback=vol_lookback,
+                min_close_up_pct=min_close_up_pct,
+                min_gap_open_pct=min_gap_open_pct,
+                min_volume_multiple=min_vol_multiple,
+                atr_window=atr_window,
+                sr_min_ratio=sr_min_ratio,
+                sr_lookback=sr_lookback,
+                use_precedent=use_precedent,
+                use_atr_feasible=use_atr_feasible,
+                precedent_lookback=precedent_lookback,
+                precedent_window=precedent_window,
+            )
 
             start_ts = start_date.normalize()
             end_ts = end_date.normalize()
@@ -193,6 +212,7 @@ def render_page() -> None:
             df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
                 st.info("No data loaded for backtest.")
+                debug_panel("backtest")
                 return
             date_list = list(pd.DatetimeIndex(df_days.index).sort_values())
 
@@ -204,7 +224,18 @@ def render_page() -> None:
             active_tickers = sorted(active_tickers)
 
             log(f"Preloading {len(active_tickers)} tickers…")
-            prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+            with dbg.step("preload_prices"):
+                prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+            loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
+            dbg.event(
+                "prices_loaded",
+                requested=len(active_tickers),
+                loaded=loaded,
+                index_dtype=str(getattr(prices_df.index, "dtype", "")),
+                tz=str(getattr(getattr(prices_df.index, "tz", None), "zone", None)),
+                min=str(prices_df.index.min() if not prices_df.empty else None),
+                max=str(prices_df.index.max() if not prices_df.empty else None),
+            )
             with st.expander("\U0001F50E Data preflight (debug)"):
                 st.write(f"Tickers requested: {len(active_tickers)}")
                 sample_check = active_tickers[:5]
@@ -231,6 +262,7 @@ def render_page() -> None:
                 log(
                     "No data loaded for backtest. Check presence above (exists) and list_prefix in Data Lake tab."
                 )
+                debug_panel("backtest")
                 st.stop()
 
             rows_before = len(prices_df)
@@ -285,39 +317,47 @@ def render_page() -> None:
             sigscan._load_members = _load_members_patched
 
             try:
-                results = []
-                days_with_candidates = 0
-                done = 0
-                total_days = len(date_list)
-                for D in date_list:
-                    cands, out, _fails, _stats = sigscan.scan_day(
-                        storage, pd.Timestamp(D), params
-                    )
-                    cand_count = int(len(cands))
-                    if cand_count:
-                        days_with_candidates += 1
-                    if not out.empty:
-                        tmp = out.copy()
-                        tmp["date"] = pd.Timestamp(D).normalize()
-                        results.append(tmp)
-                    done += 1
-                    pct = int(done / max(1, total_days) * 100)
-                    prog.progress(pct, text=f"{pct}%  ({pd.Timestamp(D).date()})")
-                    if done % 5 == 0:
-                        log(f"{pd.Timestamp(D).date()} → {cand_count} candidates")
+                trades_df = pd.DataFrame()
+                summary: Dict[str, float] = {}
+                with dbg.step("run_backtest"):
+                    results = []
+                    days_with_candidates = 0
+                    done = 0
+                    total_days = len(date_list)
+                    for D in date_list:
+                        cands, out, _fails, _stats = sigscan.scan_day(
+                            storage, pd.Timestamp(D), params
+                        )
+                        cand_count = int(len(cands))
+                        if cand_count:
+                            days_with_candidates += 1
+                        if not out.empty:
+                            tmp = out.copy()
+                            tmp["date"] = pd.Timestamp(D).normalize()
+                            results.append(tmp)
+                        done += 1
+                        pct = int(done / max(1, total_days) * 100)
+                        prog.progress(pct, text=f"{pct}%  ({pd.Timestamp(D).date()})")
+                        if done % 5 == 0:
+                            log(f"{pd.Timestamp(D).date()} → {cand_count} candidates")
 
-                trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
-                hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
-                summary = {
-                    "total_days": int(total_days),
-                    "days_with_candidates": int(days_with_candidates),
-                    "trades": int(len(trades_df)),
-                    "hits": hits,
-                    "hit_rate": float(hits) / max(1, len(trades_df)),
-                    "median_days_to_exit": float(trades_df["days_to_exit"].median()) if not trades_df.empty else float("nan"),
-                    "avg_MAE_pct": float(trades_df["mae_pct"].mean()) if not trades_df.empty else float("nan"),
-                    "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
-                }
+                    trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+                    hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
+                    summary = {
+                        "total_days": int(total_days),
+                        "days_with_candidates": int(days_with_candidates),
+                        "trades": int(len(trades_df)),
+                        "hits": hits,
+                        "hit_rate": float(hits) / max(1, len(trades_df)),
+                        "median_days_to_exit": float(trades_df["days_to_exit"].median()) if not trades_df.empty else float("nan"),
+                        "avg_MAE_pct": float(trades_df["mae_pct"].mean()) if not trades_df.empty else float("nan"),
+                        "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
+                    }
+                dbg.event(
+                    "bt_stats",
+                    days=len(date_list),
+                    total_trades=int(summary.get("trades", 0)),
+                )
 
                 st.session_state["bt_trades"] = trades_df
                 st.session_state["bt_summary"] = summary
@@ -338,6 +378,7 @@ def render_page() -> None:
                 sigscan._load_prices = orig_load_prices
                 sigscan._load_members = orig_load_members
         except Exception as e:
+            dbg.error("backtest", e)
             log(f"ERROR: {e}")
             status.update(label="Backtest failed ❌", state="error")
         finally:
@@ -359,6 +400,8 @@ def render_page() -> None:
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
+
+    debug_panel("backtest")
 
 
 def page() -> None:
