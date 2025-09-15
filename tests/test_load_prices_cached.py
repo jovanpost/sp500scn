@@ -154,3 +154,38 @@ def test_load_prices_cached_empty_frame(monkeypatch):
     )
 
     assert out.empty
+
+
+def test_load_prices_cached_handles_non_datetime_index(monkeypatch):
+    s = stg.Storage()
+
+    df = pd.DataFrame(
+        {
+            "Open": [1, 2],
+            "High": [1, 2],
+            "Low": [1, 2],
+            "Close": [1, 2],
+            "Adj Close": [1, 2],
+            "Volume": [10, 20],
+            "Ticker": ["AAA", "AAA"],
+        },
+        index=[0, 1],
+    )
+
+    def fake_read_parquet_df(self, path: str):
+        return df
+
+    # Bypass _tidy_prices to simulate malformed data
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
+    monkeypatch.setattr(stg, "_tidy_prices", lambda d, ticker=None: d)
+
+    st.cache_data.clear()
+    out = stg.load_prices_cached(
+        s,
+        cache_salt=s.cache_salt(),
+        tickers=["AAA"],
+        start=pd.Timestamp("2020-01-01"),
+        end=pd.Timestamp("2020-01-02"),
+    )
+
+    assert out.empty
