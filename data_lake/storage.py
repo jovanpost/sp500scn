@@ -469,6 +469,12 @@ def load_prices_cached(
             except FileNotFoundError:
                 continue
         tidy = _tidy_prices(df_raw, ticker=ticker)
+        # Ensure index is datetime to avoid comparison failures
+        tidy.index = pd.to_datetime(tidy.index, errors="coerce").tz_localize(None)
+        if tidy.index.isna().any():
+            bad = int(tidy.index.isna().sum())
+            log.debug("load_prices_cached: dropping %s rows with bad dates for %s", bad, ticker)
+            tidy = tidy[tidy.index.notna()]
         if start_ts is not None:
             tidy = tidy[tidy.index >= start_ts]
         if end_ts is not None:
