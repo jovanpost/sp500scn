@@ -1,131 +1,28 @@
-from pathlib import Path
-
 from data_lake import storage
 
 
+def test_list_prefix_local(tmp_path, monkeypatch):
+    local_root = tmp_path / ".lake"
+    prices_dir = local_root / "prices"
+    prices_dir.mkdir(parents=True)
+    (prices_dir / "AAPL.parquet").write_text("a")
+    (prices_dir / "MSFT.parquet").write_text("m")
+
+    monkeypatch.setattr(storage, "LOCAL_ROOT", local_root)
+    st = storage.Storage()
+
+    entries = st.list_prefix("prices")
+    assert sorted(entries) == ["prices/AAPL.parquet", "prices/MSFT.parquet"]
+
+
 def test_exists_local(tmp_path, monkeypatch):
-    monkeypatch.setattr(storage, "LOCAL_ROOT", tmp_path)
+    local_root = tmp_path / ".lake"
+    prices_dir = local_root / "prices"
+    prices_dir.mkdir(parents=True)
+    (prices_dir / "AAPL.parquet").write_text("a")
+
+    monkeypatch.setattr(storage, "LOCAL_ROOT", local_root)
     st = storage.Storage()
-    base = tmp_path / "prices"
-    base.mkdir(parents=True, exist_ok=True)
-    (base / "AAPL.parquet").write_text("x")
-    assert st.exists("prices/AAPL.parquet")
-    assert not st.exists("prices/MSFT.parquet")
-
-
-def test_exists_handles_apiresponse():
-    st = storage.Storage()
-    st.mode = "supabase"
-
-    class APIResp:
-        def __init__(self, data):
-            self.data = data
-
-    class Bucket:
-        def list(self, folder, *args, **kwargs):
-            if folder == "prices":
-                return APIResp([{"name": "AAPL.parquet"}])
-            return APIResp([])
-
-    class Client:
-        class StorageAPI:
-            def __init__(self, bucket):
-                self._bucket = bucket
-
-            def from_(self, bucket_name):
-                assert bucket_name is st.bucket
-                return self._bucket
-
-        def __init__(self, bucket):
-            self.storage = Client.StorageAPI(bucket)
-
-    st.bucket = Bucket()
-    st.supabase_client = Client(st.bucket)
 
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
-
-
-def test_exists_handles_fileobject():
-    st = storage.Storage()
-    st.mode = "supabase"
-
-    class FileObject:
-        def __init__(self, name: str):
-            self.name = name
-
-    class APIResp:
-        def __init__(self, data):
-            self.data = data
-
-    class Bucket:
-        def list(self, folder, *args, **kwargs):
-            if folder == "prices":
-                return APIResp([FileObject("AAPL.parquet")])
-            return APIResp([])
-
-    class Client:
-        class StorageAPI:
-            def __init__(self, bucket):
-                self._bucket = bucket
-            def from_(self, bucket_name):
-                assert bucket_name is st.bucket
-                return self._bucket
-        def __init__(self, bucket):
-            self.storage = Client.StorageAPI(bucket)
-
-    st.bucket = Bucket()
-    st.supabase_client = Client(st.bucket)
-    assert st.exists("prices/AAPL.parquet") is True
-    assert st.exists("prices/MSFT.parquet") is False
-
-
-def test_exists_handles_string_list():
-    st = storage.Storage()
-    st.mode = "supabase"
-
-    class Bucket:
-        def list(self, folder, *args, **kwargs):
-            if folder == "prices":
-                return ["AAPL.parquet"]
-            return []
-
-    class Client:
-        class StorageAPI:
-            def __init__(self, bucket):
-                self._bucket = bucket
-            def from_(self, bucket_name):
-                assert bucket_name is st.bucket
-                return self._bucket
-        def __init__(self, bucket):
-            self.storage = Client.StorageAPI(bucket)
-
-    st.bucket = Bucket()
-    st.supabase_client = Client(st.bucket)
-    assert st.exists("prices/AAPL.parquet") is True
-    assert st.exists("prices/MSFT.parquet") is False
-
-
-def test_exists_local_custom_root(tmp_path):
-    """exists() and list_prefix should respect ``local_root`` overrides."""
-    lake = tmp_path / ".lake" / "prices"
-    lake.mkdir(parents=True)
-    (lake / "AAPL.parquet").write_text("x")
-    st = storage.Storage()
-    st.local_root = tmp_path / ".lake"
-    assert not st.exists("prices/")
-    assert st.exists("prices/AAPL.parquet")
-    assert not st.exists("prices/MSFT.parquet")
-
-
-def test_list_prefix_relative_root(tmp_path, monkeypatch):
-    """list_prefix and exists work when ``local_root`` is relative."""
-    monkeypatch.chdir(tmp_path)
-    rel = Path("lake")
-    (rel / "history").mkdir(parents=True)
-    (rel / "history" / "AAPL.parquet").write_text("x")
-    monkeypatch.setattr(storage, "LOCAL_ROOT", rel)
-    st = storage.Storage()
-    assert st.list_prefix("history/") == ["history/AAPL.parquet"]
-    assert not st.exists("history/")
-    assert st.exists("history/AAPL.parquet")

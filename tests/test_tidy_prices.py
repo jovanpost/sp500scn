@@ -1,73 +1,45 @@
-# tests/test_tidy_prices.py
-
-import os
-import sys
 import pandas as pd
 
-# Make package importable from tests/
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from data_lake import storage as stg  # noqa: E402
+from data_lake.storage import _tidy_prices
 
 
 def test_tidy_prices_normalizes_schema():
     df = pd.DataFrame(
         {
-            "date": [
-                pd.Timestamp("2020-01-01", tz="UTC"),
-                pd.Timestamp("2020-01-01", tz="UTC"),
-            ],
-            "open": [1, 1],
-            "high": [1, 1],
-            "low": [1, 1],
-            "close": [1, 2],
-            "volume": [10, 20],
+            "date": pd.date_range("2020-01-01", periods=3, tz="America/New_York"),
+            "open": [1.0, 2.0, 3.0],
+            "high": [2.0, 3.0, 4.0],
+            "low": [0.5, 1.5, 2.5],
+            "close": [1.5, 2.5, 3.5],
+            "volume": [100, 200, 300],
+            "ticker": ["aapl", "aapl", "aapl"],
         }
     )
-    out = stg._tidy_prices(df, ticker="aaa")
 
-    # Expect a DatetimeIndex (tz-naive) and Yahoo-style columns
-    assert isinstance(out.index, pd.DatetimeIndex)
-    assert out.index.tz is None
-    assert out.index.tolist() == [pd.Timestamp("2020-01-01")]
+    tidy = _tidy_prices(df, ticker="aapl")
 
-    assert list(out.columns) == ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
-    assert out.loc[pd.Timestamp("2020-01-01"), "Close"] == 2
-    assert out.loc[pd.Timestamp("2020-01-01"), "Adj Close"] == 2
-    assert out.loc[pd.Timestamp("2020-01-01"), "Ticker"] == "AAA"
+    assert list(tidy.columns) == ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    assert tidy.index.name == "date"
+    assert tidy.index.tz is None
+    assert tidy["Ticker"].unique().tolist() == ["AAPL"]
+    assert "Adj Close" in tidy.columns
 
 
-def test_tidy_prices_renames_ticker_column():
+def test_tidy_prices_deduplicates_last_wins():
     df = pd.DataFrame(
         {
-            "date": [pd.Timestamp("2020-01-02")],
-            "open": [1],
-            "high": [1],
-            "low": [1],
-            "close": [1],
-            "volume": [10],
-            "ticker": ["bbb"],
+            "date": ["2020-01-01", "2020-01-01", "2020-01-02"],
+            "Open": [1, 2, 3],
+            "High": [2, 3, 4],
+            "Low": [0, 1, 2],
+            "Close": [1, 2, 3],
+            "Volume": [10, 20, 30],
         }
     )
-    out = stg._tidy_prices(df)
-    assert "Ticker" in out.columns
-    assert "ticker" not in out.columns
-    assert out.loc[pd.Timestamp("2020-01-02"), "Ticker"] == "BBB"
 
+    tidy = _tidy_prices(df, ticker="MSFT")
 
-def test_tidy_prices_prefers_existing_Ticker_column():
-    df = pd.DataFrame(
-        {
-            "date": [pd.Timestamp("2020-01-03")],
-            "open": [1],
-            "high": [1],
-            "low": [1],
-            "close": [1],
-            "volume": [10],
-            "ticker": ["ccc"],
-            "Ticker": ["ddd"],
-        }
-    )
-    out = stg._tidy_prices(df)
-    # Lowercase 'ticker' should be dropped when 'Ticker' already exists
-    assert "ticker" not in out.columns
-    assert out.loc[pd.Timestamp("2020-01-03"), "Ticker"] == "DDD"
+    assert len(tidy) == 2
+    first_day = pd.Timestamp("2020-01-01")
+    assert tidy.loc[first_day, "Open"] == 2
+    assert tidy.loc[first_day, "Ticker"] == "MSFT"

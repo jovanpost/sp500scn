@@ -65,15 +65,34 @@ def render_data_lake_tab() -> None:
         st.experimental_rerun()
 
     st.markdown("### Sanity check")
-    if _storage_has_file(storage, "prices/AAPL.parquet"):
-        df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
-        st.dataframe(df.tail(5))
+    sample_path = "prices/AAPL.parquet"
+    if storage.exists(sample_path):
         try:
-            st.line_chart(df.set_index("date")["close"])
-        except Exception:
-            # Some schemas may be upper-case or different
-            if "Close" in df.columns:
-                st.line_chart(df.set_index("date")["Close"])
+            df = storage.read_parquet_df(sample_path)
+        except Exception as exc:  # pragma: no cover - UI feedback
+            st.error(f"Failed to read {sample_path}: {exc}")
+        else:
+            if "date" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+                df = df.reset_index().rename(columns={df.index.name or "index": "date"})
+            st.dataframe(df.tail(5))
+            date_col = "date" if "date" in df.columns else None
+            if date_col is not None:
+                date_series = pd.to_datetime(df[date_col], errors="coerce")
+                try:
+                    date_series = date_series.dt.tz_localize(None)
+                except Exception:
+                    pass
+                df = df.assign(_date=date_series)
+                df = df.dropna(subset=["_date"])
+                if not df.empty:
+                    df = df.set_index("_date")
+                    value_col = None
+                    for candidate in ["close", "Close", "adjclose", "Adj Close"]:
+                        if candidate in df.columns:
+                            value_col = candidate
+                            break
+                    if value_col:
+                        st.line_chart(df[[value_col]].rename(columns={value_col: "Close"}))
     else:
         st.warning("AAPL.parquet not found in storage.")
 
@@ -93,8 +112,10 @@ def render_data_lake_tab() -> None:
                 s = storage
                 client = getattr(s, "supabase_client", None)
                 bucket_name = getattr(s, "bucket", "lake")
-                st.write({"storage_mode": getattr(s, "mode", None),
-                          "bucket_name": bucket_name})
+                st.write({
+                    "storage_mode": getattr(s, "mode", None),
+                    "bucket_name": bucket_name,
+                })
 
                 if client:
                     api = client.storage.from_(bucket_name)
@@ -103,11 +124,9 @@ def render_data_lake_tab() -> None:
                     except TypeError:
                         resp = api.list(prefix="prices")
                     data = getattr(resp, "data", resp)
-                    st.write({"resp_type": type(resp).__name__})
-                    st.write("Has .data:", hasattr(resp, "data"))
+                    st.write({"resp_type": type(resp).__name__, "count": len(data or []) if isinstance(data, (list, tuple)) else None})
                     if isinstance(data, (list, tuple)):
-                        st.write("Count:", len(data))
-                        head = data[:10]
+                        head = list(data)[:10]
                         st.write("Head raw:", head)
                         st.write("Head names:", [
                             (d.get("name") if isinstance(d, dict) else getattr(d, "name", None))
@@ -118,13 +137,8 @@ def render_data_lake_tab() -> None:
                     else:
                         st.write(data)
 
-                    # Also try helper if present
-                    try:
-                        if hasattr(s, "list_prefix"):
-                            lp = s.list_prefix("prices")
-                            st.write({"list_prefix_len": len(lp), "list_prefix_sample": lp[:10]})
-                    except Exception as e2:
-                        st.error(f"list_prefix() raised: {repr(e2)}")
+                    helper_list = s.list_prefix("prices")
+                    st.write({"list_prefix_len": len(helper_list), "list_prefix_sample": helper_list[:10]})
                 else:
                     st.info("No Supabase client (likely local mode).")
             except Exception as e:
