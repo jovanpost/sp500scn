@@ -3,6 +3,7 @@ import datetime as dt
 from typing import Dict
 
 import pandas as pd
+from pandas.tseries.offsets import BDay
 import streamlit as st
 
 from data_lake.storage import Storage, load_prices_cached
@@ -190,6 +191,28 @@ def render_page() -> None:
                 precedent_window=precedent_window,
             )
 
+            min_prior_bdays = 63
+            prior_components = [
+                min_prior_bdays,
+                vol_lookback,
+                atr_window,
+                sr_lookback,
+            ]
+            if use_precedent:
+                prior_components.append(precedent_lookback + precedent_window)
+            prior_needed = int(max(prior_components))
+            warmup_start = pd.Timestamp(start_date - BDay(prior_needed)).tz_localize(None)
+            forward_end = pd.Timestamp(end_date + BDay(horizon)).tz_localize(None)
+
+            coverage_info = {
+                "ui_start": str(start_date),
+                "ui_end": str(end_date),
+                "warmup_start": str(warmup_start),
+                "forward_end": str(forward_end),
+                "prior_needed_bdays": prior_needed,
+                "horizon_bdays": int(horizon),
+            }
+
             df_days = load_prices_cached(
                 storage,
                 cache_salt=storage.cache_salt(),
@@ -205,10 +228,12 @@ def render_page() -> None:
             date_list = list(pd.DatetimeIndex(df_days["date"]).sort_values())
 
             members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
+            members_ticker_upper = members["ticker"].astype(str).str.upper()
 
             active_tickers = set()
             for D in date_list:
-                active_tickers.update(members_on_date(members, D)["ticker"].tolist())
+                daily_members = members_on_date(members, D)["ticker"].dropna().tolist()
+                active_tickers.update(str(t).upper() for t in daily_members if t)
             active_tickers = sorted(active_tickers)
 
             log(f"Preloading {len(active_tickers)} tickers…")
@@ -217,9 +242,17 @@ def render_page() -> None:
                     storage,
                     cache_salt=storage.cache_salt(),
                     tickers=active_tickers,
-                    start=start_date,
-                    end=end_date,
+                    start=warmup_start,
+                    end=forward_end,
                 )
+            if not prices_df.empty:
+                coverage_info.update(
+                    min_loaded=str(prices_df["date"].min()),
+                    max_loaded=str(prices_df["date"].max()),
+                )
+            else:
+                coverage_info.update(min_loaded=None, max_loaded=None)
+            dbg.event("coverage", **coverage_info)
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
                 "prices_loaded",
@@ -299,18 +332,20 @@ def render_page() -> None:
 
             prices: Dict[str, pd.DataFrame] = {}
             for t, df_t in prices_df.reset_index().groupby("Ticker", sort=False):
+                t_upper = str(t).upper()
                 df_t = df_t.set_index("date").sort_index()
                 df_t = df_t[~df_t.index.duplicated(keep="last")]
-                prices[t] = df_t[["Open", "High", "Low", "Close", "Volume"]].rename(
+                prices[t_upper] = df_t[["Open", "High", "Low", "Close", "Volume"]].rename(
                     columns=str.lower
                 )
 
+            eligible_state = {"tickers": None}
 
             prog.progress(100, text=f"Prefetch {len(prices)}/{len(active_tickers)}")
             log("Prefetch complete.")
 
             def _load_prices_patched(_storage, ticker):
-                df = prices.get(ticker)
+                df = prices.get(str(ticker).upper())
                 if df is None:
                     return None
                 out = df.reset_index().rename(columns={"index": "date"})
@@ -318,7 +353,11 @@ def render_page() -> None:
                 return out[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
 
             def _load_members_patched(_storage, cache_salt: str):
-                return members
+                tickers = eligible_state.get("tickers")
+                if tickers is None:
+                    return members
+                mask = members_ticker_upper.isin(tickers)
+                return members.loc[mask]
 
             orig_load_prices = sigscan._load_prices
             orig_load_members = sigscan._load_members
@@ -334,21 +373,46 @@ def render_page() -> None:
                     done = 0
                     total_days = len(date_list)
                     for D in date_list:
+                        current_day = pd.Timestamp(D).tz_localize(None)
+                        daily_members = (
+                            members_on_date(members, current_day)["ticker"].dropna().astype(str).str.upper()
+                        )
+                        eligible_tickers = set()
+                        lacking_history = 0
+                        for tk in daily_members:
+                            df_t = prices.get(tk)
+                            if df_t is None or df_t.empty:
+                                lacking_history += 1
+                                continue
+                            prior_count = int(df_t.index.searchsorted(current_day, side="left"))
+                            if prior_count >= prior_needed:
+                                eligible_tickers.add(tk)
+                            else:
+                                lacking_history += 1
+                        eligible_state["tickers"] = eligible_tickers
+                        if lacking_history and len(daily_members) > 0:
+                            dbg.event(
+                                "history_guard",
+                                date=str(current_day),
+                                eligible=len(eligible_tickers),
+                                lacking=int(lacking_history),
+                            )
+
                         cands, out, _fails, _stats = sigscan.scan_day(
-                            storage, pd.Timestamp(D), params
+                            storage, current_day, params
                         )
                         cand_count = int(len(cands))
                         if cand_count:
                             days_with_candidates += 1
                         if not out.empty:
                             tmp = out.copy()
-                            tmp["date"] = pd.Timestamp(D).normalize()
+                            tmp["date"] = current_day.normalize()
                             results.append(tmp)
                         done += 1
                         pct = int(done / max(1, total_days) * 100)
-                        prog.progress(pct, text=f"{pct}%  ({pd.Timestamp(D).date()})")
+                        prog.progress(pct, text=f"{pct}%  ({current_day.date()})")
                         if done % 5 == 0:
-                            log(f"{pd.Timestamp(D).date()} → {cand_count} candidates")
+                            log(f"{current_day.date()} → {cand_count} candidates")
 
                     trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
                     trades_df = trades_df.reset_index(drop=True)
