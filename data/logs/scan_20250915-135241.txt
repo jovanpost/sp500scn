@@ -1,0 +1,5 @@
+load_prices_cached defined and imported successfully
+No PASS tickers found.
+
+Processed at 2025-09-15 09:52:43 ET
+[run_and_log] scan returned no passing tickers.
