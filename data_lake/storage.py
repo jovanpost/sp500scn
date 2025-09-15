@@ -162,7 +162,10 @@ class Storage:
             cfg = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
         except Exception:
             cfg = {}
-        self.force_supabase = bool(cfg.get("force")) or os.getenv("FORCE_SUPABASE") == "1"
+        self.force_supabase = bool(
+            (cfg.get("force", False))
+            or (os.getenv("FORCE_SUPABASE") in ("1", "true", "True"))
+        )
         self.auto_create_bucket = bool(cfg.get("auto_create_bucket", False))
         creds = _supabase_creds()
         if creds:
@@ -170,13 +173,23 @@ class Storage:
         else:
             key = None
         self.bucket_name = cfg.get("bucket", "lake")
-        self.local_root = LOCAL_ROOT
+
+        # local root can be overridden via secrets; default to module-level LOCAL_ROOT
+        try:
+            storage_cfg = st.secrets.get("storage", {})  # type: ignore[attr-defined]
+        except Exception:
+            storage_cfg = {}
+        local_root = storage_cfg.get("local_root")
+        self.local_root = Path(local_root) if local_root else LOCAL_ROOT
+
         self._prices_cache: dict[str, pd.DataFrame] = {}
         self.key_info: dict[str, str] = {"kind": _classify_key(key) if key else "service_role"}
 
-        avail, reason = supabase_available()
+        avail, _ = supabase_available()
         if self.force_supabase and not avail:
-            raise RuntimeError(f"Supabase required but unavailable: {reason}")
+            raise RuntimeError(
+                "Supabase required but unavailable. Set [supabase] url/key in secrets or unset supabase.force."
+            )
 
         if avail and create_client is not None:
             try:
@@ -199,13 +212,17 @@ class Storage:
                         self.bucket = None
                 if self.bucket is not None:
                     self.mode = "supabase"
+                else:
+                    self.mode = "local"
             except Exception as e:
                 if self.force_supabase:
                     raise RuntimeError(f"Supabase init failed: {e}")
                 self.mode = "local"
+        else:
+            self.mode = "local"
 
-        # Where local files are stored; tests may monkeypatch ``LOCAL_ROOT``
-        self.local_root = LOCAL_ROOT
+        if self.mode == "supabase":
+            self.local_root = None
 
     # The tests monkeypatch this method, so the implementation can be minimal.
     def read_parquet(self, path: str) -> pd.DataFrame:
@@ -319,11 +336,18 @@ class Storage:
 
     def info(self) -> str:
         """Return a short description of the storage configuration."""
-        return f"mode={self.mode} root={self.local_root}"
+        root = getattr(self, "local_root", None)
+        if self.mode == "local":
+            return f"mode={self.mode} root={root}"
+        return f"mode={self.mode} bucket={self.bucket_name}"
 
     def cache_salt(self) -> str:
-        """Return a string that changes when mode or URL changes."""
-        return f"mode={self.mode}|url={self.supabase_url or ''}"
+        """Return a string that changes when mode or Supabase URL changes."""
+        try:
+            url = (st.secrets.get("supabase", {}) or {}).get("url", "")
+        except Exception:
+            url = ""
+        return f"mode={self.mode}|url={url}"
 
     def selftest(self) -> dict[str, str | bool]:
         """Basic self-test used by the Streamlit diagnostics pane."""
