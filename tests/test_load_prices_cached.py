@@ -134,3 +134,23 @@ def test_load_prices_cached_old_positional_signature(monkeypatch):
     assert list(out["Ticker"].unique()) == ["AAA"]
     assert out.index.min() == start
     assert out.index.max() == end
+
+
+def test_load_prices_cached_empty_frame(monkeypatch):
+    s = stg.Storage()
+
+    def fake_read_parquet_df(self, path: str):
+        return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
+
+    st.cache_data.clear()
+    out = stg.load_prices_cached(
+        s,
+        cache_salt=s.cache_salt(),
+        tickers=["AAA"],
+        start=pd.Timestamp("2020-01-01"),
+        end=pd.Timestamp("2020-01-02"),
+    )
+
+    assert out.empty
