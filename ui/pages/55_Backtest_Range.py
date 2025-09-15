@@ -191,50 +191,38 @@ def render_page() -> None:
                 precedent_window=precedent_window,
             )
 
-            min_prior_bdays = 63
-            prior_components = [
-                min_prior_bdays,
-                vol_lookback,
-                atr_window,
-                sr_lookback,
-            ]
-            if use_precedent:
-                prior_components.append(precedent_lookback + precedent_window)
-            prior_needed = int(max(prior_components))
-            warmup_start = pd.Timestamp(start_date - BDay(prior_needed)).tz_localize(None)
-            forward_end = pd.Timestamp(end_date + BDay(horizon)).tz_localize(None)
-
-            coverage_info = {
-                "ui_start": str(start_date),
-                "ui_end": str(end_date),
-                "warmup_start": str(warmup_start),
-                "forward_end": str(forward_end),
-                "prior_needed_bdays": prior_needed,
-                "horizon_bdays": int(horizon),
-            }
-
-            df_days = load_prices_cached(
-                storage,
-                cache_salt=storage.cache_salt(),
-                tickers=["AAPL"],
-                start=start_date,
-                end=end_date,
+            prior_needed_bdays = int(
+                max(
+                    63,
+                    vol_lookback,
+                    atr_window,
+                    sr_lookback,
+                    (precedent_lookback if use_precedent else 0),
+                )
             )
-            df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
-            if df_days.empty:
-                st.info("No data loaded for backtest.")
+            warmup_start = (start_date - BDay(prior_needed_bdays + 3)).tz_localize(None)
+            forward_end = (end_date + BDay(horizon)).tz_localize(None)
+
+            date_index = pd.bdate_range(start_date, end_date)
+            if date_index.empty:
+                st.info("No business days in selected range.")
                 debug_panel("backtest")
                 return
-            date_list = list(pd.DatetimeIndex(df_days["date"]).sort_values())
+            date_list = list(date_index)
 
             members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
             members_ticker_upper = members["ticker"].astype(str).str.upper()
 
             active_tickers = set()
-            for D in date_list:
+            for D in date_index:
                 daily_members = members_on_date(members, D)["ticker"].dropna().tolist()
                 active_tickers.update(str(t).upper() for t in daily_members if t)
             active_tickers = sorted(active_tickers)
+
+            if not active_tickers:
+                st.info("No eligible tickers found in selected range.")
+                debug_panel("backtest")
+                return
 
             log(f"Preloading {len(active_tickers)} tickers…")
             with dbg.step("preload_prices"):
@@ -245,13 +233,40 @@ def render_page() -> None:
                     start=warmup_start,
                     end=forward_end,
                 )
-            if not prices_df.empty:
-                coverage_info.update(
-                    min_loaded=str(prices_df["date"].min()),
-                    max_loaded=str(prices_df["date"].max()),
-                )
-            else:
-                coverage_info.update(min_loaded=None, max_loaded=None)
+            coverage_info = {
+                "ui_start": str(start_date),
+                "ui_end": str(end_date),
+                "warmup_start": str(warmup_start),
+                "forward_end": str(forward_end),
+                "prior_needed_bdays": int(prior_needed_bdays),
+                "horizon_bdays": int(horizon),
+                "min_loaded": None,
+                "max_loaded": None,
+            }
+            if len(prices_df):
+                min_loaded = None
+                max_loaded = None
+                if isinstance(prices_df.index, pd.MultiIndex):
+                    date_levels = [
+                        i
+                        for i, name in enumerate(prices_df.index.names or [])
+                        if name and name.lower() in ("date", "timestamp")
+                    ]
+                    if date_levels:
+                        idx_vals = prices_df.index.get_level_values(date_levels[0])
+                        min_loaded = str(idx_vals.min())
+                        max_loaded = str(idx_vals.max())
+                if min_loaded is None and pd.api.types.is_datetime64_any_dtype(prices_df.index):
+                    min_loaded = str(prices_df.index.min())
+                    max_loaded = str(prices_df.index.max())
+                if min_loaded is None:
+                    for dc in ("date", "Date", "timestamp", "Timestamp"):
+                        if dc in prices_df.columns:
+                            dates = pd.to_datetime(prices_df[dc])
+                            min_loaded = str(dates.min())
+                            max_loaded = str(dates.max())
+                            break
+                coverage_info.update(min_loaded=min_loaded, max_loaded=max_loaded)
             dbg.event("coverage", **coverage_info)
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
@@ -307,6 +322,63 @@ def render_page() -> None:
             if prices_df.empty:
                 log("No prices loaded—check Storage bucket and paths (prices/*.parquet).")
                 return
+
+            def _first_trade_dates(df: pd.DataFrame) -> pd.Series:
+                if isinstance(df.index, pd.MultiIndex) and "Ticker" in df.index.names:
+                    ticker_level = df.index.names.index("Ticker")
+                    date_candidates = [
+                        i
+                        for i, name in enumerate(df.index.names or [])
+                        if i != ticker_level
+                        and isinstance(name, str)
+                        and name.lower() in ("date", "timestamp")
+                    ]
+                    if date_candidates:
+                        date_level = date_candidates[0]
+                    else:
+                        date_level = 0 if ticker_level != 0 else 1
+                    return df.groupby(level="Ticker").apply(
+                        lambda s: s.index.get_level_values(date_level).min()
+                    )
+                if "Ticker" not in df.columns:
+                    raise ValueError(
+                        "prices_df must have a 'Ticker' column or MultiIndex with 'Ticker'"
+                    )
+                if pd.api.types.is_datetime64_any_dtype(df.index):
+                    return df.reset_index().groupby("Ticker")["index"].min()
+                for dc in ("Date", "date", "Timestamp", "timestamp"):
+                    if dc in df.columns:
+                        return (
+                            df.assign(__d=pd.to_datetime(df[dc]))
+                            .groupby("Ticker")["__d"]
+                            .min()
+                        )
+                raise ValueError(
+                    "Could not find a date index or date column in prices_df"
+                )
+
+            first_dates_raw = _first_trade_dates(prices_df)
+            first_dates_df = first_dates_raw.to_frame(name="first_date").dropna()
+            first_dates_df["ticker"] = first_dates_df.index.map(lambda x: str(x).upper())
+            first_date_by_ticker = (
+                first_dates_df.groupby("ticker")["first_date"].min().sort_index()
+            )
+            requested_tickers = set(active_tickers)
+            first_date_by_ticker = first_date_by_ticker.loc[
+                ~first_date_by_ticker.index.duplicated()
+            ]
+            first_date_by_ticker = first_date_by_ticker.loc[
+                first_date_by_ticker.index.isin(requested_tickers)
+            ]
+            loaded_tickers = set(first_date_by_ticker.index)
+            missing = sorted(requested_tickers - loaded_tickers)
+            dbg.event(
+                "history_index",
+                requested=len(active_tickers),
+                loaded=len(loaded_tickers),
+                missing_count=len(missing),
+            )
+            first_date_map = first_date_by_ticker.to_dict()
 
             rows_before = len(prices_df)
             prices_df = (
@@ -377,26 +449,24 @@ def render_page() -> None:
                         daily_members = (
                             members_on_date(members, current_day)["ticker"].dropna().astype(str).str.upper()
                         )
-                        eligible_tickers = set()
-                        lacking_history = 0
+                        cutoff = current_day - BDay(prior_needed_bdays)
+                        eligible = []
                         for tk in daily_members:
-                            df_t = prices.get(tk)
-                            if df_t is None or df_t.empty:
-                                lacking_history += 1
-                                continue
-                            prior_count = int(df_t.index.searchsorted(current_day, side="left"))
-                            if prior_count >= prior_needed:
-                                eligible_tickers.add(tk)
-                            else:
-                                lacking_history += 1
-                        eligible_state["tickers"] = eligible_tickers
-                        if lacking_history and len(daily_members) > 0:
-                            dbg.event(
-                                "history_guard",
-                                date=str(current_day),
-                                eligible=len(eligible_tickers),
-                                lacking=int(lacking_history),
-                            )
+                            first_seen = first_date_map.get(tk)
+                            if first_seen is not None and first_seen <= cutoff:
+                                eligible.append(tk)
+                        eligible_state["tickers"] = set(eligible)
+                        eligible_count = len(eligible_state["tickers"])
+                        lacking = max(len(daily_members) - eligible_count, 0)
+                        dbg.event(
+                            "history_guard",
+                            date=str(current_day),
+                            eligible=eligible_count,
+                            lacking=int(lacking),
+                            cutoff=str(cutoff),
+                        )
+                        if not eligible_count:
+                            continue
 
                         cands, out, _fails, _stats = sigscan.scan_day(
                             storage, current_day, params
