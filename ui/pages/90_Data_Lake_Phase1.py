@@ -286,3 +286,27 @@ def render_data_lake_tab() -> None:
         st.warning(f"Sanity check failed: {e}")
 
     debug_panel("lake")
+
+with st.expander("🔎 Raw Supabase list() response (temporary debug)"):
+    try:
+        from data_lake.storage import Storage
+        s = Storage()
+        api = getattr(s, "supabase_client", None).storage.from_(s.bucket)
+        try:
+            resp = api.list("prices")
+        except TypeError:
+            resp = api.list(prefix="prices")
+        data = getattr(resp, "data", resp)
+        st.write({"resp_type": type(resp).__name__})
+        st.write("Has .data:", hasattr(resp, "data"))
+        if isinstance(data, (list, tuple)):
+            st.write("Count:", len(data))
+            st.write("Head raw:", data[:3])
+            st.write("Head names:", [ (d.get("name") if isinstance(d, dict) else getattr(d, "name", None)) for d in data[:10] ])
+        elif isinstance(data, dict):
+            st.json(data)
+        else:
+            st.write(data)
+    except Exception as e:
+        st.error(repr(e))
+
