@@ -388,6 +388,20 @@ def render_page() -> None:
             )
             rows_after = len(prices_df)
 
+            trading_index = pd.DatetimeIndex(prices_df.index.unique()).dropna()
+            try:
+                trading_index = trading_index.tz_localize(None)
+            except TypeError:
+                pass
+            trading_index = trading_index.sort_values()
+            date_list = [
+                d for d in trading_index if start_date <= d <= end_date
+            ]
+            if not date_list:
+                st.info("No trading days with price data in selected range.")
+                debug_panel("backtest")
+                return
+
             try:
                 close_wide = prices_df.pivot_table(
                     index=prices_df.index, columns="Ticker", values="Close", aggfunc="last"
