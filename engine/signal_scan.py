@@ -32,8 +32,7 @@ class ScanParams(TypedDict, total=False):
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
 def _load_members(storage: Storage, cache_salt: str) -> pd.DataFrame:
-    raw = storage.read_bytes("membership/sp500_members.parquet")
-    m = pd.read_parquet(io.BytesIO(raw))
+    m = storage.read_parquet_df("membership/sp500_members.parquet")
     m["start_date"] = pd.to_datetime(m["start_date"], errors="coerce", utc=True).dt.tz_localize(None)
     m["end_date"] = pd.to_datetime(m["end_date"], errors="coerce", utc=True).dt.tz_localize(None)
     return m
@@ -49,7 +48,7 @@ def members_on_date(m: pd.DataFrame, date: dt.date) -> pd.DataFrame:
 
 def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame | None:
     try:
-        df = storage.read_parquet(f"prices/{ticker}.parquet")
+        df = storage.read_parquet_df(f"prices/{ticker}.parquet")
         if "date" not in df.columns:
             df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)

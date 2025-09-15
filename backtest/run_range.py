@@ -11,7 +11,7 @@ from engine.signal_scan import scan_day, ScanParams
 
 def trading_days(storage: Storage, start: str, end: str) -> pd.DatetimeIndex:
     """Derive trading days from AAPL parquet dates."""
-    df = storage.read_parquet("prices/AAPL.parquet")
+    df = storage.read_parquet_df("prices/AAPL.parquet")
     if "date" not in df.columns:
         df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
