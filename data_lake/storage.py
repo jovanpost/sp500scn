@@ -118,7 +118,7 @@ class Storage:
     """Wrapper around local files or Supabase Storage."""
 
     def __init__(self, local_root: pathlib.Path | None = None, bucket: str | None = None):
-        self.local_root = (local_root or DEFAULT_LOCAL_ROOT).resolve()
+        self.local_root = (local_root or LOCAL_ROOT).resolve()
 
         try:
             supabase_cfg = st.secrets.get("supabase", {})  # type: ignore[assignment]
@@ -195,22 +195,32 @@ class Storage:
             return True
         return False
 
+    def supabase_available(self) -> bool:
+        """Return ``True`` if a Supabase client is configured."""
+        return self.supabase_client is not None
+
     # ------------------------------------------------------------------
     def _norm(self, path: str) -> pathlib.Path:
         return self.local_root / path
 
     # ------------------------------------------------------------------
     def list_prefix(self, prefix: str) -> List[str]:
-        if self.mode == "supabase" and self.supabase_client is not None:
-            r = self.supabase_client.storage.from_(self.bucket).list(prefix=prefix)
-            items = r or []
+        if self.mode == "supabase":
+            items: Iterable | None = None
+            norm = prefix.rstrip("/")
+            if self.supabase_client is not None:
+                resp = self.supabase_client.storage.from_(self.bucket).list(prefix=norm)
+                items = getattr(resp, "data", resp)  # handle APIResponse
+            elif hasattr(self.bucket, "list"):
+                resp = self.bucket.list(norm)
+                items = getattr(resp, "data", resp)
             names: List[str] = []
-            for item in items:
+            for item in items or []:
                 name = None
                 if isinstance(item, dict):
                     name = item.get("name") or item.get("Key")
                 else:
-                    name = getattr(item, "name", None)
+                    name = getattr(item, "name", None) or str(item)
                 if name:
                     names.append(f"{prefix.rstrip('/')}/{name}".lstrip("/"))
             return names
@@ -224,7 +234,9 @@ class Storage:
         return out
 
     def exists(self, path: str) -> bool:
-        if self.mode == "supabase" and self.supabase_client is not None:
+        if self.mode == "supabase" and (
+            self.supabase_client is not None or hasattr(self.bucket, "list")
+        ):
             parent = str(pathlib.Path(path).parent).rstrip("/") + "/"
             children = set(self.list_prefix(parent))
             return any(c.endswith(path) for c in children)
@@ -259,17 +271,12 @@ class Storage:
 
     # ------------------------------------------------------------------
     def diagnostics(self) -> dict[str, Any]:
-        sample: dict[str, Any] = {}
-        try:
-            sample["has_membership"] = self.exists("membership/sp500_members.parquet")
-            sample["has_AAPL"] = self.exists("prices/AAPL.parquet")
-        except Exception as e:
-            sample["err"] = repr(e)
+        """Return basic information about the current storage backend."""
         return {
             "mode": self.mode,
             "bucket": self.bucket if self.mode == "supabase" else None,
-            "supabase_ok": self.supabase_client is not None,
-            "sample": sample,
+            "local_root": str(self.local_root) if self.mode == "local" else None,
+            "supabase_available": self.supabase_available(),
         }
 
     def info(self) -> str:
@@ -284,23 +291,30 @@ class Storage:
         return {"ok": True, "mode": self.mode}
 
     def list_all(self, prefix: str) -> List[str]:
-        if self.mode == "supabase" and self.supabase_client is not None:
-            res = self.supabase_client.storage.from_(self.bucket).list(prefix)
-            items = res or []
+        if self.mode == "supabase":
+            norm = prefix.rstrip("/")
+            items: Iterable | None = None
+            if self.supabase_client is not None:
+                res = self.supabase_client.storage.from_(self.bucket).list(norm)
+                items = getattr(res, "data", res)
+            elif hasattr(self.bucket, "list"):
+                res = self.bucket.list(norm)
+                items = getattr(res, "data", res)
             out: List[str] = []
-            for it in items:
+            for it in items or []:
                 name = None
                 if isinstance(it, dict):
                     name = it.get("name")
                 else:
-                    name = getattr(it, "name", None)
+                    name = getattr(it, "name", None) or str(it)
                 if name:
-                    out.append(f"{prefix}/{name}")
+                    out.append(f"{norm}/{name}")
             return sorted(out)
-        base = self._norm(prefix)
+        norm = prefix.rstrip("/")
+        base = self._norm(norm)
         if not base.exists():
             return []
-        return [f"{prefix}/{p.name}" for p in sorted(base.iterdir()) if p.is_file()]
+        return [f"{norm}/{p.name}" for p in sorted(base.iterdir()) if p.is_file()]
 
     @classmethod
     def from_env(cls) -> "Storage":
@@ -371,7 +385,7 @@ def load_prices_cached(
         key = str(t).upper()
         if key not in _storage._prices_cache:
             try:
-                raw = _storage.read_parquet_df(f"prices/{key}.parquet")
+                raw = _storage.read_parquet(f"prices/{key}.parquet")
             except FileNotFoundError:
                 continue
             tidy = _tidy_prices(raw, key)

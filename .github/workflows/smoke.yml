@@ -17,4 +17,4 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-smoke.txt --trusted-host pypi.org --no-cache-dir
       - name: Test imports
-        run: python -c "import pandas, streamlit, tabulate; print('Imports OK')"
+        run: python -c "import pandas, streamlit, tabulate, supabase; print('Imports OK')"

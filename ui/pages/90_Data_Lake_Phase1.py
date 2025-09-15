@@ -52,7 +52,7 @@ def render_data_lake_tab() -> None:
     ok, reason = supabase_available()
     if storage.mode == "supabase":
         host = urlparse(storage.supabase_url or "").netloc
-        st.success(f"✅ Supabase mode ({host}, bucket: {storage.bucket_name})")
+        st.success(f"✅ Supabase mode ({host}, bucket: {storage.bucket})")
     elif storage.force_supabase:
         st.error(f"❌ Forced Supabase requested but unavailable: {reason}")
     else:
@@ -61,6 +61,14 @@ def render_data_lake_tab() -> None:
     if st.button("Clear data caches"):
         st.cache_data.clear()
         st.experimental_rerun()
+
+    st.markdown("### Sanity check")
+    if storage.exists("prices/AAPL.parquet"):
+        df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
+        st.dataframe(df.tail(5))
+        st.line_chart(df.set_index("date")["close"])
+    else:
+        st.warning("AAPL.parquet not found in storage.")
 
     with st.expander("Diagnostics"):
         st.caption(storage.info())
