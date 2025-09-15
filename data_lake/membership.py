@@ -63,8 +63,7 @@ def load_membership(
     if storage is None:
         storage = Storage()
     try:
-        data = storage.read_bytes("membership/sp500_members.parquet")
-        return pd.read_parquet(io.BytesIO(data))
+        return storage.read_parquet_df("membership/sp500_members.parquet")
     except Exception:
         preview_path = Path(__file__).with_name("sp500_members_preview.csv")
         if preview_path.exists():

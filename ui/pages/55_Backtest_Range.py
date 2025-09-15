@@ -48,9 +48,10 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 def render_page() -> None:
     st.header("📅 Backtest (range)")
     storage = Storage()
+    diag = storage.diagnostics()
     dbg = _get_dbg("backtest")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
-    st.caption(f"storage: {storage.info()} mode={storage.mode}")
+    st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
     if getattr(storage, "force_supabase", False) and storage.mode == "local":
         st.error(
             "Supabase is required but not available. Check secrets: [supabase] url/key, or disable supabase.force."

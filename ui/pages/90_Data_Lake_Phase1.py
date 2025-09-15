@@ -45,7 +45,9 @@ def render_data_lake_tab() -> None:
     if "auto_meta" not in st.session_state:
         st.session_state.auto_meta = {}
     storage = Storage()
+    diag = storage.diagnostics()
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+    st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
 
     ok, reason = supabase_available()
     if storage.mode == "supabase":
@@ -242,9 +244,7 @@ def render_data_lake_tab() -> None:
                 for res in summary["results"][:2]:
                     st.write(res)
                     if not res["error"] and storage.exists(res["path"]):
-                        df = pd.read_parquet(
-                            io.BytesIO(storage.read_bytes(res["path"]))
-                        )
+                        df = storage.read_parquet_df(res["path"])
                         st.dataframe(df.head())
         except Exception as e:  # pragma: no cover - UI
             st.exception(e)
@@ -261,7 +261,7 @@ def render_data_lake_tab() -> None:
             dbg.event("exists:AAPL", exists=exists)
         if exists:
             with dbg.step("load_sample_AAPL"):
-                df = pd.read_parquet(io.BytesIO(storage.read_bytes("prices/AAPL.parquet")))
+                df = storage.read_parquet_df("prices/AAPL.parquet")
                 dbg.event(
                     "sample_shape",
                     rows=len(df),
