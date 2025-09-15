@@ -4,12 +4,15 @@ import io
 import os
 import base64
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
 
 import pandas as pd
 import streamlit as st
+
+log = logging.getLogger(__name__)
 
 try:
     from supabase import Client, create_client  # type: ignore
@@ -315,7 +318,8 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     if df is None or df.empty:
         cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
         empty = pd.DataFrame(columns=cols)
-        empty.index.name = "date"
+        empty.index = pd.DatetimeIndex([], name="date")
+        log.debug("_tidy_prices: empty frame for %s", ticker)
         return empty
 
     working = df.copy()
