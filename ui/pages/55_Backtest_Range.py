@@ -50,6 +50,12 @@ def render_page() -> None:
     storage = Storage()
     dbg = _get_dbg("backtest")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+    st.caption(f"storage: {storage.info()} mode={storage.mode}")
+    if storage.force_supabase and storage.mode == "local":
+        st.error(
+            "Supabase required. App is configured to force Supabase; see Data Lake page for self-test."
+        )
+        return
 
     def form_submit_wrapper(label: str) -> bool:
         return st.form_submit_button(label)
@@ -208,7 +214,13 @@ def render_page() -> None:
 
             start_ts = start_date.normalize()
             end_ts = end_date.normalize()
-            df_days = load_prices_cached(storage, ["AAPL"], start_ts, end_ts)
+            df_days = load_prices_cached(
+                storage,
+                ["AAPL"],
+                start_ts,
+                end_ts,
+                cache_salt=storage.cache_salt(),
+            )
             df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
                 st.info("No data loaded for backtest.")
@@ -216,7 +228,7 @@ def render_page() -> None:
                 return
             date_list = list(pd.DatetimeIndex(df_days.index).sort_values())
 
-            members = sigscan._load_members(storage)
+            members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
 
             active_tickers = set()
             for D in date_list:
@@ -225,7 +237,13 @@ def render_page() -> None:
 
             log(f"Preloading {len(active_tickers)} tickers…")
             with dbg.step("preload_prices"):
-                prices_df = load_prices_cached(storage, active_tickers, start_ts, end_ts)
+                prices_df = load_prices_cached(
+                    storage,
+                    active_tickers,
+                    start_ts,
+                    end_ts,
+                    cache_salt=storage.cache_salt(),
+                )
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
                 "prices_loaded",
@@ -308,7 +326,7 @@ def render_page() -> None:
                 out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
                 return out[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
 
-            def _load_members_patched(_storage):
+            def _load_members_patched(_storage, cache_salt: str):
                 return members
 
             orig_load_prices = sigscan._load_prices

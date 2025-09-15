@@ -51,6 +51,12 @@ def render_page() -> None:
     storage = Storage()
     dbg = _get_dbg("scan")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+    st.caption(f"storage: {storage.info()} mode={storage.mode}")
+    if storage.force_supabase and storage.mode == "local":
+        st.error(
+            "Supabase required. App is configured to force Supabase; see Data Lake page for self-test."
+        )
+        return
 
     _d = st.date_input("Entry day (D)", value=dt.date.today())
     if isinstance(_d, (list, tuple)):
@@ -91,13 +97,19 @@ def render_page() -> None:
                 sr_min_ratio=sr_min_ratio,
             )
 
-            members = sigscan._load_members(storage)
+            members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
             active_tickers = members_on_date(members, D)["ticker"].dropna().unique().tolist()
             start_date = D - pd.Timedelta(days=365)
             end_date = D + pd.Timedelta(days=horizon)
             log(f"Preloading {len(active_tickers)} tickers…")
             with dbg.step("preload_prices"):
-                prices_df = load_prices_cached(storage, active_tickers, start_date, end_date)
+                prices_df = load_prices_cached(
+                    storage,
+                    active_tickers,
+                    start_date,
+                    end_date,
+                    cache_salt=storage.cache_salt(),
+                )
             prices_df = prices_df.loc[(prices_df.index >= start_date) & (prices_df.index <= end_date)]
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
@@ -152,7 +164,7 @@ def render_page() -> None:
                 out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
                 return out[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
 
-            def _load_members_patched(_storage):
+            def _load_members_patched(_storage, cache_salt: str):
                 return members
 
             orig_load_prices = sigscan._load_prices

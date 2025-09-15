@@ -12,7 +12,11 @@ def test_historical_tickers_union(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(membership, "load_membership", lambda storage=None: df)
+    monkeypatch.setattr(
+        membership,
+        "load_membership",
+        lambda storage=None, cache_salt="": df,
+    )
 
     assert membership.historical_tickers() == ["AAA", "BBB"]
 

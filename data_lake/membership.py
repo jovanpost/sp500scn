@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from .storage import Storage
+import streamlit as st
 
 URL = "https://raw.githubusercontent.com/fja05680/sp500/master/sp500_ticker_start_end.csv"
 
@@ -55,7 +56,10 @@ def _load_github() -> pd.DataFrame:
     return df
 
 
-def load_membership(storage: Storage | None = None) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+def load_membership(
+    storage: Storage | None = None, cache_salt: str = ""
+) -> pd.DataFrame:
     if storage is None:
         storage = Storage()
     try:
@@ -77,7 +81,9 @@ def historical_tickers(
     Used by the UI to decide which symbols to ingest.
     """
 
-    df = load_membership(storage)
+    if storage is None:
+        storage = Storage()
+    df = load_membership(storage, cache_salt=storage.cache_salt())
     if df is None or df.empty:
         return []
     tickers = (

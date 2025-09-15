@@ -1,18 +1,47 @@
 import base64
 import json
 import logging
+import os
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 import pandas as pd
 import streamlit as st
-from supabase import Client
+
+try:  # pragma: no cover - optional dependency
+    from supabase import Client, create_client
+except Exception:  # pragma: no cover - tests may not have package
+    Client = object  # type: ignore
+    create_client = None  # type: ignore
 
 
 # Default root for local storage operations
 DEFAULT_LOCAL_ROOT = Path("data")
 # Backwards compatibility for tests that patch ``LOCAL_ROOT``
 LOCAL_ROOT = DEFAULT_LOCAL_ROOT
+
+
+def _supabase_creds() -> Tuple[str, str] | None:
+    """Return Supabase (url, key) if configured."""
+    try:
+        cfg = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
+    except Exception:
+        cfg = {}
+    url = cfg.get("url") or os.getenv("SUPABASE_URL")
+    key = cfg.get("key") or os.getenv("SUPABASE_KEY")
+    if url and key:
+        return str(url), str(key)
+    return None
+
+
+def supabase_available() -> Tuple[bool, str]:
+    """Best-effort check that Supabase client can be created."""
+    creds = _supabase_creds()
+    if not creds:
+        return False, "missing credentials"
+    if create_client is None:
+        return False, "supabase package not installed"
+    return True, ""
 
 
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
@@ -123,14 +152,60 @@ class Storage:
     """
 
     def __init__(self) -> None:
+        self.log = logging.getLogger(__name__)
         self.mode = "local"
         self.bucket = None
-        # Where local files are stored; tests may monkeypatch ``LOCAL_ROOT``
+        self.supabase_client: Client | None = None
+        self.supabase_url: str | None = None
+        self.bucket_name = "lake"
+        try:
+            cfg = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
+        except Exception:
+            cfg = {}
+        self.force_supabase = bool(cfg.get("force")) or os.getenv("FORCE_SUPABASE") == "1"
+        self.auto_create_bucket = bool(cfg.get("auto_create_bucket", False))
+        creds = _supabase_creds()
+        if creds:
+            self.supabase_url, key = creds
+        else:
+            key = None
+        self.bucket_name = cfg.get("bucket", "lake")
         self.local_root = LOCAL_ROOT
         self._prices_cache: dict[str, pd.DataFrame] = {}
-        # mimic interface of production storage for UI diagnostics
-        self.key_info: dict[str, str] = {"kind": "service_role"}
-        self.log = logging.getLogger(__name__)
+        self.key_info: dict[str, str] = {"kind": _classify_key(key) if key else "service_role"}
+
+        avail, reason = supabase_available()
+        if self.force_supabase and not avail:
+            raise RuntimeError(f"Supabase required but unavailable: {reason}")
+
+        if avail and create_client is not None:
+            try:
+                self.supabase_client = create_client(self.supabase_url, key)  # type: ignore[arg-type]
+                self.bucket = self.supabase_client.storage.from_(self.bucket_name)
+                try:
+                    self.bucket.list("")
+                except Exception:
+                    if self.force_supabase and not self.auto_create_bucket:
+                        raise RuntimeError(
+                            f"Supabase bucket '{self.bucket_name}' missing."
+                        )
+                    if self.auto_create_bucket:
+                        try:
+                            self.supabase_client.storage.create_bucket(self.bucket_name)
+                        except Exception:
+                            pass
+                        self.bucket = self.supabase_client.storage.from_(self.bucket_name)
+                    else:
+                        self.bucket = None
+                if self.bucket is not None:
+                    self.mode = "supabase"
+            except Exception as e:
+                if self.force_supabase:
+                    raise RuntimeError(f"Supabase init failed: {e}")
+                self.mode = "local"
+
+        # Where local files are stored; tests may monkeypatch ``LOCAL_ROOT``
+        self.local_root = LOCAL_ROOT
 
     # The tests monkeypatch this method, so the implementation can be minimal.
     def read_parquet(self, path: str) -> pd.DataFrame:
@@ -140,15 +215,32 @@ class Storage:
     def read_bytes(self, path: str) -> bytes:
         """Return raw bytes from ``path``.
 
-        The test implementation only supports the local ``data`` directory,
-        but the method mirrors the interface of the production storage layer
-        used by the Streamlit app.
-        """
+        The method tries Supabase first when in ``supabase`` mode."""
 
+        if self.mode == "supabase" and self.bucket is not None:
+            try:
+                res = self.bucket.download(path)
+                data = getattr(res, "data", res)
+                if isinstance(data, bytes):
+                    return data
+                return bytes(data)  # type: ignore[arg-type]
+            except Exception as e:  # pragma: no cover - defensive
+                self.log.warning("download failed for '%s': %s", path, e)
         return (self.local_root / path).read_bytes()
 
     def write_bytes(self, path: str, data: bytes) -> None:
         """Write ``data`` to ``path`` under the local ``data`` directory."""
+
+        if self.mode == "supabase" and self.bucket is not None:
+            try:
+                self.bucket.upload(
+                    path,
+                    data,
+                    file_options={"upsert": True, "contentType": "application/octet-stream"},
+                )
+                return
+            except Exception as e:  # pragma: no cover - defensive
+                self.log.warning("upload failed for '%s': %s", path, e)
 
         dest = self.local_root / path
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -211,64 +303,27 @@ class Storage:
         return []
 
     def exists(self, path: str) -> bool:
-        """Check if ``path`` exists in Supabase Storage or locally."""
+        """Check if ``path`` exists by delegating to :func:`list_prefix`."""
 
-        try:
-            if self.local_root and self.mode == "local":
-                return (self.local_root / path).exists()
-
-            if self.bucket is not None:
-                parent, name = path.rsplit("/", 1) if "/" in path else ("", path)
-                try:
-                    items = self.bucket.list(parent.lstrip("/"))
-                    if isinstance(items, dict) and "data" in items:
-                        items = items["data"]
-                    elif hasattr(items, "data"):
-                        items = items.data
-                    for it in items or []:
-                        fname = getattr(it, "name", None)
-                        if fname is None and isinstance(it, dict):
-                            fname = it.get("name")
-                        if fname is None and isinstance(it, str):
-                            fname = it
-                        if fname == name:
-                            return True
-                    return False
-                except Exception:
-                    try:
-                        _ = self.read_bytes(path)
-                        return True
-                    except Exception:
-                        return False
-
-            supabase: Client | None = getattr(self, "supabase_client", None)
-            if supabase is not None:
-                try:
-                    resp = supabase.storage.from_("prices").list(path)
-                    items = getattr(resp, "data", resp) or []
-                    files = []
-                    for it in items:
-                        name = getattr(it, "name", None)
-                        if name is None and isinstance(it, dict):
-                            name = it.get("name")
-                        if name:
-                            files.append(name)
-                    return any(Path(path).name == f for f in files)
-                except Exception:
-                    try:
-                        _ = self.read_bytes(path)
-                        return True
-                    except Exception:
-                        return False
-
+        norm = path.lstrip("/").rstrip("/")
+        if norm == "":
             return False
-        except Exception as e:  # pragma: no cover - defensive
-            st.warning(f"Exists check for {path} failed: {str(e)[:50]}.")
-            return False
+        parent = norm.rsplit("/", 1)[0] + "/" if "/" in norm else ""
+        items = [p.rstrip("/") for p in self.list_prefix(parent)]
+        if norm in items:
+            return True
+        if path.endswith("/"):
+            # directory check
+            return any(it.startswith(norm + "/") for it in items)
+        return False
 
     def info(self) -> str:
         """Return a short description of the storage configuration."""
         return f"mode={self.mode} root={self.local_root}"
+
+    def cache_salt(self) -> str:
+        """Return a string that changes when mode or URL changes."""
+        return f"mode={self.mode}|url={self.supabase_url or ''}"
 
     def selftest(self) -> dict[str, str | bool]:
         """Basic self-test used by the Streamlit diagnostics pane."""
@@ -298,12 +353,13 @@ class Storage:
         return cls()
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
 def load_prices_cached(
     _storage: Storage,
     tickers: Iterable[str],
     start: pd.Timestamp,
     end: pd.Timestamp,
+    cache_salt: str,
 ) -> pd.DataFrame:
     """Load OHLCV history for ``tickers``.
 

@@ -30,7 +30,7 @@ def test_load_prices_index_tz_naive(monkeypatch):
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-04")
-    out = stg.load_prices_cached(s, ["AAA"], start, end)
+    out = stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
 
     assert out.index.tz is None
     assert out.index.equals(out.index.normalize())

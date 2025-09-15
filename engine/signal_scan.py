@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from data_lake.storage import Storage
+import streamlit as st
 from .replay import replay_trade
 from .filters import has_21d_precedent, atr_feasible
 
@@ -29,7 +30,8 @@ class ScanParams(TypedDict, total=False):
     precedent_window: int
 
 
-def _load_members(storage: Storage) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
+def _load_members(storage: Storage, cache_salt: str) -> pd.DataFrame:
     raw = storage.read_bytes("membership/sp500_members.parquet")
     m = pd.read_parquet(io.BytesIO(raw))
     m["start_date"] = pd.to_datetime(m["start_date"], errors="coerce", utc=True).dt.tz_localize(None)
@@ -146,7 +148,7 @@ def scan_day(
     Must produce same columns as the UI page.
     """
 
-    members = _load_members(storage)
+    members = _load_members(storage, cache_salt=storage.cache_salt())
     active = members_on_date(members, D.date())["ticker"].dropna().unique().tolist()
     total = len(active)
 
