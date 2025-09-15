@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import io
 import pandas as pd
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -22,15 +23,20 @@ def test_load_prices_index_tz_naive(monkeypatch):
     buf = io.BytesIO()
     df.to_parquet(buf, index=False)
 
-    def fake_read_parquet(self, path: str):
+    def fake_exists(self, path: str) -> bool:
+        return True
+
+    def fake_read_parquet_df(self, path: str):
         assert path == "prices/AAA.parquet"
         return pd.read_parquet(io.BytesIO(buf.getvalue()))
 
-    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
+    monkeypatch.setattr(stg.Storage, "exists", fake_exists)
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-04")
-    out = stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
+    out = stg.load_prices_cached(s, ["AAA"], start, end)
+    out = out.set_index("date")
 
     assert out.index.tz is None
     assert out.index.equals(out.index.normalize())

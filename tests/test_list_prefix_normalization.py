@@ -18,6 +18,20 @@ def test_list_prefix_normalizes_supabase_items():
             assert prefix == "membership"
             return APIResp([{"name": "sp500_members.parquet"}])
 
+    class Client:
+        class StorageAPI:
+            def __init__(self, bucket):
+                self._bucket = bucket
+
+            def from_(self, bucket_name):
+                assert bucket_name is st.bucket
+                return self._bucket
+
+        def __init__(self, bucket):
+            self.storage = Client.StorageAPI(bucket)
+
     st.bucket = Bucket()
+    st.supabase_client = Client(st.bucket)
+
     items = st.list_prefix("membership/")
     assert items == ["membership/sp500_members.parquet"]

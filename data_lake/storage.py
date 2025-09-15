@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import pathlib
+from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
 import pandas as pd
@@ -67,9 +68,13 @@ def _classify_key(key: str) -> str:
 
 
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
+    """Normalize OHLCV schema to Yahoo-style columns, add Ticker, and drop dupes (last wins)."""
+
     df = df.copy()
+    # If both exist, prefer "Ticker"
     if "ticker" in df.columns and "Ticker" in df.columns:
         df = df.drop(columns=["ticker"])
+
     rename_map = {
         "open": "Open",
         "high": "High",
@@ -80,37 +85,35 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
         "adj_close": "Adj Close",
         "adj close": "Adj Close",
         "ticker": "Ticker",
-        "Date": "date",
-        "Datetime": "date",
-        "timestamp": "date",
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
-    if "date" not in df.columns:
-        if isinstance(df.index, pd.DatetimeIndex):
-            df = df.reset_index().rename(columns={"index": "date"})
-        elif "time" in df.columns:
-            df = df.rename(columns={"time": "date"})
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        if getattr(df["date"].dtype, "tz", None) is not None:
-            df["date"] = df["date"].dt.tz_localize(None)
+
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         if col not in df.columns:
             df[col] = pd.NA
+
     if "Adj Close" not in df.columns:
         df["Adj Close"] = df.get("Close")
+
     if "Ticker" in df.columns:
         df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
     elif ticker is not None:
         df["Ticker"] = str(ticker).upper()
+    else:
+        df["Ticker"] = "UNKNOWN"
+
+    # index by date; strip tz and drop duplicates (keep last)
     if "date" in df.columns:
-        df = df.dropna(subset=["date"])
-    if "date" in df.columns and "Ticker" in df.columns:
-        df = df.sort_values("date").drop_duplicates(subset=["date", "Ticker"], keep="last")
-    cols = ["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
-    df = df[[c for c in cols if c in df.columns]]
-    if "date" in df.columns:
-        df = df.set_index("date")
+        idx = pd.to_datetime(df["date"], errors="coerce")
+        # if tz-aware, convert to naive
+        try:
+            idx = idx.dt.tz_localize(None)
+        except Exception:
+            pass
+        df = df.assign(date=idx).dropna(subset=["date"]).set_index("date")
+    df = df[["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]]
+    df = df[~df.index.duplicated(keep="last")]
+
     return df
 
 
@@ -204,43 +207,60 @@ class Storage:
         return self.local_root / path
 
     # ------------------------------------------------------------------
-    def list_prefix(self, prefix: str) -> List[str]:
-        if self.mode == "supabase":
-            items: Iterable | None = None
-            norm = prefix.rstrip("/")
-            if self.supabase_client is not None:
-                resp = self.supabase_client.storage.from_(self.bucket).list(prefix=norm)
-                items = getattr(resp, "data", resp)  # handle APIResponse
-            elif hasattr(self.bucket, "list"):
-                resp = self.bucket.list(norm)
-                items = getattr(resp, "data", resp)
-            names: List[str] = []
-            for item in items or []:
-                name = None
-                if isinstance(item, dict):
-                    name = item.get("name") or item.get("Key")
-                else:
-                    name = getattr(item, "name", None) or str(item)
-                if name:
-                    names.append(f"{prefix.rstrip('/')}/{name}".lstrip("/"))
-            return names
-        base = self._norm(prefix)
-        if not base.exists():
-            return []
-        out: List[str] = []
-        for p in base.rglob("*"):
-            if p.is_file():
-                out.append(str(p.relative_to(self.local_root)).replace("\\", "/"))
+    def list_prefix(self, prefix: str) -> list[str]:
+        """List files beneath `prefix` for both local and Supabase (SDK v2). Handles pagination and
+        SDK variants that either return a raw list or an object without `.data`."""
+        if self.mode == "local":
+            root = (self.local_root or LOCAL_ROOT).resolve()
+            base = (root / prefix).resolve()
+            if not base.exists():
+                return []
+            return [
+                str(p.relative_to(root)).replace("\\", "/")
+                for p in base.rglob("*") if p.is_file()
+            ]
+        norm_prefix = prefix.rstrip("/")
+        api = self.supabase_client.storage.from_(self.bucket)
+        out: list[str] = []
+        offset = 0
+        while True:
+            # Prefer path positional; some builds reject keyword "prefix"
+            try:
+                resp = api.list(norm_prefix)  # returns up to default page size (often 100)
+                data = getattr(resp, "data", resp)
+                # Try larger pages if supported
+                if isinstance(data, list) and len(data) == 0 and offset == 0:
+                    resp = api.list(norm_prefix, limit=1000, offset=0)
+                    data = getattr(resp, "data", resp)
+            except TypeError:
+                # Alternative signature
+                try:
+                    resp = api.list(norm_prefix, limit=1000, offset=offset)
+                except TypeError:
+                    resp = api.list(norm_prefix)
+                data = getattr(resp, "data", resp)
+
+            if not isinstance(data, list) or not data:
+                break
+            out.extend([
+                f"{norm_prefix}/{(d if isinstance(d, str) else d.get('name') if isinstance(d, dict) else getattr(d, 'name', ''))}"
+                for d in data
+            ])
+            # paginate if page size looks capped
+            page_size = len(data)
+            if page_size < 1000:
+                break
+            offset += page_size
         return out
 
     def exists(self, path: str) -> bool:
-        if self.mode == "supabase" and (
-            self.supabase_client is not None or hasattr(self.bucket, "list")
-        ):
-            parent = str(pathlib.Path(path).parent).rstrip("/") + "/"
-            children = set(self.list_prefix(parent))
-            return any(c.endswith(path) for c in children)
-        return self._norm(path).exists()
+        parent = str(Path(path).parent).replace("\\", "/")
+        name = Path(path).name
+        try:
+            children = self.list_prefix(parent)
+        except Exception:
+            return False
+        return any(Path(p).name == name for p in children)
 
     # ------------------------------------------------------------------
     def read_bytes(self, path: str) -> bytes:
@@ -321,90 +341,43 @@ class Storage:
         return cls()
 
 
-@st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
-def load_prices_cached(
-    _storage: Storage,
-    tickers: Iterable[str],
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    cache_salt: str,
-) -> pd.DataFrame:
-    supabase: Client | None = getattr(_storage, "supabase_client", None)
-    if supabase is not None and _storage.mode == "supabase":
-        prices: list[pd.DataFrame] = []
-        failed_tickers: set[str] = set()
-        PAGE_SIZE = 1000
-        for ticker in tickers:
-            try:
-                offset = 0
-                ticker_rows: list[dict] = []
-                while True:
-                    resp = (
-                        supabase.table("sp500_ohlcv")
-                        .select("ticker, date, open, high, low, close, volume")
-                        .eq("ticker", ticker)
-                        .gte("date", start.strftime("%Y-%m-%d"))
-                        .lte("date", end.strftime("%Y-%m-%d"))
-                        .order("date")
-                        .range(offset, offset + PAGE_SIZE - 1)
-                        .execute()
-                    )
-                    if not resp.data:
-                        break
-                    ticker_rows.extend(resp.data)
-                    if len(resp.data) < PAGE_SIZE:
-                        break
-                    offset += PAGE_SIZE
-                if ticker_rows:
-                    df = pd.DataFrame(ticker_rows)
-                    if not df.empty:
-                        df = _tidy_prices(df, ticker)
-                        prices.append(df)
-                    else:
-                        failed_tickers.add(ticker)
-                else:
-                    failed_tickers.add(ticker)
-            except Exception as e:  # pragma: no cover - defensive
-                failed_tickers.add(ticker)
-                st.error(f"Supabase query failed for {ticker}: {str(e)[:50]}.")
-        if failed_tickers:
-            st.warning(
-                f"Failed to load data for {len(failed_tickers)} tickers: {', '.join(sorted(failed_tickers))}"
-            )
-        if prices:
-            all_prices = pd.concat(prices, axis=0)
-            if not all_prices.columns.is_unique:
-                all_prices = all_prices.loc[:, ~all_prices.columns.duplicated(keep="first")]
-                st.info("Dropped duplicate columns in prices.")
-            return all_prices
-        st.error("No price data loaded from Supabase. Check table name or data availability.")
-        return pd.DataFrame()
-
+@st.cache_data(hash_funcs={Storage: lambda _: 0}, show_spinner=False)
+def load_prices_cached(_storage: "Storage",
+                       tickers: list[str],
+                       start: pd.Timestamp | None = None,
+                       end: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Load OHLCV for `tickers` from object storage Parquet files only.
+    Output columns: Open, High, Low, Close, Adj Close, Volume, Ticker; index is naive datetime."""
     frames: list[pd.DataFrame] = []
     for t in tickers:
-        key = str(t).upper()
-        if key not in _storage._prices_cache:
-            try:
-                raw = _storage.read_parquet(f"prices/{key}.parquet")
-            except FileNotFoundError:
-                continue
-            tidy = _tidy_prices(raw, key)
-            _storage._prices_cache[key] = tidy
-        df = _storage._prices_cache[key]
-        mask = pd.Series(True, index=df.index)
-        if start is not None:
-            mask &= df.index >= start
-        if end is not None:
-            mask &= df.index <= end
-        subset = df.loc[mask]
-        if not subset.empty:
-            frames.append(subset)
-    if frames:
-        return pd.concat(frames).sort_index()
-    return pd.DataFrame(
-        columns=["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
-    )
-
-
-print("load_prices_cached defined and imported successfully")
+        path = f"prices/{t}.parquet"
+        if not getattr(_storage, "exists", lambda *_: False)(path):
+            continue
+        try:
+            raw = _storage.read_parquet_df(path)
+        except Exception:
+            # fallback: bytes -> parquet
+            raw = pd.read_parquet(io.BytesIO(_storage.read_bytes(path)))
+        tidy = _tidy_prices(raw, ticker=t)
+        if start is not None or end is not None:
+            s = pd.Timestamp(start) if start is not None else None
+            e = pd.Timestamp(end) if end is not None else None
+            if s is not None:
+                tidy = tidy[tidy.index >= s]
+            if e is not None:
+                tidy = tidy[tidy.index <= e]
+        # keep date as a column too for downstream code that expects it
+        tidy = tidy.reset_index().rename(columns={"index": "date"})
+        frames.append(tidy)
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    # ensure expected dtypes
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    try:
+        out["date"] = out["date"].dt.tz_localize(None)
+    except Exception:
+        pass
+    out = out.dropna(subset=["date"])
+    return out
 

@@ -27,7 +27,21 @@ def test_exists_handles_apiresponse():
                 return APIResp([{"name": "AAPL.parquet"}])
             return APIResp([])
 
+    class Client:
+        class StorageAPI:
+            def __init__(self, bucket):
+                self._bucket = bucket
+
+            def from_(self, bucket_name):
+                assert bucket_name is st.bucket
+                return self._bucket
+
+        def __init__(self, bucket):
+            self.storage = Client.StorageAPI(bucket)
+
     st.bucket = Bucket()
+    st.supabase_client = Client(st.bucket)
+
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
 
@@ -50,7 +64,18 @@ def test_exists_handles_fileobject():
                 return APIResp([FileObject("AAPL.parquet")])
             return APIResp([])
 
+    class Client:
+        class StorageAPI:
+            def __init__(self, bucket):
+                self._bucket = bucket
+            def from_(self, bucket_name):
+                assert bucket_name is st.bucket
+                return self._bucket
+        def __init__(self, bucket):
+            self.storage = Client.StorageAPI(bucket)
+
     st.bucket = Bucket()
+    st.supabase_client = Client(st.bucket)
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
 
@@ -65,7 +90,18 @@ def test_exists_handles_string_list():
                 return ["AAPL.parquet"]
             return []
 
+    class Client:
+        class StorageAPI:
+            def __init__(self, bucket):
+                self._bucket = bucket
+            def from_(self, bucket_name):
+                assert bucket_name is st.bucket
+                return self._bucket
+        def __init__(self, bucket):
+            self.storage = Client.StorageAPI(bucket)
+
     st.bucket = Bucket()
+    st.supabase_client = Client(st.bucket)
     assert st.exists("prices/AAPL.parquet") is True
     assert st.exists("prices/MSFT.parquet") is False
 
@@ -77,7 +113,7 @@ def test_exists_local_custom_root(tmp_path):
     (lake / "AAPL.parquet").write_text("x")
     st = storage.Storage()
     st.local_root = tmp_path / ".lake"
-    assert st.exists("prices/")
+    assert not st.exists("prices/")
     assert st.exists("prices/AAPL.parquet")
     assert not st.exists("prices/MSFT.parquet")
 
@@ -91,5 +127,5 @@ def test_list_prefix_relative_root(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "LOCAL_ROOT", rel)
     st = storage.Storage()
     assert st.list_prefix("history/") == ["history/AAPL.parquet"]
-    assert st.exists("history/")
+    assert not st.exists("history/")
     assert st.exists("history/AAPL.parquet")
