@@ -52,7 +52,7 @@ def render_page() -> None:
     dbg = _get_dbg("scan")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
     st.caption(f"storage: {storage.info()} mode={storage.mode}")
-    if storage.force_supabase and storage.mode == "local":
+    if getattr(storage, "force_supabase", False) and getattr(storage, "mode", None) == "local":
         st.error(
             "Supabase required. App is configured to force Supabase; see Data Lake page for self-test."
         )
