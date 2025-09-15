@@ -48,7 +48,16 @@ def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
 def render_page() -> None:
     st.header("📅 Backtest (range)")
     storage = Storage()
-    diag = storage.diagnostics()
+    diag_fn = getattr(storage, "diagnostics", None)
+    if callable(diag_fn):
+        diag = diag_fn()
+    else:  # pragma: no cover - defensive fallback for older Storage versions
+        diag = {
+            "mode": getattr(storage, "mode", "unknown"),
+            "bucket": getattr(storage, "bucket", None),
+            "local_root": str(getattr(storage, "local_root", "")) if getattr(storage, "mode", None) == "local" else None,
+            "supabase_available": getattr(storage, "supabase_available", lambda: False)(),
+        }
     dbg = _get_dbg("backtest")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
     st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
