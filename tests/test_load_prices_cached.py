@@ -1,5 +1,6 @@
 import io
-import os, sys, pandas as pd
+import os, sys, io, pandas as pd
+import streamlit as st
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from data_lake import storage as stg
@@ -34,22 +35,27 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
     buf_b = io.BytesIO()
     df_b.to_parquet(buf_b, index=False)
 
-    def fake_read_parquet(self, path: str):
+    def fake_exists(self, path: str) -> bool:
+        return path in {"prices/AAA.parquet", "prices/BBB.parquet"}
+
+    def fake_read_parquet_df(self, path: str):
         if path == "prices/AAA.parquet":
             return pd.read_parquet(io.BytesIO(buf_a.getvalue()))
         if path == "prices/BBB.parquet":
             return pd.read_parquet(io.BytesIO(buf_b.getvalue()))
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
+    monkeypatch.setattr(stg.Storage, "exists", fake_exists)
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
 
+    st.cache_data.clear()
     out = stg.load_prices_cached(
         s,
         ["AAA", "BBB", "CCC"],
         pd.Timestamp("2020-01-02"),
         pd.Timestamp("2020-01-03"),
-        cache_salt=s.cache_salt(),
     )
+    out = out.set_index("date")
 
     assert sorted(out["Ticker"].unique()) == ["AAA", "BBB"]
     assert out.index.min() == pd.Timestamp("2020-01-02")
@@ -74,15 +80,20 @@ def test_load_prices_cached_uses_cache(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_read_parquet(self, path: str):
+    def fake_exists(self, path: str) -> bool:
+        return True
+
+    def fake_read_parquet_df(self, path: str):
         calls["n"] += 1
         return pd.read_parquet(io.BytesIO(buf.getvalue()))
 
-    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
+    monkeypatch.setattr(stg.Storage, "exists", fake_exists)
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-02")
-    stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
-    stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
+    st.cache_data.clear()
+    stg.load_prices_cached(s, ["AAA"], start, end)
+    stg.load_prices_cached(s, ["AAA"], start, end)
 
     assert calls["n"] == 1

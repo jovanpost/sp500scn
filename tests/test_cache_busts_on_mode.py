@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import io
 import pandas as pd
 import streamlit as st
 
@@ -8,9 +9,9 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from data_lake import storage as stg
 
 
-def test_cache_busts_on_mode(monkeypatch):
+def test_cache_reuses_loaded_prices(monkeypatch):
     st.cache_data.clear()
-    s1 = stg.Storage()
+    s = stg.Storage()
 
     df = pd.DataFrame(
         {
@@ -27,18 +28,20 @@ def test_cache_busts_on_mode(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_read_parquet(self, path: str):
+    def fake_exists(self, path: str) -> bool:
+        return True
+
+    def fake_read_parquet_df(self, path: str):
         calls["n"] += 1
         return pd.read_parquet(io.BytesIO(buf.getvalue()))
 
-    monkeypatch.setattr(stg.Storage, "read_parquet", fake_read_parquet)
+    monkeypatch.setattr(stg.Storage, "exists", fake_exists)
+    monkeypatch.setattr(stg.Storage, "read_parquet_df", fake_read_parquet_df)
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-02")
 
-    stg.load_prices_cached(s1, ["AAA"], start, end, cache_salt="mode=local")
-    stg.load_prices_cached(s1, ["AAA"], start, end, cache_salt="mode=local")
-    s2 = stg.Storage()
-    stg.load_prices_cached(s2, ["AAA"], start, end, cache_salt="mode=supabase")
+    stg.load_prices_cached(s, ["AAA"], start, end)
+    stg.load_prices_cached(s, ["AAA"], start, end)
 
-    assert calls["n"] == 2
+    assert calls["n"] == 1

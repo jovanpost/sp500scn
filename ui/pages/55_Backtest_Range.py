@@ -229,14 +229,13 @@ def render_page() -> None:
                 ["AAPL"],
                 start_ts,
                 end_ts,
-                cache_salt=storage.cache_salt(),
             )
             df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
                 st.info("No data loaded for backtest.")
                 debug_panel("backtest")
                 return
-            date_list = list(pd.DatetimeIndex(df_days.index).sort_values())
+            date_list = list(pd.DatetimeIndex(df_days["date"]).sort_values())
 
             members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
 
@@ -252,49 +251,38 @@ def render_page() -> None:
                     active_tickers,
                     start_ts,
                     end_ts,
-                    cache_salt=storage.cache_salt(),
                 )
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
                 "prices_loaded",
                 requested=len(active_tickers),
                 loaded=loaded,
-                index_dtype=str(getattr(prices_df.index, "dtype", "")),
-                tz=str(getattr(getattr(prices_df.index, "tz", None), "zone", None)),
-                min=str(prices_df.index.min() if not prices_df.empty else None),
-                max=str(prices_df.index.max() if not prices_df.empty else None),
+                index_dtype=str(prices_df["date"].dtype if not prices_df.empty else ""),
+                tz=str(getattr(getattr(prices_df["date"], "dt", None), "tz", None) if not prices_df.empty else None),
+                min=str(prices_df["date"].min() if not prices_df.empty else None),
+                max=str(prices_df["date"].max() if not prices_df.empty else None),
             )
-            with st.expander("\U0001F50E Data preflight (debug)"):
+            with st.expander("\U0001F50E Data preflight (debug)", expanded=False):
                 st.write(f"Tickers requested: {len(active_tickers)}")
-                sample_check = active_tickers[:5]
-                presence = {}
-                for t in sample_check:
-                    p = f"prices/{t}.parquet"
-                    try:
-                        presence[t] = bool(getattr(storage, "exists", None) and storage.exists(p))
-                    except Exception as e:
-                        presence[t] = f"exists() error: {e}"
-                st.write({"presence": presence})
-                loaded = prices_df.get("Ticker").unique().tolist() if not prices_df.empty else []
-                st.write(f"Loaded series: {len(loaded)}")
-                if not prices_df.empty:
-                    st.write(
-                        {
-                            "index_dtype": str(prices_df.index.dtype),
-                            "tz": getattr(prices_df.index, "tz", None),
-                            "min": prices_df.index.min(),
-                            "max": prices_df.index.max(),
-                        }
-                    )
+                if prices_df.empty:
+                    st.warning("No prices loaded from storage.")
+                else:
+                    cols = prices_df.columns.tolist()
+                    have_ticker = "Ticker" in cols
+                    loaded = sorted(prices_df["Ticker"].unique()) if have_ticker else []
+                    st.write(f"Loaded series: {len(loaded)}")
+                    # sample by first loaded ticker
+                    if loaded:
+                        t0 = loaded[0]
+                        df0 = prices_df.loc[prices_df["Ticker"] == t0].drop(columns=["Ticker"], errors="ignore")
+                        st.write({"sample": t0,
+                                  "rows": df0.shape[0],
+                                  "range": [str(df0["date"].min()), str(df0["date"].max())]})
             if prices_df.empty:
-                log(
-                    "No data loaded for backtest. Check presence above (exists) and list_prefix in Data Lake tab."
-                )
-                debug_panel("backtest")
-                st.stop()
+                log("No prices loaded—check Storage bucket and paths (prices/*.parquet).")
+                return
 
             rows_before = len(prices_df)
-            prices_df = prices_df.reset_index(names="date")
             prices_df = (
                 prices_df.drop_duplicates(subset=["Ticker", "date"], keep="last")
                 .set_index("date")

@@ -108,9 +108,10 @@ def render_page() -> None:
                     active_tickers,
                     start_date,
                     end_date,
-                    cache_salt=storage.cache_salt(),
                 )
-            prices_df = prices_df.loc[(prices_df.index >= start_date) & (prices_df.index <= end_date)]
+            if not prices_df.empty:
+                prices_df = prices_df.set_index("date").sort_index()
+                prices_df = prices_df.loc[(prices_df.index >= start_date) & (prices_df.index <= end_date)]
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
                 "prices_loaded",

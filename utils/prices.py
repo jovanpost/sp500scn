@@ -20,9 +20,11 @@ def fetch_history(
     if not ticker:
         return pd.DataFrame(columns=cols)
     s = Storage.from_env()
-    df = load_prices_cached(s, [ticker], start, end, cache_salt=s.cache_salt())
+    df = load_prices_cached(s, [ticker], start, end)
     if "Ticker" in df.columns:
         df = df[df["Ticker"] == ticker]
     if df.empty:
         return pd.DataFrame(columns=cols)
+    if "date" in df.columns:
+        df = df.set_index("date").sort_index()
     return df[cols].copy()
