@@ -4,11 +4,12 @@ import io
 from datetime import date
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
-from data_lake.storage import Storage
+from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
 from data_lake.ingest import ingest_batch
 from data_lake.schemas import IngestJob
@@ -45,6 +46,20 @@ def render_data_lake_tab() -> None:
         st.session_state.auto_meta = {}
     storage = Storage()
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+
+    ok, reason = supabase_available()
+    if storage.mode == "supabase":
+        host = urlparse(storage.supabase_url or "").netloc
+        st.success(f"✅ Supabase mode ({host}, bucket: {storage.bucket_name})")
+    elif storage.force_supabase:
+        st.error(f"❌ Forced Supabase requested but unavailable: {reason}")
+    else:
+        st.info("Using local mode")
+
+    if st.button("Clear data caches"):
+        st.cache_data.clear()
+        st.experimental_rerun()
+
     with st.expander("Diagnostics"):
         st.caption(storage.info())
         if st.button("Run Supabase self-test"):
@@ -65,7 +80,7 @@ def render_data_lake_tab() -> None:
                 summary = build_membership(storage)
                 progress.progress(100)
             st.success(summary)
-            df = load_membership(storage)
+            df = load_membership(storage, cache_salt=storage.cache_salt())
             st.write(
                 {
                     "rows": len(df),
@@ -80,7 +95,7 @@ def render_data_lake_tab() -> None:
 
     st.markdown("### Prices coverage")
     try:
-        mdf = load_membership(storage)
+        mdf = load_membership(storage, cache_salt=storage.cache_salt())
         scope = st.radio(
             "Scope", ["Historical (since 1996)", "Current only"], horizontal=True
         )
@@ -210,7 +225,7 @@ def render_data_lake_tab() -> None:
     dry_run = st.checkbox("dry run", value=False)
     if st.button("Ingest prices (batch)"):
         try:
-            membership_df = load_membership(storage)
+            membership_df = load_membership(storage, cache_salt=storage.cache_salt())
             tickers = list(membership_df["ticker"].unique())[: int(max_tickers)]
             jobs: list[IngestJob] = [
                 {"ticker": t, "start": str(start), "end": str(end)} for t in tickers

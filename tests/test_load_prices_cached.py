@@ -48,6 +48,7 @@ def test_load_prices_cached_concat_and_filter(monkeypatch):
         ["AAA", "BBB", "CCC"],
         pd.Timestamp("2020-01-02"),
         pd.Timestamp("2020-01-03"),
+        cache_salt=s.cache_salt(),
     )
 
     assert sorted(out["Ticker"].unique()) == ["AAA", "BBB"]
@@ -81,7 +82,7 @@ def test_load_prices_cached_uses_cache(monkeypatch):
 
     start = pd.Timestamp("2020-01-01")
     end = pd.Timestamp("2020-01-02")
-    stg.load_prices_cached(s, ["AAA"], start, end)
-    stg.load_prices_cached(s, ["AAA"], start, end)
+    stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
+    stg.load_prices_cached(s, ["AAA"], start, end, cache_salt=s.cache_salt())
 
     assert calls["n"] == 1
