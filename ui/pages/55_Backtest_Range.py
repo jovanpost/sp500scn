@@ -10,39 +10,7 @@ import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
-
-
-def _render_df_with_copy(title: str, df: pd.DataFrame, key_prefix: str) -> None:
-    st.subheader(title)
-    if df is None or df.empty:
-        st.info("No data")
-        return
-
-    # visible table
-    st.dataframe(df, width="stretch")
-
-    # text for controls
-    csv_buf = io.StringIO()
-    df.to_csv(csv_buf, index=False)
-    csv_txt = csv_buf.getvalue()
-    md_txt = df.to_markdown(index=False)
-
-    # download
-    st.download_button(
-        label="\u2b07\ufe0f Download CSV",
-        data=csv_txt.encode("utf-8"),
-        file_name=f"{key_prefix}.csv",
-        mime="text/csv",
-        key=f"{key_prefix}_dl",
-    )
-
-    # copyable textarea
-    st.text_area(
-        "Copy Markdown",
-        value=md_txt,
-        height=160,
-        key=f"{key_prefix}_copy",
-    )
+from ui.components.tables import show_df
 
 
 def render_page() -> None:
@@ -383,6 +351,7 @@ def render_page() -> None:
                             log(f"{pd.Timestamp(D).date()} → {cand_count} candidates")
 
                     trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+                    trades_df = trades_df.reset_index(drop=True)
                     hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
                     summary = {
                         "total_days": int(total_days),
@@ -430,14 +399,11 @@ def render_page() -> None:
     save_path = st.session_state.get("bt_save_path")
 
     if summary is not None:
-        st.subheader("Summary")
-        st.dataframe(pd.DataFrame([summary]), key="bt_summary_df")
+        summary_df = pd.DataFrame([summary])
+        show_df("Summary", summary_df, "bt_summary")
 
     if trades_df is not None:
-        if trades_df.empty:
-            st.info("No trades found in this range.")
-        else:
-            _render_df_with_copy("Trades", trades_df, "bt_trades")
+        show_df("Trades", trades_df, "bt_trades")
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
