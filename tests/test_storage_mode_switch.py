@@ -39,6 +39,7 @@ def test_cache_salt_changes_with_url(monkeypatch):
         {"supabase": {"url": "https://a.supabase.co", "key": "k", "force": True}},
     )
     s1 = stg.Storage()
+    salt1 = s1.cache_salt()
 
     monkeypatch.setattr(
         st,
@@ -48,4 +49,4 @@ def test_cache_salt_changes_with_url(monkeypatch):
     s2 = stg.Storage()
 
     assert s1.mode == s2.mode == "supabase"
-    assert s1.cache_salt() != s2.cache_salt()
+    assert salt1 != s2.cache_salt()
