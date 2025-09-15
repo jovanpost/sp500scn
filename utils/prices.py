@@ -20,7 +20,13 @@ def fetch_history(
     if not ticker:
         return pd.DataFrame(columns=cols)
     s = Storage.from_env()
-    df = load_prices_cached(s, [ticker], start, end)
+    df = load_prices_cached(
+        s,
+        cache_salt=s.cache_salt(),
+        tickers=[ticker],
+        start=start,
+        end=end,
+    )
     if "Ticker" in df.columns:
         df = df[df["Ticker"] == ticker]
     if df.empty:

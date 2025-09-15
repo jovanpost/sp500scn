@@ -105,9 +105,10 @@ def render_page() -> None:
             with dbg.step("preload_prices"):
                 prices_df = load_prices_cached(
                     storage,
-                    active_tickers,
-                    start_date,
-                    end_date,
+                    cache_salt=storage.cache_salt(),
+                    tickers=active_tickers,
+                    start=start_date,
+                    end=end_date,
                 )
             if not prices_df.empty:
                 prices_df = prices_df.set_index("date").sort_index()
