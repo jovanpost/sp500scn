@@ -222,14 +222,12 @@ def render_page() -> None:
                 precedent_window=precedent_window,
             )
 
-            start_ts = start_date.normalize()
-            end_ts = end_date.normalize()
             df_days = load_prices_cached(
                 storage,
                 cache_salt=storage.cache_salt(),
                 tickers=["AAPL"],
-                start=start_ts,
-                end=end_ts,
+                start=start_date,
+                end=end_date,
             )
             df_days = df_days[df_days.get("Ticker") == "AAPL"].drop(columns=["Ticker"], errors="ignore")
             if df_days.empty:
@@ -251,8 +249,8 @@ def render_page() -> None:
                     storage,
                     cache_salt=storage.cache_salt(),
                     tickers=active_tickers,
-                    start=start_ts,
-                    end=end_ts,
+                    start=start_date,
+                    end=end_date,
                 )
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
@@ -265,21 +263,46 @@ def render_page() -> None:
                 max=str(prices_df["date"].max() if not prices_df.empty else None),
             )
             with st.expander("\U0001F50E Data preflight (debug)", expanded=False):
-                st.write(f"Tickers requested: {len(active_tickers)}")
+                requested = len(active_tickers)
+                loaded_list = (
+                    sorted(prices_df["Ticker"].dropna().unique().tolist())
+                    if not prices_df.empty and "Ticker" in prices_df.columns
+                    else []
+                )
+                st.write(f"Tickers requested: {requested}")
+                st.write(f"Loaded series: {len(loaded_list)} / {requested}")
                 if prices_df.empty:
                     st.warning("No prices loaded from storage.")
+                    missing_examples: list[str] = []
+                    for ticker in active_tickers:
+                        path = f"prices/{ticker}.parquet"
+                        try:
+                            if not storage.exists(path):
+                                missing_examples.append(path)
+                        except Exception:
+                            missing_examples.append(path)
+                        if len(missing_examples) >= 5:
+                            break
+                    if missing_examples:
+                        st.caption("Missing examples (first 5):")
+                        st.code("\n".join(missing_examples))
                 else:
-                    cols = prices_df.columns.tolist()
-                    have_ticker = "Ticker" in cols
-                    loaded = sorted(prices_df["Ticker"].unique()) if have_ticker else []
-                    st.write(f"Loaded series: {len(loaded)}")
-                    # sample by first loaded ticker
-                    if loaded:
-                        t0 = loaded[0]
-                        df0 = prices_df.loc[prices_df["Ticker"] == t0].drop(columns=["Ticker"], errors="ignore")
-                        st.write({"sample": t0,
-                                  "rows": df0.shape[0],
-                                  "range": [str(df0["date"].min()), str(df0["date"].max())]})
+                    if loaded_list:
+                        sample_ticker = loaded_list[0]
+                        df0 = (
+                            prices_df.loc[prices_df["Ticker"] == sample_ticker]
+                            .drop(columns=["Ticker"], errors="ignore")
+                        )
+                        st.write(
+                            {
+                                "sample": sample_ticker,
+                                "rows": int(df0.shape[0]),
+                                "range": [
+                                    str(df0["date"].min()),
+                                    str(df0["date"].max()),
+                                ],
+                            }
+                        )
             if prices_df.empty:
                 log("No prices loaded—check Storage bucket and paths (prices/*.parquet).")
                 return

@@ -1,5 +1,11 @@
+import base64
+import json
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 from data_lake.storage import _classify_key
-import base64, json
 
 def make_jwt(role: str) -> str:
     payload = base64.urlsafe_b64encode(json.dumps({"role": role}).encode()).decode().rstrip("=")
