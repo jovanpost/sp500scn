@@ -1,5 +1,8 @@
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import BDay
+
+from .replay import _col
 
 def _calc_atr(series_h, series_l, series_c, window: int) -> pd.Series:
     cprev = series_c.shift(1)
@@ -31,6 +34,53 @@ def has_21d_precedent(df: pd.DataFrame, asof_idx: int, required_pct: float,
             continue
         max_fwd_high = np.max(highs[t+1:end])
         if base > 0 and (max_fwd_high / base - 1.0) >= required_pct:
+            return True
+    return False
+
+
+def precedent_ok_pct_target(
+    prices_one_ticker: pd.DataFrame,
+    asof_date: pd.Timestamp,
+    tp_pct: float,
+    lookback_bdays: int,
+    window_bdays: int,
+) -> bool:
+    """Check if a percent target was hit in the recent past."""
+
+    if pd.isna(tp_pct):
+        return False
+
+    prices = prices_one_ticker.copy()
+    prices.index = pd.to_datetime(prices.index).tz_localize(None)
+    prices = prices.sort_index()
+
+    asof_date = pd.Timestamp(asof_date).tz_localize(None)
+
+    hc = _col(prices, "high")
+    oc = _col(prices, "open")
+
+    start_lb = asof_date - BDay(lookback_bdays + window_bdays)
+    past = prices.loc[(prices.index >= start_lb) & (prices.index < asof_date)]
+    if past.empty:
+        return False
+
+    bdays = past.index.unique()
+    if len(bdays) < window_bdays + 1:
+        return False
+
+    starts = pd.bdate_range(asof_date - BDay(lookback_bdays), asof_date - BDay(1))
+    starts = [s for s in starts if s in bdays]
+
+    for S in starts:
+        entry_vals = past.loc[S, oc]
+        if isinstance(entry_vals, pd.Series):
+            entry_open = float(entry_vals.iloc[-1])
+        else:
+            entry_open = float(entry_vals)
+        target_abs = entry_open * (1.0 + tp_pct / 100.0)
+        endS = S + BDay(window_bdays)
+        fwd = prices.loc[(prices.index > S) & (prices.index <= endS)]
+        if not fwd.empty and (fwd[hc] >= target_abs).any():
             return True
     return False
 
