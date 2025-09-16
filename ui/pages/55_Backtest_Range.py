@@ -159,31 +159,6 @@ def render_page() -> None:
                     key="bt_prec_min_hits",
                 )
             )
-            with st.expander("Precedent logging", expanded=False):
-                log_precedent_details = st.checkbox(
-                    "Log precedent details",
-                    value=True,
-                    key="bt_log_precedent_details",
-                )
-                log_precedent_include_misses = st.checkbox(
-                    "Include misses in precedent log",
-                    value=True,
-                    key="bt_log_precedent_include_misses",
-                )
-                precedent_details_limit = int(
-                    st.number_input(
-                        "Precedent details limit",
-                        min_value=1,
-                        value=300,
-                        step=10,
-                        key="bt_prec_details_limit",
-                    )
-                )
-                write_precedent_events_table = st.checkbox(
-                    "Write precedent events table",
-                    value=False,
-                    key="bt_write_precedent_events",
-                )
             exit_model = st.selectbox(
                 "Exit model",
                 options=("pct_tp_only", "sr_tp_vs_stop"),
@@ -201,7 +176,6 @@ def render_page() -> None:
         status, prog, log = status_block("Backtest running…", key_prefix="bt")
 
         try:
-            st.session_state["__debug_extra_backtest"] = {}
             params: ScanParams = {
                 "min_close_up_pct": min_close_up_pct,
                 "min_vol_multiple": min_vol_multiple,
@@ -216,10 +190,6 @@ def render_page() -> None:
                 "precedent_lookback": precedent_lookback,
                 "precedent_window": precedent_window,
                 "min_precedent_hits": min_precedent_hits,
-                "log_precedent_details": log_precedent_details,
-                "log_precedent_include_misses": log_precedent_include_misses,
-                "precedent_details_limit": precedent_details_limit,
-                "write_precedent_events_table": write_precedent_events_table,
                 "exit_model": exit_model,
             }
             dbg.set_params(
@@ -238,10 +208,6 @@ def render_page() -> None:
                 precedent_lookback=precedent_lookback,
                 precedent_window=precedent_window,
                 min_precedent_hits=min_precedent_hits,
-                log_precedent_details=log_precedent_details,
-                log_precedent_include_misses=log_precedent_include_misses,
-                precedent_details_limit=precedent_details_limit,
-                write_precedent_events_table=write_precedent_events_table,
                 exit_model=exit_model,
             )
 
@@ -507,7 +473,6 @@ def render_page() -> None:
             try:
                 trades_df = pd.DataFrame()
                 summary: Dict[str, float] = {}
-                last_stats: Dict[str, Any] = {}
                 with dbg.step("run_backtest"):
                     results = []
                     days_with_candidates = 0
@@ -537,10 +502,9 @@ def render_page() -> None:
                         if not eligible_count:
                             continue
 
-                        cands, out, _fails, stats_day = sigscan.scan_day(
+                        cands, out, _fails, _stats = sigscan.scan_day(
                             storage, current_day, params
                         )
-                        last_stats = stats_day or {}
                         cand_count = int(len(cands))
                         if cand_count:
                             days_with_candidates += 1
@@ -575,7 +539,6 @@ def render_page() -> None:
 
                 st.session_state["bt_trades"] = trades_df
                 st.session_state["bt_summary"] = summary
-                st.session_state["__debug_extra_backtest"] = last_stats
 
                 if save_outcomes and not trades_df.empty:
                     run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
