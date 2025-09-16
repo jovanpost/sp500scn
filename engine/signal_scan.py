@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import datetime as dt
 from typing import TypedDict, Tuple, List, Dict, Any, Callable
 
 import numpy as np
 import pandas as pd
+from pandas.tseries.offsets import BDay
 
 from data_lake.storage import Storage
 import streamlit as st
 from .replay import replay_trade, simulate_pct_target_only
-from .filters import atr_feasible, precedent_hits_pct_target
+from .filters import atr_feasible
+from .utils_precedent import compute_precedent_hit_details
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +178,7 @@ def scan_day(
     stats = {"universe": len(active), "loaded": 0, "candidates": 0}
     prec_hit_values: List[int] = []
     prec_fail_count = 0
+    events: List[Dict[str, Any]] = []
 
     for idx, t in enumerate(active, 1):
         try:
@@ -214,38 +218,40 @@ def scan_day(
                 and (not np.isnan(m["sr_ratio"]) and m["sr_ratio"] >= sr_min)
             ):
                 tp_halfway_pct = m.get("tp_halfway_pct")
-                required_pct = tp_halfway_pct
-                tp_pct_percent = (
-                    float(required_pct) * 100.0
-                    if required_pct is not None and not np.isnan(required_pct)
-                    else float("nan")
-                )
-                hits = 0
-                prec_ok = True
                 tp_value = (
-                    float(required_pct)
-                    if required_pct is not None and not np.isnan(required_pct)
+                    float(tp_halfway_pct)
+                    if tp_halfway_pct is not None and not np.isnan(tp_halfway_pct)
                     else float("nan")
                 )
+                tp_pct_percent = (
+                    float(tp_value) * 100.0 if not pd.isna(tp_value) else float("nan")
+                )
+                hits_count = 0
+                hits_details: List[Dict[str, Any]] = []
+                if not pd.isna(tp_value):
+                    hits_count, hits_details = compute_precedent_hit_details(
+                        prices_one_ticker=df_idx,
+                        asof_date=pd.Timestamp(D_ts),
+                        tp_value=tp_value,
+                        lookback_bdays=prec_lookback,
+                        window_bdays=prec_window,
+                    )
+                hits_count_int = int(hits_count)
+                hits_json = json.dumps(hits_details, separators=(",", ":"), ensure_ascii=False)
+                hits_dates = ",".join(e["date"] for e in hits_details)
+                row_prec_ok = int(hits_count_int >= min_prec_hits) if not pd.isna(tp_value) else 0
+                prec_ok = bool(row_prec_ok) if not pd.isna(tp_value) else False
                 if use_precedent:
                     if pd.isna(tp_value):
                         prec_ok = False
                         prec_fail_count += 1
                     else:
-                        hits = precedent_hits_pct_target(
-                            df_idx,
-                            pd.Timestamp(D_ts),
-                            tp_value,
-                            lookback_bdays=prec_lookback,
-                            window_bdays=prec_window,
-                        )
-                        prec_hit_values.append(int(hits))
-                        prec_ok = hits >= min_prec_hits
+                        prec_hit_values.append(hits_count_int)
                         if not prec_ok:
                             prec_fail_count += 1
                 atr_ok = atr_feasible(
-                    df, dm1, required_pct, atr_window
-                ) if (required_pct is not None and not np.isnan(required_pct)) else False
+                    df, dm1, tp_value, atr_window
+                ) if not pd.isna(tp_value) else False
                 reasons: List[str] = []
                 if use_precedent and not prec_ok:
                     reasons.append("precedent_fail")
@@ -255,8 +261,10 @@ def scan_day(
                 row = {
                     "ticker": t,
                     **m,
-                    "precedent_hits": int(hits),
-                    "precedent_ok": int(prec_ok),
+                    "precedent_hits": hits_count_int,
+                    "precedent_ok": row_prec_ok,
+                    "precedent_details_hits": hits_json,
+                    "precedent_hit_start_dates": hits_dates,
                     "atr_ok": int(atr_ok),
                     "reasons": ",".join(reasons),
                 }
@@ -267,7 +275,7 @@ def scan_day(
                     cand_rows.append(row)
 
                     if exit_model == "pct_tp_only":
-                        if required_pct is None or np.isnan(required_pct):
+                        if pd.isna(tp_value):
                             continue
                         entry_open = float(row["entry_open"])
                         price_cols = [
@@ -313,6 +321,45 @@ def scan_day(
 
     cand_df = pd.DataFrame(cand_rows)
     out_df = pd.DataFrame(out_rows)
+
+    limit = pd.Timestamp(D).tz_localize(None) - BDay(1)
+    checked = 0
+    json_match = 0
+    no_peek_violations = 0
+    for r in out_rows[:50]:
+        checked += 1
+        raw_details = r.get("precedent_details_hits", "[]")
+        if isinstance(raw_details, str):
+            try:
+                details = json.loads(raw_details)
+            except json.JSONDecodeError:
+                details = []
+        elif isinstance(raw_details, list):
+            details = raw_details
+        else:
+            details = []
+        if len(details) == int(r.get("precedent_hits", 0)):
+            json_match += 1
+        for e in details:
+            try:
+                S = pd.Timestamp(e.get("date"))
+                days = int(e.get("days_to_hit", 0))
+            except Exception:
+                continue
+            if S + BDay(days) > limit:
+                no_peek_violations += 1
+                break
+    events.append(
+        {
+            "name": "precedent_sanity",
+            "data": {
+                "checked": int(checked),
+                "json_match": int(json_match),
+                "no_peek_violations": int(no_peek_violations),
+            },
+        }
+    )
+
     if prec_hit_values:
         stats["precedent_hits_min"] = int(min(prec_hit_values))
         stats["precedent_hits_median"] = float(np.median(prec_hit_values))
@@ -323,5 +370,6 @@ def scan_day(
         stats["precedent_hits_max"] = None
     stats["precedent_fail_count"] = int(prec_fail_count)
     stats["candidates"] = len(cand_df)
+    stats["events"] = events
 
     return cand_df, out_df, fail_count, stats

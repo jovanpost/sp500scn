@@ -1,8 +1,7 @@
 import numpy as np
 import pandas as pd
-from pandas.tseries.offsets import BDay
 
-from .replay import _col
+from .utils_precedent import compute_precedent_hit_details
 
 def _calc_atr(series_h, series_l, series_c, window: int) -> pd.Series:
     cprev = series_c.shift(1)
@@ -36,16 +35,6 @@ def has_21d_precedent(df: pd.DataFrame, asof_idx: int, required_pct: float,
         if base > 0 and (max_fwd_high / base - 1.0) >= required_pct:
             return True
     return False
-
-
-def _normalize_tp_pct(tp_value: float) -> float:
-    """Normalize TP% values supplied as either fraction or percent."""
-
-    if tp_value is None or pd.isna(tp_value):
-        return float("nan")
-    return float(tp_value / 100.0) if tp_value > 1.5 else float(tp_value)
-
-
 def precedent_hits_pct_target(
     prices_one_ticker: pd.DataFrame,
     asof_date: pd.Timestamp,
@@ -55,46 +44,13 @@ def precedent_hits_pct_target(
 ) -> int:
     """Count precedent hits for a percent target without peeking beyond D-1."""
 
-    prices = prices_one_ticker.copy()
-    prices.index = pd.to_datetime(prices.index).tz_localize(None)
-    prices = prices.sort_index()
-
-    asof_date = pd.Timestamp(asof_date).tz_localize(None)
-
-    oc = _col(prices, "open")
-    hc = _col(prices, "high")
-
-    tp_frac = _normalize_tp_pct(tp_value)
-    if pd.isna(tp_frac) or tp_frac <= 0:
-        return 0
-
-    hist = prices.loc[prices.index < asof_date]
-    if hist.empty:
-        return 0
-
-    start_min = asof_date - BDay(lookback_bdays)
-    start_lb = max(start_min, hist.index.min())
-    start_ub = asof_date - BDay(1)
-    if start_lb > start_ub:
-        return 0
-
-    starts = pd.bdate_range(start_lb, start_ub)
-    starts = [s for s in starts if s in hist.index]
-    if not starts:
-        return 0
-
-    hits = 0
-    for S in starts:
-        entry_vals = hist.loc[S, oc]
-        if isinstance(entry_vals, pd.Series):
-            entry_open = float(entry_vals.iloc[-1])
-        else:
-            entry_open = float(entry_vals)
-        target_abs = entry_open * (1.0 + tp_frac)
-        endS = min(S + BDay(window_bdays), asof_date - BDay(1))
-        fwd = hist.loc[(hist.index > S) & (hist.index <= endS)]
-        if not fwd.empty and (fwd[hc] >= target_abs).any():
-            hits += 1
+    hits, _ = compute_precedent_hit_details(
+        prices_one_ticker=prices_one_ticker,
+        asof_date=asof_date,
+        tp_value=tp_value,
+        lookback_bdays=lookback_bdays,
+        window_bdays=window_bdays,
+    )
     return int(hits)
 
 

@@ -76,9 +76,24 @@ def run_range(
         "tp_halfway_pct",
         "precedent_hits",
         "precedent_ok",
+        "precedent_details_hits",
+        "precedent_hit_start_dates",
         "atr_ok",
         "reasons",
     ]
     trades_df = trades_df.reindex(columns=needed)
+
+    missing = [
+        c
+        for c in (
+            "precedent_details_hits",
+            "precedent_hit_start_dates",
+            "precedent_hits",
+            "precedent_ok",
+        )
+        if c not in trades_df.columns
+    ]
+    if missing:
+        raise RuntimeError(f"precedent columns missing at export: {missing}")
 
     return trades_df, summary
