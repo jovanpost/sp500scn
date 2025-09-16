@@ -571,7 +571,31 @@ def render_page() -> None:
         show_df("Summary", summary_df, "bt_summary")
 
     if trades_df is not None:
-        show_df("Trades", trades_df, "bt_trades")
+        cols = [
+            "date",
+            "ticker",
+            "entry_open",
+            "tp_price",
+            "tp_price_abs_target",
+            "tp_price_pct_target",
+            "exit_model",
+            "hit",
+            "exit_reason",
+            "exit_price",
+            "days_to_exit",
+            "mae_pct",
+            "mfe_pct",
+            "sr_ratio",
+            "tp_halfway_pct",
+            "precedent_hits",
+            "precedent_ok",
+            "precedent_hit_start_dates",
+            "precedent_details_hits",
+            "atr_ok",
+            "reasons",
+        ]
+        df_show = trades_df[[c for c in cols if c in trades_df.columns]]
+        show_df("Trades", df_show, "bt_trades")
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
