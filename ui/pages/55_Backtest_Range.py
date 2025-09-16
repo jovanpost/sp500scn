@@ -16,6 +16,7 @@ from ui.components.tables import show_df
 
 def render_page() -> None:
     st.header("📅 Backtest (range)")
+
     storage = Storage()
     diag_fn = getattr(storage, "diagnostics", None)
     if callable(diag_fn):
@@ -27,6 +28,7 @@ def render_page() -> None:
             "local_root": str(getattr(storage, "local_root", "")) if getattr(storage, "mode", None) == "local" else None,
             "supabase_available": getattr(storage, "supabase_available", lambda: False)(),
         }
+
     dbg = _get_dbg("backtest")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
     st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
@@ -100,7 +102,7 @@ def render_page() -> None:
                 st.number_input(
                     "ATR window",
                     min_value=5,
-                    value=21,
+                    value=14,  # default to 14-day ATR in UI
                     step=1,
                     key="bt_atr_win",
                 )
@@ -609,3 +611,4 @@ def render_page() -> None:
 
 def page() -> None:
     render_page()
+
