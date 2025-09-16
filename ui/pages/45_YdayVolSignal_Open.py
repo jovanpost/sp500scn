@@ -38,6 +38,12 @@ def render_page() -> None:
     atr_window = int(st.number_input("ATR window", min_value=1, value=21, step=1))
     horizon = int(st.number_input("Horizon (days)", min_value=1, value=30, step=1))
     sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
+    exit_model = st.selectbox(
+        "Exit model",
+        options=("pct_tp_only", "sr_tp_vs_stop"),
+        index=0,
+        format_func=lambda opt: "Percent target only" if opt == "pct_tp_only" else "Legacy S/R TP+stop",
+    )
     save_outcomes = st.checkbox("Save outcomes to lake", value=False)
 
     if st.button("Run scan", type="primary", key="scan_run"):
@@ -53,6 +59,7 @@ def render_page() -> None:
                 "lookback_days": vol_lookback,
                 "horizon_days": horizon,
                 "sr_min_ratio": sr_min_ratio,
+                "exit_model": exit_model,
             }
             dbg.set_params(
                 entry_day=str(D.date()),
@@ -63,6 +70,7 @@ def render_page() -> None:
                 atr_window=atr_window,
                 horizon=horizon,
                 sr_min_ratio=sr_min_ratio,
+                exit_model=exit_model,
             )
 
             members = sigscan._load_members(storage, cache_salt=storage.cache_salt())

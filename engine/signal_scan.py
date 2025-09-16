@@ -10,8 +10,8 @@ import pandas as pd
 
 from data_lake.storage import Storage
 import streamlit as st
-from .replay import replay_trade
-from .filters import has_21d_precedent, atr_feasible
+from .replay import replay_trade, simulate_pct_target_only
+from .filters import atr_feasible, precedent_ok_pct_target
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class ScanParams(TypedDict, total=False):
     use_atr_feasible: bool
     precedent_lookback: int
     precedent_window: int
+    exit_model: str
 
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
@@ -162,6 +163,8 @@ def scan_day(
     use_atr_feasible = bool(params.get("use_atr_feasible", True))
     prec_lookback = int(params.get("precedent_lookback", 252))
     prec_window = int(params.get("precedent_window", 21))
+    exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only")
+    exit_model = exit_model.strip().lower()
 
     cand_rows: List[Dict[str, Any]] = []
     out_rows: List[Dict[str, Any]] = []
@@ -196,6 +199,10 @@ def scan_day(
                 fail_count += 1
                 continue
 
+            df_idx = df.set_index("date").sort_index()
+            df_idx.index = pd.to_datetime(df_idx.index).tz_localize(None)
+            df_idx = df_idx[~df_idx.index.duplicated(keep="last")]
+
             if (
                 (not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close)
                 and (not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol)
@@ -204,9 +211,20 @@ def scan_day(
             ):
                 tp_halfway_pct = m.get("tp_halfway_pct")
                 required_pct = tp_halfway_pct
-                prec_ok = has_21d_precedent(
-                    df, dm1, required_pct, lookback_days=prec_lookback, window=prec_window
-                ) if (required_pct is not None and not np.isnan(required_pct)) else False
+                tp_pct_percent = (
+                    float(required_pct) * 100.0
+                    if required_pct is not None and not np.isnan(required_pct)
+                    else float("nan")
+                )
+                prec_ok = False
+                if required_pct is not None and not np.isnan(required_pct):
+                    prec_ok = precedent_ok_pct_target(
+                        df_idx,
+                        pd.Timestamp(D_ts),
+                        tp_pct_percent,
+                        lookback_bdays=prec_lookback,
+                        window_bdays=prec_window,
+                    )
                 atr_ok = atr_feasible(
                     df, dm1, required_pct, atr_window
                 ) if (required_pct is not None and not np.isnan(required_pct)) else False
@@ -229,18 +247,44 @@ def scan_day(
                 if include:
                     cand_rows.append(row)
 
-                    tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
-                    stop_price = row["support"]
-                    out = replay_trade(
-                        df[["date", "open", "high", "low", "close"]],
-                        pd.to_datetime(D),
-                        row["entry_open"],
-                        tp_price,
-                        stop_price,
-                        horizon_days=horizon,
-                    )
-                    out_row = {**row, "tp_price": tp_price, **out}
-                    out_rows.append(out_row)
+                    if exit_model == "pct_tp_only":
+                        if required_pct is None or np.isnan(required_pct):
+                            continue
+                        entry_open = float(row["entry_open"])
+                        price_cols = [
+                            col for col in ("open", "high", "low", "close") if col in df_idx.columns
+                        ]
+                        if not price_cols:
+                            continue
+                        res = simulate_pct_target_only(
+                            df_idx[price_cols],
+                            pd.Timestamp(D_ts),
+                            entry_open,
+                            tp_pct_percent,
+                            horizon,
+                        )
+                        if res is None:
+                            continue
+                        out_row = {
+                            **row,
+                            "exit_model": exit_model,
+                            "tp_price": res.get("tp_price_abs_target"),
+                            **res,
+                        }
+                        out_rows.append(out_row)
+                    else:
+                        tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
+                        stop_price = row["support"]
+                        out = replay_trade(
+                            df[["date", "open", "high", "low", "close"]],
+                            pd.to_datetime(D),
+                            row["entry_open"],
+                            tp_price,
+                            stop_price,
+                            horizon_days=horizon,
+                        )
+                        out_row = {**row, "exit_model": exit_model, "tp_price": tp_price, **out}
+                        out_rows.append(out_row)
         finally:
             if on_step:
                 try:

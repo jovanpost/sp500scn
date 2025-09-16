@@ -150,6 +150,13 @@ def render_page() -> None:
                     key="bt_prec_window",
                 )
             )
+            exit_model = st.selectbox(
+                "Exit model",
+                options=("pct_tp_only", "sr_tp_vs_stop"),
+                index=0,
+                format_func=lambda opt: "Percent target only" if opt == "pct_tp_only" else "Legacy S/R TP+stop",
+                key="bt_exit_model",
+            )
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
@@ -173,6 +180,7 @@ def render_page() -> None:
                 "use_atr_feasible": use_atr_feasible,
                 "precedent_lookback": precedent_lookback,
                 "precedent_window": precedent_window,
+                "exit_model": exit_model,
             }
             dbg.set_params(
                 start=str(start_date),
@@ -189,6 +197,7 @@ def render_page() -> None:
                 use_atr_feasible=use_atr_feasible,
                 precedent_lookback=precedent_lookback,
                 precedent_window=precedent_window,
+                exit_model=exit_model,
             )
 
             prior_needed_bdays = int(
