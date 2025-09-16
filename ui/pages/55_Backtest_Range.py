@@ -16,8 +16,8 @@ from ui.components.tables import show_df
 
 def render_page() -> None:
     st.header("📅 Backtest (range)")
-
     storage = Storage()
+
     diag_fn = getattr(storage, "diagnostics", None)
     if callable(diag_fn):
         diag = diag_fn()
@@ -32,6 +32,7 @@ def render_page() -> None:
     dbg = _get_dbg("backtest")
     dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
     st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
+
     if getattr(storage, "force_supabase", False) and storage.mode == "local":
         st.error(
             "Supabase is required but not available. Check secrets: [supabase] url/key, or disable supabase.force."
@@ -102,7 +103,7 @@ def render_page() -> None:
                 st.number_input(
                     "ATR window",
                     min_value=5,
-                    value=14,  # default to 14-day ATR in UI
+                    value=21,
                     step=1,
                     key="bt_atr_win",
                 )
@@ -255,6 +256,7 @@ def render_page() -> None:
                     start=warmup_start,
                     end=forward_end,
                 )
+
             coverage_info = {
                 "ui_start": str(start_date),
                 "ui_end": str(end_date),
@@ -290,6 +292,7 @@ def render_page() -> None:
                             break
                 coverage_info.update(min_loaded=min_loaded, max_loaded=max_loaded)
             dbg.event("coverage", **coverage_info)
+
             loaded = prices_df.get("Ticker").nunique() if not prices_df.empty else 0
             dbg.event(
                 "prices_loaded",
@@ -300,6 +303,7 @@ def render_page() -> None:
                 min=str(prices_df["date"].min() if not prices_df.empty else None),
                 max=str(prices_df["date"].max() if not prices_df.empty else None),
             )
+
             with st.expander("\U0001F50E Data preflight (debug)", expanded=False):
                 requested = len(active_tickers)
                 loaded_list = (
@@ -309,6 +313,7 @@ def render_page() -> None:
                 )
                 st.write(f"Tickers requested: {requested}")
                 st.write(f"Loaded series: {len(loaded_list)} / {requested}")
+
                 if prices_df.empty:
                     st.warning("No prices loaded from storage.")
                     missing_examples: list[str] = []
@@ -341,6 +346,7 @@ def render_page() -> None:
                                 ],
                             }
                         )
+
             if prices_df.empty:
                 log("No prices loaded—check Storage bucket and paths (prices/*.parquet).")
                 return
@@ -480,11 +486,14 @@ def render_page() -> None:
                     days_with_candidates = 0
                     done = 0
                     total_days = len(date_list)
+
                     for D in date_list:
                         current_day = pd.Timestamp(D).tz_localize(None)
+
                         daily_members = (
                             members_on_date(members, current_day)["ticker"].dropna().astype(str).str.upper()
                         )
+
                         cutoff = current_day - BDay(prior_needed_bdays)
                         eligible = []
                         for tk in daily_members:
@@ -514,6 +523,7 @@ def render_page() -> None:
                             tmp = out.copy()
                             tmp["date"] = current_day.normalize()
                             results.append(tmp)
+
                         done += 1
                         pct = int(done / max(1, total_days) * 100)
                         prog.progress(pct, text=f"{pct}%  ({current_day.date()})")
@@ -522,6 +532,7 @@ def render_page() -> None:
 
                     trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
                     trades_df = trades_df.reset_index(drop=True)
+
                     hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
                     summary = {
                         "total_days": int(total_days),
@@ -533,6 +544,7 @@ def render_page() -> None:
                         "avg_MAE_pct": float(trades_df["mae_pct"].mean()) if not trades_df.empty else float("nan"),
                         "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
                     }
+
                 dbg.event(
                     "bt_stats",
                     days=len(date_list),
@@ -624,7 +636,42 @@ def render_page() -> None:
             "tp_required_dollars_2dp",
             "reasons",
         ]
-        df_show = trades_df[[c for c in cols if c in trades_df.columns]]
+
+        # Filter to present columns and create a working copy for UI/CSV (minimal change)
+        cols_present = [c for c in cols if c in trades_df.columns]
+        df_show = trades_df[cols_present].copy()
+
+        # --- Minimal 2-dp rounding for UI table and its downloadable CSV ---
+        price_cols = [
+            "entry_open", "tp_price", "tp_price_abs_target", "exit_price",
+            "support", "resistance", "atr_value_dm1", "atr_budget_dollars", "tp_required_dollars",
+            # also round any *_2dp columns if they exist in the view
+            "entry_open_2dp", "tp_price_2dp", "tp_price_abs_target_2dp", "exit_price_2dp",
+            "support_2dp", "resistance_2dp", "atr_value_dm1_2dp", "atr_budget_dollars_2dp", "tp_required_dollars_2dp",
+        ]
+        pct_cols = [
+            "close_up_pct", "gap_open_pct", "tp_pct_used", "mae_pct", "mfe_pct", "tp_price_pct_target",
+            # keep if present from metrics:
+            "atr21_pct", "ret21_pct",
+            # also round any *_2dp columns if they exist in the view
+            "close_up_pct_2dp", "gap_open_pct_2dp", "tp_pct_used_2dp", "mae_pct_2dp", "mfe_pct_2dp",
+        ]
+        ratio_cols = [
+            "sr_ratio", "vol_multiple",
+            # also round display variants if present
+            "sr_ratio_2dp", "vol_multiple_2dp",
+        ]
+
+        def _round2(frame: pd.DataFrame, col_list: list[str]) -> None:
+            keep = [c for c in col_list if c in frame.columns]
+            if keep:
+                frame[keep] = frame[keep].apply(pd.to_numeric, errors="coerce").round(2)
+
+        _round2(df_show, price_cols)
+        _round2(df_show, pct_cols)
+        _round2(df_show, ratio_cols)
+        # -------------------------------------------------------------------
+
         show_df("Trades", df_show, "bt_trades")
 
     if save_path:
@@ -635,4 +682,3 @@ def render_page() -> None:
 
 def page() -> None:
     render_page()
-
