@@ -100,6 +100,10 @@ def run_range(
         "precedent_details_hits",
         "precedent_hit_start_dates",
         "atr_ok",
+        "atr_window",
+        "atr_value_dm1",
+        "atr_budget_dollars",
+        "tp_required_dollars",
         "reasons",
     ]
 

@@ -156,7 +156,7 @@ def scan_day(
     total = len(active)
 
     vol_lookback = int(params.get("lookback_days", 63))
-    atr_window = int(params.get("atr_window", 21))
+    atr_window = int(params.get("atr_window", 14))
     min_close = float(params.get("min_close_up_pct", 0.0))
     min_vol = float(params.get("min_vol_multiple", 0.0))
     min_gap = float(params.get("min_gap_open_pct", 0.0))
@@ -264,6 +264,49 @@ def scan_day(
                     else False
                 )
                 row["atr_ok"] = int(atr_ok_bool)
+
+                # ---- Persist ATR numbers for transparency (no logic change) ----
+                h = df["high"]
+                l = df["low"]
+                c = df["close"]
+
+                tr = pd.concat(
+                    [
+                        (h - l).abs(),
+                        (h - c.shift(1)).abs(),
+                        (l - c.shift(1)).abs(),
+                    ],
+                    axis=1,
+                ).max(axis=1)
+                atr_series = tr.rolling(int(atr_window), min_periods=int(atr_window)).mean()
+                atr_value_dm1 = (
+                    float(atr_series.iloc[dm1])
+                    if dm1 < len(atr_series) and not pd.isna(atr_series.iloc[dm1])
+                    else float("nan")
+                )
+
+                tp_required_dollars = (
+                    float(row["entry_open"]) * float(tp_frac)
+                    if tp_frac_valid
+                    else float("nan")
+                )
+                atr_budget_dollars = (
+                    atr_value_dm1 * int(atr_window)
+                    if not pd.isna(atr_value_dm1)
+                    else float("nan")
+                )
+
+                row["atr_window"] = int(atr_window)
+                row["atr_value_dm1"] = (
+                    None if pd.isna(atr_value_dm1) else round(atr_value_dm1, 6)
+                )
+                row["atr_budget_dollars"] = (
+                    None if pd.isna(atr_budget_dollars) else round(atr_budget_dollars, 6)
+                )
+                row["tp_required_dollars"] = (
+                    None if pd.isna(tp_required_dollars) else round(tp_required_dollars, 6)
+                )
+                # ---------------------------------------------------------------
 
                 reasons: List[str] = []
                 if use_precedent and tp_frac_valid and not prec_ok_bool:
@@ -390,6 +433,24 @@ def scan_day(
             "target_pct_mismatch": int(target_pct_mismatch),
         }
     )
+
+    if out_rows:
+        checked_atr_rows = out_rows[:50]
+        expected_window = int(params.get("atr_window", 14))
+        atr_present = sum(
+            1
+            for r in checked_atr_rows
+            if r.get("atr_value_dm1") is not None
+            and r.get("atr_window") == expected_window
+        )
+        stats["events"].append(
+            {
+                "event": "atr_sanity",
+                "checked": int(len(checked_atr_rows)),
+                "present": int(atr_present),
+                "window_default": 14,
+            }
+        )
 
     if prec_hit_values:
         stats["precedent_hits_min"] = int(min(prec_hit_values))
