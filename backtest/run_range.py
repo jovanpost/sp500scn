@@ -13,9 +13,20 @@ def trading_days(storage: Storage, start: str, end: str) -> pd.DatetimeIndex:
     """Derive trading days from AAPL parquet dates."""
     df = storage.read_parquet_df("prices/AAPL.parquet")
     if "date" not in df.columns:
-        df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
+        # Try common fallbacks produced by older pipelines
+        fallback = None
+        for cand in ("index", "Date", "DATE"):
+            if cand in df.columns:
+                fallback = cand
+                break
+        if fallback is None:
+            raise KeyError("prices/AAPL.parquet missing a usable date column")
+        df["date"] = pd.to_datetime(df[fallback])
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-    mask = (df["date"] >= pd.to_datetime(start)) & (df["date"] <= pd.to_datetime(end))
+
+    start_ts = pd.to_datetime(start)
+    end_ts = pd.to_datetime(end)
+    mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
     days = pd.DatetimeIndex(df.loc[mask, "date"].dropna().unique()).sort_values()
     return days
 
@@ -31,21 +42,30 @@ def run_range(
     all_trades = []
     total_days = len(days)
     days_with_candidates = 0
+
     for idx, D in enumerate(days, 1):
         cands, out, _fails, _dbg = scan_day(storage, D, params)
         cand_count = int(len(cands))
         hit_count = int(out["hit"].sum()) if not out.empty else 0
+
         if cand_count:
             days_with_candidates += 1
         if not out.empty:
             tmp = out.copy()
-            tmp["date"] = D.normalize()
+            # normalize to date at midnight, tz-naive
+            tmp["date"] = pd.Timestamp(D).normalize()
             all_trades.append(tmp)
+
         if progress_cb:
-            progress_cb(idx, total_days, D, cand_count, hit_count)
+            try:
+                progress_cb(idx, total_days, D, cand_count, hit_count)
+            except Exception:
+                pass
+
         time.sleep(0.25)
 
     trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+
     hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
     summary = {
         "total_days": int(total_days),
@@ -58,6 +78,7 @@ def run_range(
         "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
     }
 
+    # Columns expected by the UI/CSV
     needed = [
         "date",
         "ticker",
@@ -82,22 +103,25 @@ def run_range(
         "reasons",
     ]
 
-    if not all_trades:
+    # Guard & reindex for UI/CSV
+    if trades_df is None or trades_df.empty:
+        # produce an empty table with the expected schema so UI/CSV don't crash
         trades_df = pd.DataFrame(columns=needed)
-
-    missing = [
-        c
-        for c in (
-            "precedent_details_hits",
-            "precedent_hit_start_dates",
-            "precedent_hits",
-            "precedent_ok",
-        )
-        if c not in trades_df.columns
-    ]
-    if missing:
-        raise RuntimeError(f"precedent columns missing at export: {missing}")
-
-    trades_df = trades_df.reindex(columns=needed)
+    else:
+        # fail loudly if the precedent columns were dropped upstream
+        missing = [
+            c
+            for c in (
+                "precedent_details_hits",
+                "precedent_hit_start_dates",
+                "precedent_hits",
+                "precedent_ok",
+            )
+            if c not in trades_df.columns
+        ]
+        if missing:
+            raise RuntimeError(f"precedent columns missing at export: {missing}")
+        trades_df = trades_df.reindex(columns=needed)
 
     return trades_df, summary
+
