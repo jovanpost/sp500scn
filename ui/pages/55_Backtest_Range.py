@@ -150,6 +150,15 @@ def render_page() -> None:
                     key="bt_prec_window",
                 )
             )
+            min_precedent_hits = int(
+                st.number_input(
+                    "Min precedent hits",
+                    min_value=0,
+                    value=1,
+                    step=1,
+                    key="bt_prec_min_hits",
+                )
+            )
             exit_model = st.selectbox(
                 "Exit model",
                 options=("pct_tp_only", "sr_tp_vs_stop"),
@@ -180,6 +189,7 @@ def render_page() -> None:
                 "use_atr_feasible": use_atr_feasible,
                 "precedent_lookback": precedent_lookback,
                 "precedent_window": precedent_window,
+                "min_precedent_hits": min_precedent_hits,
                 "exit_model": exit_model,
             }
             dbg.set_params(
@@ -197,6 +207,7 @@ def render_page() -> None:
                 use_atr_feasible=use_atr_feasible,
                 precedent_lookback=precedent_lookback,
                 precedent_window=precedent_window,
+                min_precedent_hits=min_precedent_hits,
                 exit_model=exit_model,
             )
 

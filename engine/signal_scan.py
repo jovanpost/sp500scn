@@ -11,7 +11,7 @@ import pandas as pd
 from data_lake.storage import Storage
 import streamlit as st
 from .replay import replay_trade, simulate_pct_target_only
-from .filters import atr_feasible, precedent_ok_pct_target
+from .filters import atr_feasible, precedent_hits_pct_target
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class ScanParams(TypedDict, total=False):
     use_atr_feasible: bool
     precedent_lookback: int
     precedent_window: int
+    min_precedent_hits: int
     exit_model: str
 
 
@@ -163,6 +164,7 @@ def scan_day(
     use_atr_feasible = bool(params.get("use_atr_feasible", True))
     prec_lookback = int(params.get("precedent_lookback", 252))
     prec_window = int(params.get("precedent_window", 21))
+    min_prec_hits = int(params.get("min_precedent_hits", 1))
     exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only")
     exit_model = exit_model.strip().lower()
 
@@ -171,6 +173,8 @@ def scan_day(
     fail_count = 0
 
     stats = {"universe": len(active), "loaded": 0, "candidates": 0}
+    prec_hit_values: List[int] = []
+    prec_fail_count = 0
 
     for idx, t in enumerate(active, 1):
         try:
@@ -216,27 +220,42 @@ def scan_day(
                     if required_pct is not None and not np.isnan(required_pct)
                     else float("nan")
                 )
-                prec_ok = False
-                if required_pct is not None and not np.isnan(required_pct):
-                    prec_ok = precedent_ok_pct_target(
-                        df_idx,
-                        pd.Timestamp(D_ts),
-                        tp_pct_percent,
-                        lookback_bdays=prec_lookback,
-                        window_bdays=prec_window,
-                    )
+                hits = 0
+                prec_ok = True
+                tp_value = (
+                    float(required_pct)
+                    if required_pct is not None and not np.isnan(required_pct)
+                    else float("nan")
+                )
+                if use_precedent:
+                    if pd.isna(tp_value):
+                        prec_ok = False
+                        prec_fail_count += 1
+                    else:
+                        hits = precedent_hits_pct_target(
+                            df_idx,
+                            pd.Timestamp(D_ts),
+                            tp_value,
+                            lookback_bdays=prec_lookback,
+                            window_bdays=prec_window,
+                        )
+                        prec_hit_values.append(int(hits))
+                        prec_ok = hits >= min_prec_hits
+                        if not prec_ok:
+                            prec_fail_count += 1
                 atr_ok = atr_feasible(
                     df, dm1, required_pct, atr_window
                 ) if (required_pct is not None and not np.isnan(required_pct)) else False
                 reasons: List[str] = []
-                if not prec_ok:
-                    reasons.append("no_21d_precedent")
+                if use_precedent and not prec_ok:
+                    reasons.append("precedent_fail")
                 if not atr_ok:
                     reasons.append("atr_insufficient")
 
                 row = {
                     "ticker": t,
                     **m,
+                    "precedent_hits": int(hits),
                     "precedent_ok": int(prec_ok),
                     "atr_ok": int(atr_ok),
                     "reasons": ",".join(reasons),
@@ -294,6 +313,15 @@ def scan_day(
 
     cand_df = pd.DataFrame(cand_rows)
     out_df = pd.DataFrame(out_rows)
+    if prec_hit_values:
+        stats["precedent_hits_min"] = int(min(prec_hit_values))
+        stats["precedent_hits_median"] = float(np.median(prec_hit_values))
+        stats["precedent_hits_max"] = int(max(prec_hit_values))
+    else:
+        stats["precedent_hits_min"] = None
+        stats["precedent_hits_median"] = None
+        stats["precedent_hits_max"] = None
+    stats["precedent_fail_count"] = int(prec_fail_count)
     stats["candidates"] = len(cand_df)
 
     return cand_df, out_df, fail_count, stats

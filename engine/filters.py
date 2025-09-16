@@ -38,17 +38,22 @@ def has_21d_precedent(df: pd.DataFrame, asof_idx: int, required_pct: float,
     return False
 
 
-def precedent_ok_pct_target(
+def _normalize_tp_pct(tp_value: float) -> float:
+    """Normalize TP% values supplied as either fraction or percent."""
+
+    if tp_value is None or pd.isna(tp_value):
+        return float("nan")
+    return float(tp_value / 100.0) if tp_value > 1.5 else float(tp_value)
+
+
+def precedent_hits_pct_target(
     prices_one_ticker: pd.DataFrame,
     asof_date: pd.Timestamp,
-    tp_pct: float,
-    lookback_bdays: int,
-    window_bdays: int,
-) -> bool:
-    """Check if a percent target was hit in the recent past."""
-
-    if pd.isna(tp_pct):
-        return False
+    tp_value: float,
+    lookback_bdays: int = 252,
+    window_bdays: int = 21,
+) -> int:
+    """Count precedent hits for a percent target without peeking beyond D-1."""
 
     prices = prices_one_ticker.copy()
     prices.index = pd.to_datetime(prices.index).tz_localize(None)
@@ -56,33 +61,41 @@ def precedent_ok_pct_target(
 
     asof_date = pd.Timestamp(asof_date).tz_localize(None)
 
-    hc = _col(prices, "high")
     oc = _col(prices, "open")
+    hc = _col(prices, "high")
 
-    start_lb = asof_date - BDay(lookback_bdays + window_bdays)
-    past = prices.loc[(prices.index >= start_lb) & (prices.index < asof_date)]
-    if past.empty:
-        return False
+    tp_frac = _normalize_tp_pct(tp_value)
+    if pd.isna(tp_frac) or tp_frac <= 0:
+        return 0
 
-    bdays = past.index.unique()
-    if len(bdays) < window_bdays + 1:
-        return False
+    hist = prices.loc[prices.index < asof_date]
+    if hist.empty:
+        return 0
 
-    starts = pd.bdate_range(asof_date - BDay(lookback_bdays), asof_date - BDay(1))
-    starts = [s for s in starts if s in bdays]
+    start_min = asof_date - BDay(lookback_bdays)
+    start_lb = max(start_min, hist.index.min())
+    start_ub = asof_date - BDay(1)
+    if start_lb > start_ub:
+        return 0
 
+    starts = pd.bdate_range(start_lb, start_ub)
+    starts = [s for s in starts if s in hist.index]
+    if not starts:
+        return 0
+
+    hits = 0
     for S in starts:
-        entry_vals = past.loc[S, oc]
+        entry_vals = hist.loc[S, oc]
         if isinstance(entry_vals, pd.Series):
             entry_open = float(entry_vals.iloc[-1])
         else:
             entry_open = float(entry_vals)
-        target_abs = entry_open * (1.0 + tp_pct / 100.0)
-        endS = S + BDay(window_bdays)
-        fwd = prices.loc[(prices.index > S) & (prices.index <= endS)]
+        target_abs = entry_open * (1.0 + tp_frac)
+        endS = min(S + BDay(window_bdays), asof_date - BDay(1))
+        fwd = hist.loc[(hist.index > S) & (hist.index <= endS)]
         if not fwd.empty and (fwd[hc] >= target_abs).any():
-            return True
-    return False
+            hits += 1
+    return int(hits)
 
 
 def atr_feasible(df: pd.DataFrame, asof_idx: int, required_pct: float, atr_window: int) -> bool:

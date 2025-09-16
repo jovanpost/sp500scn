@@ -74,6 +74,7 @@ def run_range(
         "mfe_pct",
         "sr_ratio",
         "tp_halfway_pct",
+        "precedent_hits",
         "precedent_ok",
         "atr_ok",
         "reasons",
