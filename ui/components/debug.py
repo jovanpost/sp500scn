@@ -99,27 +99,6 @@ def debug_panel(name: str = "page", extra_info: Optional[dict] = None):
     try:
         with st.expander("🐞 Debug panel", expanded=False):
             st.caption("Everything below is for diagnostics. Safe to share (secrets redacted).")
-            extra = st.session_state.get(f"__debug_extra_{name}")
-            if isinstance(extra, dict) and extra:
-                pass_count = extra.get("precedent_pass_count")
-                fail_count = extra.get("precedent_fail_count")
-                median_hits_pass = extra.get("precedent_hits_median_pass")
-                samples = extra.get("precedent_details_preview") or []
-                st.markdown("**Precedent checks**")
-                st.write(
-                    {
-                        "passes": int(pass_count) if pass_count is not None else None,
-                        "fails": int(fail_count) if fail_count is not None else None,
-                        "median_hits_pass": median_hits_pass,
-                    }
-                )
-                if samples:
-                    for idx, sample in enumerate(samples[:2], 1):
-                        st.caption(
-                            f"Sample {idx}: {sample.get('ticker')} on {sample.get('trade_date')} "
-                            f"(hits={sample.get('precedent_hits')} ok={sample.get('precedent_ok')})"
-                        )
-                        st.write(sample.get("events", []))
             txt = dbg.export_text()
             st.text_area("Report (JSON)", value=txt, height=300, key=f"{name}_json", label_visibility="collapsed")
             st.download_button("Download JSON", data=txt.encode("utf-8"), file_name=f"{name}_debug.json", mime="application/json", key=f"{name}_dl")

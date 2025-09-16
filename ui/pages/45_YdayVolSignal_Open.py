@@ -45,39 +45,12 @@ def render_page() -> None:
         format_func=lambda opt: "Percent target only" if opt == "pct_tp_only" else "Legacy S/R TP+stop",
     )
     save_outcomes = st.checkbox("Save outcomes to lake", value=False)
-    with st.expander("Precedent logging", expanded=False):
-        log_precedent_details = st.checkbox(
-            "Log precedent details",
-            value=True,
-            key="scan_log_precedent_details",
-        )
-        log_precedent_include_misses = st.checkbox(
-            "Include misses in precedent log",
-            value=True,
-            key="scan_log_precedent_include_misses",
-        )
-        precedent_details_limit = int(
-            st.number_input(
-                "Precedent details limit",
-                min_value=1,
-                value=300,
-                step=10,
-                key="scan_precedent_details_limit",
-            )
-        )
-        write_precedent_events_table = st.checkbox(
-            "Write precedent events table",
-            value=False,
-            key="scan_write_precedent_events",
-        )
 
     if st.button("Run scan", type="primary", key="scan_run"):
         st.session_state["scan_running"] = True
         status, prog, log = status_block("Running filters…", key_prefix="scan")
 
         try:
-            stats = {}
-            st.session_state["__debug_extra_scan"] = {}
             params: ScanParams = {
                 "min_close_up_pct": min_close_up_pct,
                 "min_vol_multiple": min_vol_multiple,
@@ -86,10 +59,6 @@ def render_page() -> None:
                 "lookback_days": vol_lookback,
                 "horizon_days": horizon,
                 "sr_min_ratio": sr_min_ratio,
-                "log_precedent_details": log_precedent_details,
-                "log_precedent_include_misses": log_precedent_include_misses,
-                "precedent_details_limit": precedent_details_limit,
-                "write_precedent_events_table": write_precedent_events_table,
                 "exit_model": exit_model,
             }
             dbg.set_params(
@@ -101,10 +70,6 @@ def render_page() -> None:
                 atr_window=atr_window,
                 horizon=horizon,
                 sr_min_ratio=sr_min_ratio,
-                log_precedent_details=log_precedent_details,
-                log_precedent_include_misses=log_precedent_include_misses,
-                precedent_details_limit=precedent_details_limit,
-                write_precedent_events_table=write_precedent_events_table,
                 exit_model=exit_model,
             )
 
@@ -192,21 +157,14 @@ def render_page() -> None:
 
             try:
                 with dbg.step("run_signal_scan"):
-                    cand_df, out_df, fails, stats = scan_day(
+                    cand_df, out_df, fails, _dbg = scan_day(
                         storage, D, params, on_step=on_step
                     )
                 dbg.event(
                     "scan_outcome",
                     rows=len(cand_df) if cand_df is not None else 0,
-                    fails=int(fails) if fails is not None else 0,
+                    fails=len(fails) if fails is not None else 0,
                 )
-                if stats:
-                    dbg.event(
-                        "precedent_summary",
-                        pass_count=int(stats.get("precedent_pass_count", 0) or 0),
-                        fail_count=int(stats.get("precedent_fail_count", 0) or 0),
-                        median_hits_pass=stats.get("precedent_hits_median_pass"),
-                    )
             finally:
                 sigscan._load_prices = orig_load_prices
                 sigscan._load_members = orig_load_members
@@ -218,8 +176,6 @@ def render_page() -> None:
             st.session_state["cand_df"] = cand_df
             st.session_state["out_df"] = out_df
             st.session_state["fails"] = fails
-            st.session_state["scan_stats"] = stats
-            st.session_state["__debug_extra_scan"] = stats or {}
 
             if save_outcomes and not out_df.empty:
                 buf = io.BytesIO()
