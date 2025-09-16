@@ -61,6 +61,7 @@ def compute_precedent_events(
 
     hits = 0
     events = []
+    limit_int = int(limit) if limit is not None else None
 
     for S in starts:
         entry_vals = hist.loc[S, oc]
@@ -89,19 +90,17 @@ def compute_precedent_events(
         max_gain_pct = (max_high / entry_open - 1.0) * 100.0
 
         if include_misses or hit:
-            events.append(
-                {
-                    "date": str(S.date()),
-                    "entry_price": round(entry_open, 6),
-                    "target_pct": round(tp_frac * 100.0, 6),
-                    "max_gain_pct": round(max_gain_pct, 6),
-                    "days_to_hit": int(days_to_hit) if days_to_hit is not None else None,
-                    "hit": bool(hit),
-                }
-            )
-
-        if len(events) >= int(limit):
-            break
+            if limit_int is None or len(events) < limit_int:
+                events.append(
+                    {
+                        "date": str(S.date()),
+                        "entry_price": round(entry_open, 6),
+                        "target_pct": round(tp_frac * 100.0, 6),
+                        "max_gain_pct": round(max_gain_pct, 6),
+                        "days_to_hit": int(days_to_hit) if days_to_hit is not None else None,
+                        "hit": bool(hit),
+                    }
+                )
 
     return hits, events
 
