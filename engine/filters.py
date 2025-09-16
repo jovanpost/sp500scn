@@ -2,7 +2,108 @@ import numpy as np
 import pandas as pd
 from pandas.tseries.offsets import BDay
 
-from .replay import _col
+PRICE_COLS = {
+    "open": ["Open", "open", "OPEN", "o"],
+    "high": ["High", "high", "HIGH", "h"],
+}
+
+
+def _col(df: pd.DataFrame, kind: str) -> str:
+    for k in PRICE_COLS[kind]:
+        if k in df.columns:
+            return k
+    raise KeyError(f"Missing price column for {kind}")
+
+
+def _tp_to_frac(tp_value: float) -> float:
+    """Accept fraction (0.32) or percent (32.0) and normalize to fraction."""
+
+    if tp_value is None or pd.isna(tp_value):
+        return float("nan")
+    return float(tp_value / 100.0) if tp_value > 1.5 else float(tp_value)
+
+
+def compute_precedent_events(
+    prices_one_ticker: pd.DataFrame,
+    asof_date: pd.Timestamp,
+    tp_value,
+    lookback_bdays: int,
+    window_bdays: int,
+    include_misses: bool = True,
+    limit: int = 300,
+):
+    """Return (hits_count, events_list). No peeking past D-1. BDay aware."""
+
+    if prices_one_ticker is None or prices_one_ticker.empty:
+        return 0, []
+
+    prices = prices_one_ticker.copy()
+    prices.index = pd.to_datetime(prices.index).tz_localize(None)
+    prices = prices.sort_index()
+    prices = prices[~prices.index.duplicated(keep="last")]
+
+    asof = pd.Timestamp(asof_date).tz_localize(None)
+
+    oc = _col(prices, "open")
+    hc = _col(prices, "high")
+
+    tp_frac = _tp_to_frac(float(tp_value) if tp_value is not None else float("nan"))
+    if pd.isna(tp_frac) or tp_frac <= 0:
+        return 0, []
+
+    hist = prices.loc[prices.index < asof]
+    if hist.empty:
+        return 0, []
+
+    start_min = asof - BDay(int(lookback_bdays))
+    starts = pd.bdate_range(max(start_min, hist.index.min()), asof - BDay(1))
+    starts = [s for s in starts if s in hist.index]
+
+    hits = 0
+    events = []
+
+    for S in starts:
+        entry_vals = hist.loc[S, oc]
+        if isinstance(entry_vals, pd.Series):
+            entry_open = float(entry_vals.iloc[-1])
+        else:
+            entry_open = float(entry_vals)
+
+        target_abs = entry_open * (1.0 + tp_frac)
+        endS = min(S + BDay(int(window_bdays)), asof - BDay(1))
+        fwd = hist.loc[(hist.index > S) & (hist.index <= endS)]
+        if fwd.empty:
+            continue
+
+        hit_mask = fwd[hc] >= target_abs
+        if hit_mask.any():
+            first_hit = hit_mask.idxmax()
+            days_to_hit = pd.bdate_range(S, first_hit).size - 1
+            hit = True
+            hits += 1
+        else:
+            days_to_hit = None
+            hit = False
+
+        max_high = float(fwd[hc].max())
+        max_gain_pct = (max_high / entry_open - 1.0) * 100.0
+
+        if include_misses or hit:
+            events.append(
+                {
+                    "date": str(S.date()),
+                    "entry_price": round(entry_open, 6),
+                    "target_pct": round(tp_frac * 100.0, 6),
+                    "max_gain_pct": round(max_gain_pct, 6),
+                    "days_to_hit": int(days_to_hit) if days_to_hit is not None else None,
+                    "hit": bool(hit),
+                }
+            )
+
+        if len(events) >= int(limit):
+            break
+
+    return hits, events
 
 def _calc_atr(series_h, series_l, series_c, window: int) -> pd.Series:
     cprev = series_c.shift(1)
@@ -38,14 +139,6 @@ def has_21d_precedent(df: pd.DataFrame, asof_idx: int, required_pct: float,
     return False
 
 
-def _normalize_tp_pct(tp_value: float) -> float:
-    """Normalize TP% values supplied as either fraction or percent."""
-
-    if tp_value is None or pd.isna(tp_value):
-        return float("nan")
-    return float(tp_value / 100.0) if tp_value > 1.5 else float(tp_value)
-
-
 def precedent_hits_pct_target(
     prices_one_ticker: pd.DataFrame,
     asof_date: pd.Timestamp,
@@ -54,47 +147,15 @@ def precedent_hits_pct_target(
     window_bdays: int = 21,
 ) -> int:
     """Count precedent hits for a percent target without peeking beyond D-1."""
-
-    prices = prices_one_ticker.copy()
-    prices.index = pd.to_datetime(prices.index).tz_localize(None)
-    prices = prices.sort_index()
-
-    asof_date = pd.Timestamp(asof_date).tz_localize(None)
-
-    oc = _col(prices, "open")
-    hc = _col(prices, "high")
-
-    tp_frac = _normalize_tp_pct(tp_value)
-    if pd.isna(tp_frac) or tp_frac <= 0:
-        return 0
-
-    hist = prices.loc[prices.index < asof_date]
-    if hist.empty:
-        return 0
-
-    start_min = asof_date - BDay(lookback_bdays)
-    start_lb = max(start_min, hist.index.min())
-    start_ub = asof_date - BDay(1)
-    if start_lb > start_ub:
-        return 0
-
-    starts = pd.bdate_range(start_lb, start_ub)
-    starts = [s for s in starts if s in hist.index]
-    if not starts:
-        return 0
-
-    hits = 0
-    for S in starts:
-        entry_vals = hist.loc[S, oc]
-        if isinstance(entry_vals, pd.Series):
-            entry_open = float(entry_vals.iloc[-1])
-        else:
-            entry_open = float(entry_vals)
-        target_abs = entry_open * (1.0 + tp_frac)
-        endS = min(S + BDay(window_bdays), asof_date - BDay(1))
-        fwd = hist.loc[(hist.index > S) & (hist.index <= endS)]
-        if not fwd.empty and (fwd[hc] >= target_abs).any():
-            hits += 1
+    hits, _events = compute_precedent_events(
+        prices_one_ticker,
+        asof_date,
+        tp_value,
+        lookback_bdays=lookback_bdays,
+        window_bdays=window_bdays,
+        include_misses=True,
+        limit=max(int(lookback_bdays) + 10, 1000),
+    )
     return int(hits)
 
 

@@ -76,6 +76,7 @@ def run_range(
         "tp_halfway_pct",
         "precedent_hits",
         "precedent_ok",
+        "precedent_details",
         "atr_ok",
         "reasons",
     ]
