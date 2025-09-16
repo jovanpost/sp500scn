@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import datetime as dt
+from pathlib import Path
 from typing import TypedDict, Tuple, List, Dict, Any, Callable
 
 import numpy as np
@@ -11,7 +13,7 @@ import pandas as pd
 from data_lake.storage import Storage
 import streamlit as st
 from .replay import replay_trade, simulate_pct_target_only
-from .filters import atr_feasible, precedent_hits_pct_target
+from .filters import atr_feasible, compute_precedent_events
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ class ScanParams(TypedDict, total=False):
     precedent_lookback: int
     precedent_window: int
     min_precedent_hits: int
+    log_precedent_details: bool
+    log_precedent_include_misses: bool
+    precedent_details_limit: int
+    write_precedent_events_table: bool
     exit_model: str
 
 
@@ -165,6 +171,18 @@ def scan_day(
     prec_lookback = int(params.get("precedent_lookback", 252))
     prec_window = int(params.get("precedent_window", 21))
     min_prec_hits = int(params.get("min_precedent_hits", 1))
+    log_precedent_details = bool(params.get("log_precedent_details", True))
+    log_precedent_include_misses = bool(
+        params.get("log_precedent_include_misses", True)
+    )
+    precedent_details_limit = int(params.get("precedent_details_limit", 300))
+    write_precedent_events_table = bool(
+        params.get("write_precedent_events_table", False)
+    )
+    precedent_include_misses = bool(
+        log_precedent_include_misses
+        and (log_precedent_details or write_precedent_events_table)
+    )
     exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only")
     exit_model = exit_model.strip().lower()
 
@@ -175,6 +193,10 @@ def scan_day(
     stats = {"universe": len(active), "loaded": 0, "candidates": 0}
     prec_hit_values: List[int] = []
     prec_fail_count = 0
+    prec_pass_count = 0
+    prec_pass_hits: List[int] = []
+    precedent_event_records: List[Dict[str, Any]] = []
+    precedent_samples: List[Dict[str, Any]] = []
 
     for idx, t in enumerate(active, 1):
         try:
@@ -213,58 +235,119 @@ def scan_day(
                 and m["gap_open_pct"] >= min_gap
                 and (not np.isnan(m["sr_ratio"]) and m["sr_ratio"] >= sr_min)
             ):
-                tp_halfway_pct = m.get("tp_halfway_pct")
-                required_pct = tp_halfway_pct
+                row: Dict[str, Any] = {"ticker": t, **m}
+                required_pct = row.get("tp_halfway_pct")
                 tp_pct_percent = (
                     float(required_pct) * 100.0
                     if required_pct is not None and not np.isnan(required_pct)
                     else float("nan")
                 )
+
                 hits = 0
                 prec_ok = True
-                tp_value = (
-                    float(required_pct)
-                    if required_pct is not None and not np.isnan(required_pct)
-                    else float("nan")
-                )
+                events_for_row: List[Dict[str, Any]] = []
                 if use_precedent:
-                    if pd.isna(tp_value):
+                    tp_val = (
+                        float(required_pct)
+                        if required_pct is not None and not np.isnan(required_pct)
+                        else float("nan")
+                    )
+                    if pd.isna(tp_val):
                         prec_ok = False
                         prec_fail_count += 1
                     else:
-                        hits = precedent_hits_pct_target(
+                        hits, events_for_row = compute_precedent_events(
                             df_idx,
                             pd.Timestamp(D_ts),
-                            tp_value,
+                            tp_val,
                             lookback_bdays=prec_lookback,
                             window_bdays=prec_window,
+                            include_misses=precedent_include_misses,
+                            limit=precedent_details_limit,
                         )
                         prec_hit_values.append(int(hits))
                         prec_ok = hits >= min_prec_hits
-                        if not prec_ok:
+                        if prec_ok:
+                            prec_pass_count += 1
+                            prec_pass_hits.append(int(hits))
+                        else:
                             prec_fail_count += 1
-                atr_ok = atr_feasible(
-                    df, dm1, required_pct, atr_window
-                ) if (required_pct is not None and not np.isnan(required_pct)) else False
+
+                atr_ok = (
+                    atr_feasible(df, dm1, required_pct, atr_window)
+                    if (required_pct is not None and not np.isnan(required_pct))
+                    else False
+                )
+
                 reasons: List[str] = []
                 if use_precedent and not prec_ok:
                     reasons.append("precedent_fail")
                 if not atr_ok:
                     reasons.append("atr_insufficient")
 
-                row = {
-                    "ticker": t,
-                    **m,
-                    "precedent_hits": int(hits),
-                    "precedent_ok": int(prec_ok),
-                    "atr_ok": int(atr_ok),
-                    "reasons": ",".join(reasons),
-                }
+                row.update(
+                    {
+                        "precedent_hits": int(hits),
+                        "precedent_ok": int(prec_ok),
+                        "atr_ok": int(atr_ok),
+                        "reasons": ",".join(reasons),
+                    }
+                )
+                if log_precedent_details:
+                    row["precedent_details"] = json.dumps(
+                        events_for_row, separators=(",", ":")
+                    )
+                else:
+                    row["precedent_details"] = "[]"
+
                 include = ((not use_precedent) or prec_ok) and (
                     (not use_atr_feasible) or atr_ok
                 )
                 if include:
                     cand_rows.append(row)
+
+                    if len(precedent_samples) < 2:
+                        sample_events = [dict(ev) for ev in events_for_row[:3]]
+                        precedent_samples.append(
+                            {
+                                "ticker": str(t),
+                                "trade_date": str(pd.Timestamp(D_ts).date()),
+                                "precedent_hits": int(hits),
+                                "precedent_ok": bool(prec_ok),
+                                "events": sample_events,
+                            }
+                        )
+
+                    if write_precedent_events_table and events_for_row:
+                        for ev in events_for_row:
+                            precedent_event_records.append(
+                                {
+                                    "trade_date_D": str(pd.Timestamp(D_ts).date()),
+                                    "ticker": str(t),
+                                    "tp_pct": (
+                                        float(ev.get("target_pct"))
+                                        if ev.get("target_pct") is not None
+                                        else None
+                                    ),
+                                    "start_date_S": ev.get("date"),
+                                    "entry_open_S": (
+                                        float(ev.get("entry_price"))
+                                        if ev.get("entry_price") is not None
+                                        else None
+                                    ),
+                                    "days_to_hit": (
+                                        int(ev.get("days_to_hit"))
+                                        if ev.get("days_to_hit") is not None
+                                        else None
+                                    ),
+                                    "max_gain_pct": (
+                                        float(ev.get("max_gain_pct"))
+                                        if ev.get("max_gain_pct") is not None
+                                        else None
+                                    ),
+                                    "hit": bool(ev.get("hit")),
+                                }
+                            )
 
                     if exit_model == "pct_tp_only":
                         if required_pct is None or np.isnan(required_pct):
@@ -322,6 +405,40 @@ def scan_day(
         stats["precedent_hits_median"] = None
         stats["precedent_hits_max"] = None
     stats["precedent_fail_count"] = int(prec_fail_count)
+    stats["precedent_pass_count"] = int(prec_pass_count)
+    stats["precedent_hits_median_pass"] = (
+        float(np.median(prec_pass_hits)) if prec_pass_hits else None
+    )
+    stats["precedent_details_preview"] = precedent_samples
     stats["candidates"] = len(cand_df)
+
+    if write_precedent_events_table and precedent_event_records:
+        events_df = pd.DataFrame(precedent_event_records)
+        path_parquet = Path("data") / "precedent_events.parquet"
+        path_parquet.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path_parquet.exists():
+                existing = pd.read_parquet(path_parquet)
+                combined = pd.concat([existing, events_df], ignore_index=True)
+            else:
+                combined = events_df
+            combined.to_parquet(path_parquet, index=False)
+            stats["precedent_events_path"] = str(path_parquet)
+            stats["precedent_events_rows"] = int(len(events_df))
+        except Exception as exc:
+            path_csv = Path("data") / "precedent_events.csv"
+            path_csv.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path_csv.exists():
+                    existing_csv = pd.read_csv(path_csv)
+                    combined_csv = pd.concat([existing_csv, events_df], ignore_index=True)
+                else:
+                    combined_csv = events_df
+                combined_csv.to_csv(path_csv, index=False)
+                stats["precedent_events_path"] = str(path_csv)
+                stats["precedent_events_rows"] = int(len(events_df))
+                stats["precedent_events_error"] = str(exc)
+            except Exception as exc_csv:
+                stats["precedent_events_error"] = f"{exc}; csv_fail={exc_csv}"
 
     return cand_df, out_df, fail_count, stats
