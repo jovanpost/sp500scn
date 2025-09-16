@@ -217,6 +217,7 @@ def scan_day(
             ):
                 row: Dict[str, Any] = {"ticker": t, **m}
                 row["date"] = pd.Timestamp(D_ts).tz_localize(None)
+                row["sr_window_used"] = int(atr_window)
 
                 tp_frac = tp_fraction_from_row(
                     row.get("entry_open"),
@@ -226,6 +227,13 @@ def scan_day(
                 )
                 tp_frac_valid = (
                     tp_frac is not None and not pd.isna(tp_frac) and float(tp_frac) > 0
+                )
+
+                row["tp_frac_used"] = (
+                    float(tp_frac) if tp_frac_valid else float("nan")
+                )
+                row["tp_pct_used"] = (
+                    float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
                 )
 
                 hits_count = 0
