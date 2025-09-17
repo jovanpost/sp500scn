@@ -9,6 +9,11 @@ from urllib.parse import urlparse
 import pandas as pd
 import streamlit as st
 
+try:  # pragma: no cover - optional dependency
+    import yfinance as yf
+except ModuleNotFoundError:  # pragma: no cover - handled in UI when invoked
+    yf = None  # type: ignore[assignment]
+
 from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
 from data_lake.ingest import ingest_batch
@@ -273,6 +278,189 @@ def render_data_lake_tab() -> None:
                 st.experimental_rerun()
     except Exception:
         st.caption("Membership parquet not available")
+
+    # --- RAW OHLC (unadjusted) one-click writer ----------------------------------
+    st.markdown("### RAW OHLC (unadjusted) — one-click writer")
+    with st.expander(
+        "🧽 Write RAW Yahoo OHLC to lake (unadjusted, with actions)",
+        expanded=False,
+    ):
+        tickers_str = st.text_input(
+            "Tickers (comma/space separated)",
+            value="NVDA WMT ALB",
+            help=(
+                "Example: NVDA, WMT, ALB  · Dot tickers (BRK.B) are handled automatically."
+            ),
+        ).strip()
+
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            start_date = st.date_input(
+                "Start date", value=pd.Timestamp("1990-01-01").date(), key="raw_start"
+            )
+        with c2:
+            use_end = st.checkbox(
+                "Set explicit end date", value=False, key="raw_use_end"
+            )
+            end_date = (
+                st.date_input("End date", value=pd.Timestamp.today().date(), key="raw_end")
+                if use_end
+                else None
+            )
+        with c3:
+            pause_s = st.number_input(
+                "Pause (sec) between tickers",
+                min_value=0.0,
+                max_value=5.0,
+                value=0.25,
+                step=0.05,
+            )
+
+        run_btn = st.button(
+            "Write RAW to lake now", type="primary", use_container_width=True
+        )
+
+        SCHEMA = [
+            "date",
+            "Ticker",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Adj Close",
+            "Volume",
+            "Dividends",
+            "Stock Splits",
+        ]
+
+        def _yahoo_symbol(tkr: str) -> str:
+            """Return the Yahoo Finance symbol for ``tkr``.
+
+            Yahoo uses ``-`` for class tickers, but parquet filenames and
+            ``Ticker`` column retain the original uppercase ticker.
+            """
+
+            return tkr.replace(".", "-").upper()
+
+        def _download_raw_yahoo(tkr: str, start: str | None, end: str | None) -> pd.DataFrame:
+            if yf is None:  # pragma: no cover - guarded before invocation
+                raise RuntimeError("yfinance is required for RAW OHLC ingest")
+
+            y = yf.download(
+                _yahoo_symbol(tkr),
+                start=start,
+                end=end,
+                auto_adjust=False,
+                actions=True,
+                progress=False,
+                threads=False,
+            )
+            if y.empty:
+                return pd.DataFrame(columns=SCHEMA)
+
+            # Some yfinance versions return MultiIndex columns when actions=True
+            if isinstance(y.columns, pd.MultiIndex):
+                y = y.droplevel(1, axis=1)
+
+            y = y.reset_index().rename(columns={"Date": "date"})
+            out = pd.DataFrame(index=range(len(y)))
+            out["date"] = pd.to_datetime(y["date"]).dt.tz_localize(None)
+            out["Ticker"] = tkr.upper()
+            out["Open"] = y.get("Open", pd.NA)
+            out["High"] = y.get("High", pd.NA)
+            out["Low"] = y.get("Low", pd.NA)
+            out["Close"] = y.get("Close", pd.NA)
+            out["Adj Close"] = y.get("Adj Close", pd.NA)
+            out["Volume"] = y.get("Volume", pd.NA)
+            out["Dividends"] = y.get("Dividends", 0.0 if "Dividends" in y else 0.0)
+            out["Stock Splits"] = y.get(
+                "Stock Splits", 0.0 if "Stock Splits" in y else 0.0
+            )
+            return out[SCHEMA].sort_values("date")
+
+        if run_btn:
+            if yf is None:
+                st.error(
+                    "yfinance is required for RAW OHLC ingest. Please install yfinance."
+                )
+            else:
+                try:
+                    storage = Storage.from_env()  # reads SUPABASE creds from st.secrets
+                except Exception as e:  # pragma: no cover - UI feedback
+                    st.error(f"Storage not configured or unavailable: {e}")
+                    st.stop()
+                raw_tickers = [
+                    t for t in tickers_str.replace(",", " ").upper().split() if t
+                ]
+                if not raw_tickers:
+                    st.error("No tickers provided.")
+                else:
+                    start_s = (
+                        str(pd.Timestamp(start_date).date()) if start_date else None
+                    )
+                    end_s = str(pd.Timestamp(end_date).date()) if end_date else None
+                    ok, fail = 0, 0
+                    try:
+                        prog = st.progress(0.0, text="Starting…")
+                        progress_supports_text = True
+                    except TypeError:
+                        prog = st.progress(0.0)
+                        progress_supports_text = False
+                    log = st.empty()
+
+                    for i, tkr in enumerate(raw_tickers, start=1):
+                        try:
+                            df = _download_raw_yahoo(tkr, start_s, end_s)
+                            if df.empty:
+                                log.warning(
+                                    f"{tkr}: Yahoo returned 0 rows for range [{start_s}…{end_s}]"
+                                )
+                                fail += 1
+                            else:
+                                buf = io.BytesIO()
+                                dest = f"prices/{tkr}.parquet"
+                                ts = pd.Timestamp.utcnow().strftime("%Y%m%d%H%M%S")
+                                if _storage_has_file(storage, dest):
+                                    try:
+                                        prev = storage.read_bytes(dest)
+                                        storage.write_bytes(
+                                            f"backups/prices/{tkr}.{ts}.parquet", prev
+                                        )
+                                    except Exception as e:  # pragma: no cover
+                                        log.warning(
+                                            f"{tkr}: could not backup existing file: {e}"
+                                        )
+                                df.to_parquet(buf, index=False, compression="snappy")
+                                storage.write_bytes(dest, buf.getvalue())
+                                log.info(
+                                    f"{tkr}: wrote {len(df)} rows "
+                                    f"[{df['date'].min().date()} → {df['date'].max().date()}]"
+                                )
+                                ok += 1
+                        except Exception as e:  # pragma: no cover - UI feedback
+                            log.error(f"{tkr}: ERROR {e}")
+                            fail += 1
+                        progress_value = i / max(len(raw_tickers), 1)
+                        if progress_supports_text:
+                            try:
+                                prog.progress(
+                                    progress_value,
+                                    text=f"{i}/{len(raw_tickers)} processed…",
+                                )
+                            except TypeError:
+                                progress_supports_text = False
+                                prog.progress(progress_value)
+                        else:
+                            prog.progress(progress_value)
+                        time.sleep(float(pause_s))
+
+                    if fail == 0:
+                        st.success(f"Done. ok={ok}, failed={fail}")
+                    else:
+                        st.warning(
+                            f"Done with issues. ok={ok}, failed={fail}. See log above."
+                        )
+    # -------------------------------------------------------------------------------
 
     st.markdown("### Ingest prices")
     start = st.date_input("start date", date(1990, 1, 1), key="start_date")
