@@ -16,7 +16,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-smoke.txt || true
-          pip install -e .
           pip install pytest
+          echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
       - name: Run tests
         run: pytest -q
