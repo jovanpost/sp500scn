@@ -8,7 +8,39 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from data_lake.storage import Storage
+
+
+def make_yf_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "keep-alive",
+        }
+    )
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=0.6,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 
 def _yahoo_symbol(tkr: str) -> str:
@@ -46,18 +78,34 @@ def main(argv: t.Sequence[str] | None = None) -> int:
     df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
     df = df.set_index("date").sort_index()
 
+    sess = make_yf_session()
+    symbol = _yahoo_symbol(args.ticker)
     yahoo = yf.download(
-        _yahoo_symbol(args.ticker),
+        symbol,
         start=args.start,
         end=args.end,
         auto_adjust=False,
         actions=True,
         progress=False,
         threads=False,
+        session=sess,
     )
-    if yahoo.empty:
-        print("Yahoo empty")
-        return 3
+    if yahoo is None or yahoo.empty:
+        yahoo = yf.download(
+            symbol,
+            period="30d",
+            auto_adjust=False,
+            actions=True,
+            progress=False,
+            threads=False,
+            session=sess,
+        )
+
+    if yahoo is None or yahoo.empty:
+        raise RuntimeError(
+            f"Yahoo returned no rows for {symbol} "
+            f"[{args.start or 'period'}..{args.end or 'now'}] after retries."
+        )
 
     if isinstance(yahoo.columns, pd.MultiIndex):
         yahoo = yahoo.droplevel(1, axis=1)
