@@ -72,5 +72,5 @@ jobs:
           for T in "${TKS[@]}"; do
             T=$(echo "$T" | xargs)
             echo "=== VERIFY $T ==="
-            python scripts/verify_raw_vs_yahoo.py --ticker "$T" --threshold 0.001
+            python scripts/verify_raw_vs_yahoo.py --ticker "$T"
           done
