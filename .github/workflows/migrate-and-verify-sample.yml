@@ -1,0 +1,76 @@
+name: migrate-and-verify-sample
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Comma-separated tickers"
+        default: "AAPL,NVDA,WMT,ALB"
+        required: true
+      start:
+        description: "Start date (YYYY-MM-DD)"
+        default: "1996-01-01"
+        required: true
+      end:
+        description: "End date (YYYY-MM-DD, optional)"
+        default: ""
+        required: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install deps
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "yfinance==0.2.43" >> requirements.txt
+            echo "pandas" >> requirements.txt
+            echo "pyarrow" >> requirements.txt
+            echo "requests" >> requirements.txt
+            pip install -r requirements.txt
+          fi
+      - name: Show inputs
+        run: |
+          echo "Tickers: ${{ github.event.inputs.tickers }}"
+          echo "Start:   ${{ github.event.inputs.start }}"
+          echo "End:     ${{ github.event.inputs.end }}"
+      - name: Migrate RAW OHLC to Supabase
+        run: |
+          IFS=',' read -ra TKS <<< "${{ github.event.inputs.tickers }}"
+          for T in "${TKS[@]}"; do
+            T=$(echo "$T" | xargs)
+            echo "=== MIGRATE $T ==="
+            python scripts/migrate_lake_to_raw.py \
+              --ticker "$T" \
+              --start "${{ github.event.inputs.start }}" \
+              $( [ -n "${{ github.event.inputs.end }}" ] && echo --end "${{ github.event.inputs.end }}" )
+          done
+      - name: Verify vs Yahoo (0.1% threshold)
+        run: |
+          IFS=',' read -ra TKS <<< "${{ github.event.inputs.tickers }}"
+          for T in "${TKS[@]}"; do
+            T=$(echo "$T" | xargs)
+            echo "=== VERIFY $T ==="
+            python scripts/verify_raw_vs_yahoo.py --ticker "$T" --threshold 0.001
+          done
