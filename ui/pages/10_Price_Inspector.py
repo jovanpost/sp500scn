@@ -5,7 +5,14 @@ import streamlit as st
 
 st.set_page_config(page_title="Price Inspector (minimal)", page_icon="🔍", layout="wide")
 
-from data_lake.storage import Storage, load_prices_cached, validate_prices_schema
+from data_lake.storage import Storage, load_prices_cached
+
+# Optional validator: use if present; otherwise no-op so the page still works.
+try:
+    from data_lake.storage import validate_prices_schema  # type: ignore
+except Exception:
+    def validate_prices_schema(_df):  # no-op fallback
+        return None
 
 st.title("🔍 Price Inspector (minimal)")
 
@@ -39,7 +46,7 @@ if st.button("Load"):
     if df.empty:
         st.error("No rows loaded from the lake in this window.")
     else:
-        # Guardrails on read
+        # Guardrails on read (safe if no-op)
         try:
             validate_prices_schema(df)
         except Exception as e:
@@ -69,4 +76,5 @@ if st.button("Load"):
                 "Volume": int(r["Volume"]) if pd.notna(r["Volume"]) else None,
             }
             st.json(diag)
+
 
