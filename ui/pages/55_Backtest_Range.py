@@ -336,16 +336,29 @@ def render_page() -> None:
                             prices_df.loc[prices_df["Ticker"] == sample_ticker]
                             .drop(columns=["Ticker"], errors="ignore")
                         )
-                        st.write(
-                            {
-                                "sample": sample_ticker,
-                                "rows": int(df0.shape[0]),
-                                "range": [
-                                    str(df0["date"].min()),
-                                    str(df0["date"].max()),
-                                ],
-                            }
-                        )
+                        last_row = df0.sort_values("date").iloc[-1]
+                        sample_out = {
+                            "sample": sample_ticker,
+                            "rows": int(df0.shape[0]),
+                            "range": [
+                                str(df0["date"].min()),
+                                str(df0["date"].max()),
+                            ],
+                            "last_bar_date": str(pd.to_datetime(last_row["date"]).date()),
+                            "last_bar_close": float(last_row.get("Close", float("nan")))
+                            if "Close" in df0.columns
+                            else None,
+                            "last_bar_adj_close": float(last_row.get("Adj Close", float("nan")))
+                            if "Adj Close" in df0.columns
+                            else None,
+                            "last_bar_dividends": float(last_row.get("Dividends", 0) or 0)
+                            if "Dividends" in df0.columns
+                            else 0.0,
+                            "last_bar_stock_splits": float(last_row.get("Stock Splits", 0) or 0)
+                            if "Stock Splits" in df0.columns
+                            else 0.0,
+                        }
+                        st.write(sample_out)
 
             if prices_df.empty:
                 log("No prices loaded—check Storage bucket and paths (prices/*.parquet).")
