@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
+import requests  # used for Yahoo connectivity probe
 import streamlit as st
 
 try:  # pragma: no cover - optional dependency
@@ -316,8 +317,30 @@ def render_data_lake_tab() -> None:
                 step=0.05,
             )
 
+        # Connectivity probe (Yahoo)
+        def _yahoo_ok() -> bool:
+            try:
+                r = requests.get(
+                    "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
+                    timeout=6,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                return r.status_code == 200 and "quoteResponse" in r.text
+            except Exception:
+                return False
+
+        yahoo_reachable = _yahoo_ok()
+        if not yahoo_reachable:
+            st.warning(
+                "Yahoo is not reachable from this runtime. Use **GitHub → Actions → "
+                "migrate-and-verify-sample → Run workflow** to ingest RAW OHLC."
+            )
+
         run_btn = st.button(
-            "Write RAW to lake now", type="primary", use_container_width=True
+            "Write RAW to lake now (this runtime)",
+            type="primary",
+            use_container_width=True,
+            disabled=not yahoo_reachable,
         )
 
         SCHEMA = [
@@ -460,6 +483,9 @@ def render_data_lake_tab() -> None:
                         st.warning(
                             f"Done with issues. ok={ok}, failed={fail}. See log above."
                         )
+                    if ok > 0:
+                        st.cache_data.clear()
+                        st.experimental_rerun()
     # -------------------------------------------------------------------------------
 
     st.markdown("### Ingest prices")
