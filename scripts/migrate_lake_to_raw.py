@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import random
 import sys
 import time
 import typing as t
@@ -11,6 +12,10 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from data_lake.storage import Storage
 
@@ -26,6 +31,34 @@ SCHEMA = [
     "Dividends",
     "Stock Splits",
 ]
+
+
+def make_yf_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "keep-alive",
+        }
+    )
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=0.6,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 
 def _yahoo_symbol(tkr: str) -> str:
@@ -72,18 +105,35 @@ def _validate_prices_schema(df: pd.DataFrame, ticker: str) -> None:
 
 
 def _download_raw_yahoo(tkr: str, start: str | None, end: str | None) -> pd.DataFrame:
+    sess = make_yf_session()
+    symbol = _yahoo_symbol(tkr)
     y = yf.download(
-        _yahoo_symbol(tkr),
+        symbol,
         start=start,
         end=end,
         auto_adjust=False,
         actions=True,
         progress=False,
         threads=False,
+        session=sess,
     )
 
-    if y.empty:
-        return pd.DataFrame(columns=SCHEMA)
+    if y is None or y.empty:
+        y = yf.download(
+            symbol,
+            period="30d",
+            auto_adjust=False,
+            actions=True,
+            progress=False,
+            threads=False,
+            session=sess,
+        )
+
+    if y is None or y.empty:
+        raise RuntimeError(
+            f"Yahoo returned no rows for {symbol} "
+            f"[{start or 'period'}..{end or 'now'}] after retries."
+        )
 
     if isinstance(y.columns, pd.MultiIndex):
         y = y.droplevel(1, axis=1)
@@ -199,7 +249,8 @@ def main(argv: t.Sequence[str] | None = None) -> int:
                 f" [{df['date'].min().date()} → {df['date'].max().date()}]"
             )
             ok += 1
-            time.sleep(args.sleep)
+            sleep_for = max(args.sleep, 0) + 0.3 + random.random() * 0.7
+            time.sleep(sleep_for)
         except Exception as exc:  # pragma: no cover - top-level logging
             print(f"{ticker}: ERROR {exc}", file=sys.stderr)
             failed += 1
