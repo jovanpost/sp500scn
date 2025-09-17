@@ -11,7 +11,6 @@ from typing import Any, List
 
 import pandas as pd
 import streamlit as st
-from pandas.api.types import is_numeric_dtype
 
 log = logging.getLogger(__name__)
 
@@ -28,20 +27,6 @@ else:  # pragma: no cover - exercised when package installed
 LOCAL_ROOT = Path(".lake")
 DEFAULT_BUCKET = "lake"
 
-# Stable price schema used across ingest + read paths.
-PRICE_COLUMNS = [
-    "date",
-    "Ticker",
-    "Open",
-    "High",
-    "Low",
-    "Close",
-    "Adj Close",
-    "Volume",
-    "Dividends",
-    "Stock Splits",
-]
-
 
 def supabase_available() -> tuple[bool, str]:
     """Return ``(available, reason)`` for Supabase client support."""
@@ -54,59 +39,6 @@ def supabase_available() -> tuple[bool, str]:
         )
         return False, reason
     return True, ""
-
-
-def validate_prices_schema(df: pd.DataFrame, *, strict: bool = True) -> None:
-    """Ensure frames store raw OHLC alongside provider Adj Close."""
-
-    if df is None or df.empty:
-        return
-
-    req = set(PRICE_COLUMNS)
-    missing = sorted(req - set(df.columns))
-    if missing:
-        raise ValueError(f"Missing required price columns: {', '.join(missing)}")
-
-    dates = pd.to_datetime(df["date"], errors="coerce")
-    if dates.isna().any() and df["date"].notna().any():
-        raise ValueError("Non-datetime values in 'date' column")
-
-    tick = df["Ticker"].dropna().astype(str).str.strip()
-    if not tick.empty and not (tick == tick.str.upper()).all():
-        raise ValueError("Ticker column must be uppercase")
-
-    for col in [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Adj Close",
-        "Volume",
-        "Dividends",
-        "Stock Splits",
-    ]:
-        if col in df.columns:
-            series = df[col].dropna()
-            if not series.empty and not is_numeric_dtype(series):
-                pd.to_numeric(series, errors="raise")
-
-    actions_present = False
-    for col in ("Dividends", "Stock Splits"):
-        if col in df.columns:
-            values = pd.to_numeric(df[col], errors="coerce").fillna(0)
-            if values.ne(0).any():
-                actions_present = True
-                break
-
-    if actions_present:
-        close = pd.to_numeric(df["Close"], errors="coerce")
-        adj_close = pd.to_numeric(df["Adj Close"], errors="coerce")
-        mask = close.notna() & adj_close.notna()
-        if mask.any() and (close[mask] == adj_close[mask]).all():
-            msg = "Adjusted OHLC detected; store raw OHLC and keep 'Adj Close' separately."
-            if strict:
-                raise ValueError(msg)
-            log.warning(msg)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -378,36 +310,35 @@ class Storage:
 
 # ====== Price helpers =======================================================
 
-
-def _normalize_key(name: str) -> str:
+def _normalize_column_name(name: str) -> str:
     return name.strip().lower().replace(" ", "_").replace("-", "_")
 
 
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     if df is None or df.empty:
-        empty = pd.DataFrame(columns=[c for c in PRICE_COLUMNS if c != "date"])
+        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+        empty = pd.DataFrame(columns=cols)
         empty.index = pd.DatetimeIndex([], name="date")
         log.debug("_tidy_prices: empty frame for %s", ticker)
         return empty
 
     working = df.copy()
     if not isinstance(working.index, pd.DatetimeIndex):
-        date_col = next(
-            (c for c in working.columns if _normalize_key(c) in {"date", "timestamp"}),
-            None,
-        )
-        if date_col:
-            working["date"] = working[date_col]
+        possible_date_col = None
+        for col in working.columns:
+            if _normalize_column_name(col) in {"date", "timestamp"}:
+                possible_date_col = col
+                break
+        if possible_date_col is not None:
+            working["date"] = working[possible_date_col]
         else:
-            working = working.reset_index().rename(
-                columns={working.index.name or "index": "date"}
-            )
+            working = working.reset_index().rename(columns={working.index.name or "index": "date"})
     else:
         working = working.reset_index().rename(columns={working.index.name or "index": "date"})
 
     rename_map: dict[str, str] = {}
     for col in list(working.columns):
-        key = _normalize_key(col)
+        key = _normalize_column_name(col)
         if key in {"date", "timestamp"}:
             rename_map[col] = "date"
         elif key == "open":
@@ -416,56 +347,61 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
             rename_map[col] = "High"
         elif key == "low":
             rename_map[col] = "Low"
+        elif key in {"adj_close", "adjclose", "adjusted_close", "close_adj"}:
+            rename_map[col] = "Adj Close"
         elif key in {"close", "close_price"}:
             rename_map.setdefault(col, "Close")
-        elif key in {"adj_close", "adjusted_close", "adjclose", "close_adj"}:
-            rename_map[col] = "Adj Close"
         elif key == "volume":
             rename_map[col] = "Volume"
         elif key in {"ticker", "symbol"}:
             rename_map[col] = "Ticker"
-        elif key in {"dividends", "dividend"}:
-            rename_map[col] = "Dividends"
-        elif key in {"stock_splits", "stocksplits", "split"}:
-            rename_map[col] = "Stock Splits"
 
     working = working.rename(columns=rename_map)
-    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.tz_localize(None)
+
+    working["date"] = pd.to_datetime(working["date"], errors="coerce")
     working = working.dropna(subset=["date"])
+    try:
+        working["date"] = working["date"].dt.tz_localize(None)
+    except Exception:
+        pass
+
+    required_cols = {
+        "Open": "Open",
+        "High": "High",
+        "Low": "Low",
+        "Close": "Close",
+        "Adj Close": "Adj Close",
+        "Volume": "Volume",
+    }
+    for key, col in required_cols.items():
+        if col not in working.columns:
+            source_candidates = [c for c in working.columns if _normalize_column_name(c) == _normalize_column_name(key)]
+            if source_candidates:
+                working[col] = working[source_candidates[0]]
+
+    if "Adj Close" not in working.columns and "Close" in working.columns:
+        working["Adj Close"] = working["Close"]
 
     if "Ticker" not in working.columns:
-        working["Ticker"] = ticker or pd.NA
-    working["Ticker"] = working["Ticker"].astype("string").str.upper().str.strip()
+        if ticker is not None:
+            working["Ticker"] = ticker
+        else:
+            working["Ticker"] = pd.NA
 
-    keep = PRICE_COLUMNS.copy()
-    for col in keep:
+    working["Ticker"] = working["Ticker"].astype(str).str.upper()
+
+    keep_cols = ["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    for col in keep_cols:
         if col not in working.columns:
-            if col == "Adj Close":
-                # Preserve provider adjustment data without manufacturing values.
-                working[col] = pd.NA
-            elif col in {"Dividends", "Stock Splits"}:
-                working[col] = 0.0
-            elif col == "date":
-                continue
-            else:
-                working[col] = pd.NA
+            working[col] = pd.NA
+    working = working[keep_cols]
 
-    for col in ["Open", "High", "Low", "Close", "Adj Close", "Dividends", "Stock Splits"]:
-        if col in working.columns:
-            working[col] = pd.to_numeric(working[col], errors="coerce")
-
-    if "Volume" in working.columns:
-        vol = pd.to_numeric(working["Volume"], errors="coerce")
-        try:
-            working["Volume"] = vol.astype("Int64")
-        except Exception:
-            working["Volume"] = vol
-
-    ordered = ["date"] + [c for c in keep if c != "date"]
-    working = working[ordered]
-    working = working.sort_values("date").drop_duplicates(subset=["date"], keep="last")
-    working = working.set_index("date").rename_axis("date")
-    return working[[c for c in keep if c != "date"]]
+    working = working.sort_values("date")
+    working = working.drop_duplicates(subset=["date"], keep="last")
+    working = working.set_index("date")
+    working.index = pd.to_datetime(working.index).tz_localize(None)
+    working.index.name = "date"
+    return working
 
 
 @st.cache_data(hash_funcs={Storage: lambda _: 0}, show_spinner=False)
@@ -502,7 +438,7 @@ def load_prices_cached(
 
     tickers = [str(t).upper() for t in raw_tickers if t]
     if not tickers:
-        return pd.DataFrame(columns=PRICE_COLUMNS)
+        return pd.DataFrame(columns=["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"])
 
     def _naive(ts: pd.Timestamp | None) -> pd.Timestamp | None:
         if ts is None:
@@ -546,7 +482,7 @@ def load_prices_cached(
         frames.append(tidy)
 
     if not frames:
-        return pd.DataFrame(columns=PRICE_COLUMNS)
+        return pd.DataFrame(columns=["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"])
 
     out = pd.concat(frames, axis=0, ignore_index=False)
     out.index = pd.to_datetime(out.index).tz_localize(None)
@@ -558,26 +494,10 @@ def load_prices_cached(
     out = out.sort_values(["Ticker", "date"])
     out = out.drop_duplicates(subset=["Ticker", "date"], keep="last")
 
-    for col in PRICE_COLUMNS:
+    columns = ["date", "Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    for col in columns:
         if col not in out.columns:
-            if col in {"Dividends", "Stock Splits"}:
-                out[col] = 0.0
-            else:
-                out[col] = pd.NA
-
-    out = out[PRICE_COLUMNS]
-
-    out["Ticker"] = out["Ticker"].astype("string").str.upper().str.strip()
-    for col in ["Open", "High", "Low", "Close", "Adj Close", "Dividends", "Stock Splits"]:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    if "Volume" in out.columns:
-        vol = pd.to_numeric(out["Volume"], errors="coerce")
-        try:
-            out["Volume"] = vol.astype("Int64")
-        except Exception:
-            out["Volume"] = vol
-
-    # Enforce raw OHLC semantics before handing data to callers.
-    validate_prices_schema(out)
-
-    return out.reset_index(drop=True)
+            out[col] = pd.NA
+    out = out[columns]
+    out = out.reset_index(drop=True)
+    return out
