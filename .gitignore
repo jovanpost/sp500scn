@@ -1,6 +1,5 @@
 .lake/
 *.parquet
-!tests/fixtures/**/*.parquet
 manifests/
 __pycache__/
 .streamlit/secrets.toml

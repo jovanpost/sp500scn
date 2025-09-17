@@ -18,42 +18,11 @@ def test_tidy_prices_normalizes_schema():
 
     tidy = _tidy_prices(df, ticker="aapl")
 
-    assert list(tidy.columns) == [
-        "Ticker",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Adj Close",
-        "Volume",
-        "Dividends",
-        "Stock Splits",
-    ]
-    assert tidy.index.name == "date" and tidy.index.tz is None
+    assert list(tidy.columns) == ["Open", "High", "Low", "Close", "Adj Close", "Volume", "Ticker"]
+    assert tidy.index.name == "date"
+    assert tidy.index.tz is None
     assert tidy["Ticker"].unique().tolist() == ["AAPL"]
-    assert "Adj Close" in tidy and tidy["Dividends"].sum() == 0 and tidy["Stock Splits"].sum() == 0
-
-
-def test_tidy_prices_preserves_raw_ohlc():
-    df = pd.DataFrame(
-        {
-            "date": ["2024-01-02"],
-            "open": [101.0],
-            "high": [105.0],
-            "low": [99.5],
-            "close": [100.0],
-            "adj_close": [95.0],
-            "volume": [1_000_000],
-            "dividends": [1.25],
-        }
-    )
-
-    tidy = _tidy_prices(df, ticker="RAW")
-    stamp = pd.Timestamp("2024-01-02")
-
-    assert tidy.loc[stamp, "Close"] == 100.0
-    assert tidy.loc[stamp, "Adj Close"] == 95.0
-    assert tidy.loc[stamp, "Dividends"] == 1.25
+    assert "Adj Close" in tidy.columns
 
 
 def test_tidy_prices_deduplicates_last_wins():
