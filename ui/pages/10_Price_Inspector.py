@@ -1,5 +1,5 @@
+# ui/pages/10_Price_Inspector.py
 from __future__ import annotations
-
 import pandas as pd
 import streamlit as st
 
@@ -26,7 +26,7 @@ if st.button("Load"):
         st.warning("File not found; try another ticker or check ingest.")
 
     start = pd.Timestamp(day) - pd.Timedelta(days=int(pad))
-    end = pd.Timestamp(day) + pd.Timedelta(days=int(pad))
+    end   = pd.Timestamp(day) + pd.Timedelta(days=int(pad))
 
     df = load_prices_cached(
         storage,
@@ -45,9 +45,7 @@ if st.button("Load"):
         except Exception as e:
             st.error(f"Validator FAILED: {e}")
 
-        st.write(
-            f"Rows: {len(df)}   ·   Range: {str(df['date'].min())} → {str(df['date'].max())}"
-        )
+        st.write(f"Rows: {len(df)}   ·   Range: {str(df['date'].min())} → {str(df['date'].max())}")
         st.caption(f"Rows for {tkr}: {len(df[df['Ticker'] == tkr])}")
         st.dataframe(df, use_container_width=True)
 
@@ -71,3 +69,4 @@ if st.button("Load"):
                 "Volume": int(r["Volume"]) if pd.notna(r["Volume"]) else None,
             }
             st.json(diag)
+
