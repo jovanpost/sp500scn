@@ -38,22 +38,28 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import yfinance as yf
           from data_lake.storage import Storage
           from data_lake.ingest import ingest_raw_yahoo_batch
-          import yfinance as yf
 
+          # Read input values
           raw = "${{ github.event.inputs.tickers }}"
           start = "${{ github.event.inputs.start }}".strip() or "1996-01-01"
           end = "${{ github.event.inputs.end }}".strip() or None
 
+          # Prepare tickers list
           tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
 
           print("Jobs:", jobs)
 
+          # Initialize storage object
           s = Storage.from_env()
-          
+
+          # Summary to track results
           summary = {}
+
+          # Loop through each job and attempt to fetch data
           for job in jobs:
               ticker = job["ticker"]
               try:
@@ -64,12 +70,15 @@ jobs:
                       print(f"No data available for {ticker}. Skipping.")
                       summary[ticker] = "No data"
                   else:
+                      # Ingest data if available
                       ingest_raw_yahoo_batch(s, [job])
                       summary[ticker] = "Success"
               except Exception as e:
+                  # Log the error if it fails
                   print(f"Failed to download {ticker}: {str(e)}")
                   summary[ticker] = f"Failed: {str(e)}"
 
+          # Print summary of results
           print(json.dumps(summary, indent=2))
 
           # Fail only if everything failed
