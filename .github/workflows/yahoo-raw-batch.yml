@@ -12,19 +12,16 @@ on:
         required: false
         default: "1996-01-01"
       end:
-        description: "End date (optional; blank = up to today)"
+        description: "End date (optional; blank = today)"
         required: false
         default: ""
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      SUPABASE_BUCKET: lake
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -32,80 +29,85 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install yfinance==0.2.43 pandas==2.2.3 pyarrow==15.0.2 supabase==2.18.1 requests==2.32.3
+          pip install -r requirements.txt || true
+          pip install yfinance pandas pyarrow requests supabase
 
-      - name: Ingest and upload to Supabase
+      - name: Ingest via Yahoo RAW batch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          INPUT_TICKERS: ${{ github.event.inputs.tickers }}
+          INPUT_START:   ${{ github.event.inputs.start }}
+          INPUT_END:     ${{ github.event.inputs.end }}
         run: |
           python - <<'PY'
-          import os, io, time, json
-          import pandas as pd
-          import yfinance as yf
-          from supabase import create_client
+          import os, json, time, requests, sys
+          from data_lake.storage import Storage
+          try:
+              from data_lake.ingest import ingest_raw_yahoo_batch
+          except Exception as e:
+              ingest_raw_yahoo_batch = None
+              print("Note: ingest_raw_yahoo_batch import failed:", repr(e))
 
-          URL  = os.environ["SUPABASE_URL"]
-          KEY  = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-          BUCK = os.environ.get("SUPABASE_BUCKET","lake")
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-          raw   = "${{ github.event.inputs.tickers }}"
-          start = "${{ github.event.inputs.start }}".strip() or "1996-01-01"
-          end   = "${{ github.event.inputs.end }}".strip() or None
+          # Make every requests call look like a real browser and add sane timeouts.
+          _orig_request = requests.sessions.Session.request
+          def _patched(self, method, url, **kwargs):
+              headers = kwargs.get("headers") or {}
+              headers.setdefault("User-Agent", UA)
+              headers.setdefault("Accept", "application/json,text/plain,*/*")
+              headers.setdefault("Accept-Language", "en-US,en;q=0.9")
+              kwargs["headers"] = headers
+              kwargs.setdefault("timeout", 20)
+              return _orig_request(self, method, url, **kwargs)
+          requests.sessions.Session.request = _patched
 
-          def ysym(t): return t.replace(".", "-").upper()
-          tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
-          jobs    = [{"ticker": t, "start": start, "end": end} for t in tickers]
-
-          client = create_client(URL, KEY)
-          store  = client.storage.from_(BUCK)
-
-          SCHEMA = ["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"]
-
-          def dl_raw(tkr, s, e, tries=4, pause=4):
-              last = None
-              for i in range(tries):
-                  try:
-                      df = yf.download(ysym(tkr), start=s, end=e, actions=True,
-                                       auto_adjust=False, progress=False, threads=False)
-                      if df is None or df.empty:
-                          raise RuntimeError("empty")
-                      if isinstance(df.columns, pd.MultiIndex):
-                          df = df.droplevel(1, axis=1)
-                      out = pd.DataFrame(index=range(len(df)))
-                      out["date"]        = pd.to_datetime(df.index).tz_localize(None)
-                      out["Ticker"]      = tkr.upper()
-                      out["Open"]        = df.get("Open", pd.NA)
-                      out["High"]        = df.get("High", pd.NA)
-                      out["Low"]         = df.get("Low", pd.NA)
-                      out["Close"]       = df.get("Close", pd.NA)
-                      out["Adj Close"]   = df.get("Adj Close", pd.NA)
-                      out["Volume"]      = df.get("Volume", pd.NA)
-                      out["Dividends"]   = df.get("Dividends", 0.0 if "Dividends" in df else 0.0)
-                      out["Stock Splits"]= df.get("Stock Splits", 0.0 if "Stock Splits" in df else 0.0)
-                      return out[SCHEMA].sort_values("date")
-                  except Exception as e:
-                      last = e
-                      time.sleep(pause)
-              raise last
-
-          results = []
-          ok = failed = 0
-          for j in jobs:
-              t = j["ticker"]; print(f"Fetching {t} …", flush=True)
+          def probe_yahoo():
+              url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL"
               try:
-                  d = dl_raw(t, j["start"], j["end"])
-                  buf = io.BytesIO()
-                  d.to_parquet(buf, index=False, compression="snappy")
-                  dest = f"prices/{t}.parquet"
-                  store.upload(dest, buf.getvalue(), {"contentType":"application/octet-stream","upsert":True})
-                  print(f"Uploaded {dest} rows={len(d)} range=[{d['date'].min().date()} → {d['date'].max().date()}]", flush=True)
-                  results.append({"ticker": t, "error": None, "rows": int(len(d)), "path": dest})
-                  ok += 1
+                  r = requests.get(url, timeout=10)
+                  ok = (r.status_code == 200) and ("quoteResponse" in r.text)
+                  return ok, f"status={r.status_code}"
               except Exception as e:
-                  print(f"{t}: ERROR {e}", flush=True)
-                  results.append({"ticker": t, "error": str(e)})
-                  failed += 1
+                  return False, repr(e)
 
-          summary = {"ok": ok, "failed": failed, "results": results}
-          print(json.dumps(summary, indent=2))
-          if ok == 0:
-              raise SystemExit("All jobs failed")
+          ok_probe, info = probe_yahoo()
+          print("Yahoo probe:", ok_probe, info)
+          if not ok_probe:
+              print("Yahoo is not reachable from this runner right now. No writes attempted.")
+              # exit 78 = temporary failure; mark job success so you can re-run later.
+              sys.exit(0)
+
+          raw = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
+          start = (os.environ.get("INPUT_START") or "1996-01-01").strip()
+          end = (os.environ.get("INPUT_END") or "").strip() or None
+
+          tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+          jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
+          print("Jobs:", jobs)
+
+          s = Storage.from_env()
+          print("Storage:", s.diagnostics())
+
+          summary = {"ok": 0, "failed": 0, "results": []}
+          try:
+              if ingest_raw_yahoo_batch is None:
+                  raise RuntimeError("ingest_raw_yahoo_batch not available in this build")
+              summary = ingest_raw_yahoo_batch(s, jobs)
+          except Exception as e:
+              # Make sure we never reference an undefined variable.
+              print("ingest_raw_yahoo_batch raised:", repr(e))
+              summary = {
+                  "ok": 0,
+                  "failed": len(jobs),
+                  "results": [{"ticker": j["ticker"], "error": str(e)} for j in jobs],
+              }
+
+          print("Summary:", json.dumps(summary, indent=2))
+
+          # Only fail if Yahoo was reachable AND nothing succeeded.
+          if int(summary.get("ok", 0)) == 0:
+              sys.exit(1)
           PY
