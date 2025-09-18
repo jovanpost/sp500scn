@@ -85,6 +85,8 @@ jobs:
                   else:
                       # Ingest data if available
                       ingest_raw_yahoo_batch(s, [{"ticker": ticker, "start": str(data.index[0]), "end": str(data.index[-1])}])
+                      print(f"Data ingested for {ticker}:")
+                      print(data.head())  # Log the first few rows of data for review
                       summary[ticker] = "Success"
               except Exception as e:
                   # Log the error if it fails
