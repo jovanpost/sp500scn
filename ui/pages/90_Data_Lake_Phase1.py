@@ -16,13 +16,26 @@ except ModuleNotFoundError:  # pragma: no cover - handled in UI when invoked
 
 from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
-from data_lake.ingest import ingest_batch, lake_file_is_raw
-# Try to import the optional Yahoo RAW batch helper. Older deployments may not
-# have it yet, so fall back gracefully if import fails.
-try:  # pragma: no cover - optional helper
-    from data_lake.ingest import ingest_raw_yahoo_batch  # type: ignore
-except Exception:  # pragma: no cover - absence handled below
-    ingest_raw_yahoo_batch = None  # type: ignore
+
+# --- Robustly guard *all* ingest imports ---------------------------------------
+# If data_lake.ingest has not shipped yet or has a load error, the page should still render.
+
+try:
+    from data_lake.ingest import ingest_batch as _ingest_batch  # type: ignore
+except Exception as _e:
+    _ingest_batch = None  # type: ignore
+    _INGEST_IMPORT_ERROR = _e  # for optional diagnostics
+
+try:
+    from data_lake.ingest import lake_file_is_raw as _lake_file_is_raw  # type: ignore
+except Exception:
+    _lake_file_is_raw = None  # type: ignore
+
+try:
+    from data_lake.ingest import ingest_raw_yahoo_batch as _ingest_raw_yahoo_batch  # type: ignore
+except Exception:
+    _ingest_raw_yahoo_batch = None  # type: ignore
+# -------------------------------------------------------------------------------
 
 from data_lake.schemas import IngestJob
 from ui.components.debug import debug_panel, _get_dbg
@@ -40,12 +53,57 @@ def _storage_has_file(storage: Storage, path: str) -> bool:
             return bool(exists_fn(path))
         except Exception:
             return False
-
     try:
         storage.read_bytes(path)
     except Exception:
         return False
     return True
+
+
+def _ui_looks_raw_prices(df: pd.DataFrame) -> bool:
+    """Local RAW detector used only if lake_file_is_raw is unavailable.
+
+    RAW if, on any action day (div/split), Close != Adj Close.
+    No action days => accept as RAW to avoid endless rebuilds.
+    """
+    needed = {"Close", "Adj Close", "Dividends", "Stock Splits"}
+    if not needed.issubset(set(df.columns)):
+        return False
+    d = df.copy()
+    d["Dividends"] = pd.to_numeric(d["Dividends"], errors="coerce").fillna(0)
+    d["Stock Splits"] = pd.to_numeric(d["Stock Splits"], errors="coerce").fillna(0)
+    actions = (d["Dividends"] != 0) | (d["Stock Splits"] != 0)
+    if not actions.any():
+        return True
+    sub = d.loc[actions, ["Close", "Adj Close"]].dropna()
+    if sub.empty:
+        return True
+    # avoid numpy dep: use pandas vector ops
+    diff_ok = (sub["Close"] - sub["Adj Close"]).abs() <= 1e-6
+    return not bool(diff_ok.all())
+
+
+def _probe_is_raw(storage: Storage, ticker: str) -> bool:
+    """Use ingest.lake_file_is_raw if available; else local fallback."""
+    if callable(_lake_file_is_raw):
+        try:
+            return bool(_lake_file_is_raw(storage, ticker))
+        except Exception:
+            return False
+    # Fallback: read a subset of columns and apply the local heuristic
+    path = f"prices/{ticker.upper()}.parquet"
+    if not _storage_has_file(storage, path):
+        return False
+    try:
+        try:
+            df = storage.read_parquet_df(
+                path, columns=["date", "Close", "Adj Close", "Dividends", "Stock Splits"]
+            )
+        except TypeError:
+            df = storage.read_parquet_df(path)
+        return _ui_looks_raw_prices(df)
+    except Exception:
+        return False
 
 
 def render_data_lake_tab() -> None:
@@ -214,7 +272,7 @@ def render_data_lake_tab() -> None:
                     needs_rebuild.append((ticker, False))
                     continue
 
-                is_raw = lake_file_is_raw(storage, ticker)
+                is_raw = _probe_is_raw(storage, ticker)
                 present.append((ticker, True))
                 needs_rebuild.append((ticker, not is_raw))
 
@@ -242,7 +300,18 @@ def render_data_lake_tab() -> None:
             st.write(missing[:25])
 
         max_run = st.number_input("max tickers per run", 1, 1000, 50, key="cov_max_run")
-        if st.button("Run until target coverage", use_container_width=True, type="primary"):
+        run_disabled = (
+            (target == "Files present" and not callable(_ingest_batch)) or
+            (target == "RAW (unadjusted)" and not (callable(_ingest_raw_yahoo_batch) or callable(_ingest_batch)))
+        )
+
+        if run_disabled:
+            if target == "RAW (unadjusted)" and not callable(_ingest_raw_yahoo_batch):
+                st.info("Yahoo RAW batch helper not available in this build; falling back to Supabase ingest if present.")
+            if target == "Files present" and not callable(_ingest_batch):
+                st.info("Supabase ingest is not available in this build.")
+
+        if st.button("Run until target coverage", use_container_width=True, type="primary", disabled=run_disabled):
             jobs = [
                 {"ticker": t, "start": "1990-01-01", "end": None}
                 for t in missing[: int(max_run)]
@@ -251,19 +320,19 @@ def render_data_lake_tab() -> None:
                 st.success("Already at target coverage.")
             else:
                 progress_bar = st.progress(0.0)
-                # Use Yahoo RAW when targeting RAW and the helper exists; else fall back.
-                if target == "RAW (unadjusted)" and ingest_raw_yahoo_batch:
-                    summary = ingest_raw_yahoo_batch(
+                # Prefer Yahoo RAW when targeting RAW and helper exists
+                if target == "RAW (unadjusted)" and callable(_ingest_raw_yahoo_batch):
+                    summary = _ingest_raw_yahoo_batch(
                         storage,
                         jobs,
                         progress_cb=lambda d, t: progress_bar.progress(d / t),
                     )
                 else:
-                    if target == "RAW (unadjusted)" and not ingest_raw_yahoo_batch:
-                        st.info(
-                            "Yahoo RAW batch helper not available in this build; using Supabase ingest instead."
-                        )
-                    summary = ingest_batch(
+                    # Fall back to Supabase path if available
+                    if not callable(_ingest_batch):
+                        st.error("No available ingester for this target in this build.")
+                        st.stop()
+                    summary = _ingest_batch(
                         storage,
                         jobs,
                         progress_cb=lambda d, t: progress_bar.progress(d / t),
@@ -352,12 +421,7 @@ def render_data_lake_tab() -> None:
         ]
 
         def _yahoo_symbol(tkr: str) -> str:
-            """Return the Yahoo Finance symbol for ``tkr``.
-
-            Yahoo uses ``-`` for class tickers, but parquet filenames and
-            ``Ticker`` column retain the original uppercase ticker.
-            """
-
+            """Return the Yahoo Finance symbol for ``tkr``."""
             return tkr.replace(".", "-").upper()
 
         def _download_raw_yahoo(tkr: str, start: str | None, end: str | None) -> pd.DataFrame:
@@ -391,31 +455,23 @@ def render_data_lake_tab() -> None:
             out["Adj Close"] = y.get("Adj Close", pd.NA)
             out["Volume"] = y.get("Volume", pd.NA)
             out["Dividends"] = y.get("Dividends", 0.0 if "Dividends" in y else 0.0)
-            out["Stock Splits"] = y.get(
-                "Stock Splits", 0.0 if "Stock Splits" in y else 0.0
-            )
+            out["Stock Splits"] = y.get("Stock Splits", 0.0 if "Stock Splits" in y else 0.0)
             return out[SCHEMA].sort_values("date")
 
         if run_btn:
             if yf is None:
-                st.error(
-                    "yfinance is required for RAW OHLC ingest. Please install yfinance."
-                )
+                st.error("yfinance is required for RAW OHLC ingest. Please install yfinance.")
             else:
                 try:
                     storage = Storage.from_env()  # reads SUPABASE creds from st.secrets
                 except Exception as e:  # pragma: no cover - UI feedback
                     st.error(f"Storage not configured or unavailable: {e}")
                     st.stop()
-                raw_tickers = [
-                    t for t in tickers_str.replace(",", " ").upper().split() if t
-                ]
+                raw_tickers = [t for t in tickers_str.replace(",", " ").upper().split() if t]
                 if not raw_tickers:
                     st.error("No tickers provided.")
                 else:
-                    start_s = (
-                        str(pd.Timestamp(start_date).date()) if start_date else None
-                    )
+                    start_s = str(pd.Timestamp(start_date).date()) if start_date else None
                     end_s = str(pd.Timestamp(end_date).date()) if end_date else None
                     ok, fail = 0, 0
                     try:
@@ -430,9 +486,7 @@ def render_data_lake_tab() -> None:
                         try:
                             df = _download_raw_yahoo(tkr, start_s, end_s)
                             if df.empty:
-                                log.warning(
-                                    f"{tkr}: Yahoo returned 0 rows for range [{start_s}…{end_s}]"
-                                )
+                                log.warning(f"{tkr}: Yahoo returned 0 rows for range [{start_s}…{end_s}]")
                                 fail += 1
                             else:
                                 buf = io.BytesIO()
@@ -441,13 +495,9 @@ def render_data_lake_tab() -> None:
                                 if _storage_has_file(storage, dest):
                                     try:
                                         prev = storage.read_bytes(dest)
-                                        storage.write_bytes(
-                                            f"backups/prices/{tkr}.{ts}.parquet", prev
-                                        )
+                                        storage.write_bytes(f"backups/prices/{tkr}.{ts}.parquet", prev)
                                     except Exception as e:  # pragma: no cover
-                                        log.warning(
-                                            f"{tkr}: could not backup existing file: {e}"
-                                        )
+                                        log.warning(f"{tkr}: could not backup existing file: {e}")
                                 df.to_parquet(buf, index=False, compression="snappy")
                                 storage.write_bytes(dest, buf.getvalue())
                                 log.info(
@@ -461,10 +511,7 @@ def render_data_lake_tab() -> None:
                         progress_value = i / max(len(raw_tickers), 1)
                         if progress_supports_text:
                             try:
-                                prog.progress(
-                                    progress_value,
-                                    text=f"{i}/{len(raw_tickers)} processed…",
-                                )
+                                prog.progress(progress_value, text=f"{i}/{len(raw_tickers)} processed…")
                             except TypeError:
                                 progress_supports_text = False
                                 prog.progress(progress_value)
@@ -475,9 +522,7 @@ def render_data_lake_tab() -> None:
                     if fail == 0:
                         st.success(f"Done. ok={ok}, failed={fail}")
                     else:
-                        st.warning(
-                            f"Done with issues. ok={ok}, failed={fail}. See log above."
-                        )
+                        st.warning(f"Done with issues. ok={ok}, failed={fail}. See log above.")
                     if ok > 0:
                         st.cache_data.clear()
                         st.experimental_rerun()
@@ -488,7 +533,11 @@ def render_data_lake_tab() -> None:
     end = st.date_input("end date", date.today(), key="end_date")
     max_tickers = st.number_input("max tickers per run", 1, 1000, 25, key="max_tickers")
     dry_run = st.checkbox("dry run", value=False)
-    if st.button("Ingest prices (batch)"):
+    ingest_disabled = not callable(_ingest_batch)
+    if ingest_disabled:
+        st.info("Supabase ingest is not available in this build.")
+
+    if st.button("Ingest prices (batch)", disabled=ingest_disabled):
         try:
             membership_df = load_membership(storage, cache_salt=storage.cache_salt())
             tickers = list(membership_df["ticker"].unique())[: int(max_tickers)]
@@ -499,7 +548,7 @@ def render_data_lake_tab() -> None:
                 st.write(f"Would ingest {len(jobs)} tickers")
             else:
                 progress_bar = st.progress(0)
-                summary = ingest_batch(
+                summary = _ingest_batch(  # type: ignore[operator]
                     storage, jobs, progress_cb=lambda d, t: progress_bar.progress(d / t)
                 )
                 st.success(f"ok {summary['ok']}, failed {summary['failed']}")
