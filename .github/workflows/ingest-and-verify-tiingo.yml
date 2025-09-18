@@ -82,5 +82,8 @@ jobs:
           for T in "${TKS[@]}"; do
             T=$(echo "$T" | xargs)
             echo "=== VERIFY $T ==="
-            python scripts/verify_raw_vs_tiingo.py --ticker "$T" --start "${{ github.event.inputs.start }}" --end "${{ github.event.inputs.end }}"
+            python scripts/verify_raw_vs_tiingo.py \
+              --ticker "$T" \
+              --start "${{ github.event.inputs.start }}" \
+              $( [ -n "${{ github.event.inputs.end }}" ] && echo --end "${{ github.event.inputs.end }}" )
           done
