@@ -16,7 +16,7 @@ from requests.adapters import HTTPAdapter
 from supabase import Client
 from urllib3.util.retry import Retry
 
-from .schemas import IngestJob, IngestResult
+from .schemas import IngestJob
 from .storage import Storage, _tidy_prices, validate_prices_schema
 
 
@@ -326,7 +326,7 @@ def _fetch(storage: Storage, job: IngestJob) -> pd.DataFrame:
 def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> dict:
     """Run batch; returns dict with summary and results."""
 
-    results: List[IngestResult] = []
+    results: List[dict] = []
     all_dates = []
     for idx, job in enumerate(jobs):
         path = f"prices/{job['ticker']}.parquet"
@@ -372,3 +372,4 @@ def ingest_batch(storage: Storage, jobs: List[IngestJob], progress_cb=None) -> d
     manifest_path = f"manifests/ingest_{ts}.json"
     storage.write_bytes(manifest_path, json.dumps(manifest).encode("utf-8"))
     return {"ok": ok, "failed": failed, "results": results, "manifest_path": manifest_path}
+```0
