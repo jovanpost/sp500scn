@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import time
 from datetime import date
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -16,7 +17,16 @@ except ModuleNotFoundError:  # pragma: no cover - handled in UI when invoked
 
 from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
-from data_lake.ingest import ingest_batch, ingest_raw_yahoo_batch, lake_file_is_raw
+from data_lake.ingest import ingest_batch
+from data_lake.ingest import lake_file_is_raw
+
+# Try to import the optional Yahoo RAW batch helper. Older deployments may not
+# have it yet, so fall back gracefully if import fails.
+try:  # pragma: no cover - optional helper
+    from data_lake.ingest import ingest_raw_yahoo_batch  # type: ignore
+except Exception:  # pragma: no cover - absence handled below
+    ingest_raw_yahoo_batch = None  # type: ignore
+
 from data_lake.schemas import IngestJob
 from ui.components.debug import debug_panel, _get_dbg
 
@@ -244,13 +254,17 @@ def render_data_lake_tab() -> None:
                 st.success("Already at target coverage.")
             else:
                 progress_bar = st.progress(0.0)
-                if target == "RAW (unadjusted)":
+                if target == "RAW (unadjusted)" and ingest_raw_yahoo_batch:
                     summary = ingest_raw_yahoo_batch(
                         storage,
                         jobs,
                         progress_cb=lambda d, t: progress_bar.progress(d / t),
                     )
                 else:
+                    if target == "RAW (unadjusted)" and not ingest_raw_yahoo_batch:
+                        st.info(
+                            "Yahoo RAW batch helper not available in this build; using Supabase ingest instead."
+                        )
                     summary = ingest_batch(
                         storage,
                         jobs,
