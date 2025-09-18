@@ -40,86 +40,253 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: lake
+          FORCE_SUPABASE: "1"   # ensure remote writes in CI
           INPUT_TICKERS: ${{ github.event.inputs.tickers }}
           INPUT_START:   ${{ github.event.inputs.start }}
           INPUT_END:     ${{ github.event.inputs.end }}
           INPUT_FORCE:   ${{ github.event.inputs.force }}
         run: |
           python - <<'PY'
-          import os, json, sys, requests
-          from data_lake.storage import Storage
+          import os, sys, json, time, math, io, datetime as dt
+          import pandas as pd
+          import requests
 
-          # Try to import the helper; handle if not present
-          try:
-              from data_lake.ingest import ingest_raw_yahoo_batch
-          except Exception as e:
-              print("Note: ingest_raw_yahoo_batch import failed:", repr(e))
-              ingest_raw_yahoo_batch = None
-
+          # ---- Make all requests look like a browser (helps avoid consent / blocks)
           UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-
-          # Patch requests so every call looks like a real browser
-          _orig_request = requests.sessions.Session.request
-          def _patched(self, method, url, **kwargs):
-              headers = kwargs.get("headers") or {}
+                "KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+          _orig = requests.sessions.Session.request
+          def _patched(self, method, url, **kw):
+              headers = kw.get("headers") or {}
               headers.setdefault("User-Agent", UA)
               headers.setdefault("Accept", "application/json,text/plain,*/*")
               headers.setdefault("Accept-Language", "en-US,en;q=0.9")
-              kwargs["headers"] = headers
-              kwargs.setdefault("timeout", 20)
-              return _orig_request(self, method, url, **kwargs)
+              kw["headers"] = headers
+              kw.setdefault("timeout", 20)
+              return _orig(self, method, url, **kw)
           requests.sessions.Session.request = _patched
 
+          # ---- Storage helpers
+          def get_storage():
+              # Try your Storage abstraction if present
+              try:
+                  from data_lake.storage import Storage
+                  s = Storage.from_env()
+                  return ("storage", s)
+              except Exception as e:
+                  print("Storage.from_env() unavailable:", repr(e))
+              # Fallback to supabase client
+              try:
+                  from supabase import create_client
+                  url = os.environ["SUPABASE_URL"]
+                  key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+                  cli = create_client(url, key)
+                  bucket = os.environ.get("SUPABASE_BUCKET", "lake")
+                  return ("supabase", (cli, bucket))
+              except Exception as e:
+                  print("Supabase client unavailable:", repr(e))
+                  return (None, None)
+
+          def write_bytes(path: str, data: bytes) -> bool:
+              mode, obj = get_storage()
+              if mode == "storage":
+                  s = obj
+                  try:
+                      s.write_bytes(path, data)
+                      return True
+                  except Exception as e:
+                      print("Storage.write_bytes failed:", repr(e))
+              elif mode == "supabase":
+                  cli, bucket = obj
+                  try:
+                      cli.storage.from_(bucket).upload(
+                          path, data,
+                          {"content-type": "application/octet-stream", "upsert": True},
+                      )
+                      return True
+                  except Exception as e:
+                      print("Supabase upload failed:", repr(e))
+              else:
+                  print("No storage available to write", path)
+              return False
+
+          # ---- Yahoo helpers (no yfinance fallback)
+          def y_symbol(tkr: str) -> str:
+              return tkr.replace(".", "-").upper()
+
+          def to_epoch(date_str_or_none):
+              if not date_str_or_none:
+                  return None
+              # naive local → UTC epoch
+              ts = pd.Timestamp(str(date_str_or_none))
+              if ts.tzinfo is None:
+                  ts = ts.tz_localize("UTC")
+              else:
+                  ts = ts.tz_convert("UTC")
+              return int(ts.timestamp())
+
           def probe_yahoo():
-              """Return (ok, note). Try multiple lightweight endpoints."""
+              s = requests.Session()
               urls = [
                   "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d",
                   "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
               ]
               last = "no-attempt"
-              s = requests.Session()
               for u in urls:
                   try:
                       r = s.get(u, allow_redirects=True, timeout=12)
                       last = f"{u} status={r.status_code}"
-                      if r.status_code == 200 and "{" in r.text:
+                      if r.status_code == 200 and r.headers.get("content-type","").startswith("application/json"):
                           return True, last
                   except Exception as e:
                       last = f"{u} exc={repr(e)}"
               return False, last
 
-          ok_probe, info = probe_yahoo()
-          print("Yahoo probe:", ok_probe, info)
+          def fetch_chart_df(tkr: str, start: str, end: str | None) -> pd.DataFrame:
+              """
+              Return DataFrame with columns:
+              date, Ticker, Open, High, Low, Close, Adj Close, Volume, Dividends, Stock Splits
+              """
+              p1 = to_epoch(start)
+              p2 = to_epoch(end) or int(time.time()) + 86400
+              base = "https://query2.finance.yahoo.com/v8/finance/chart/"
+              params = f"?period1={p1}&period2={p2}&interval=1d&includeAdjustedClose=true&events=div%2Csplit&lang=en-US&region=US"
+              url = base + y_symbol(tkr) + params
 
-          force = (os.environ.get("INPUT_FORCE","no").strip().lower() in ("yes","true","1","y"))
+              s = requests.Session()
+              # small retry loop (403/429/5xx)
+              for attempt in range(4):
+                  try:
+                      r = s.get(url)
+                      if r.status_code == 200 and r.headers.get("content-type","").startswith("application/json"):
+                          js = r.json()
+                          break
+                      if r.status_code in (401,403,429,500,502,503):
+                          time.sleep(1.5 * (attempt + 1))
+                          continue
+                  except Exception:
+                      time.sleep(1.5 * (attempt + 1))
+              else:
+                  raise RuntimeError(f"Yahoo chart fetch failed for {tkr}")
 
-          raw = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
+              res = (js or {}).get("chart", {}).get("result")
+              if not res:
+                  raise RuntimeError(f"Yahoo returned no chart result for {tkr}")
+              res0 = res[0]
+              ts = res0.get("timestamp") or []
+              inds = res0.get("indicators", {}) or {}
+              quote = (inds.get("quote") or [{}])[0]
+              adjc  = (inds.get("adjclose") or [{}])[0]
+
+              if not ts or not quote.get("close"):
+                  raise RuntimeError(f"Yahoo returned no rows for {tkr}")
+
+              # Build frame
+              df = pd.DataFrame({
+                  "date": pd.to_datetime(ts, unit="s", utc=True).tz_convert(None),
+                  "Ticker": tkr.upper(),
+                  "Open":  quote.get("open"),
+                  "High":  quote.get("high"),
+                  "Low":   quote.get("low"),
+                  "Close": quote.get("close"),
+                  "Adj Close": adjc.get("adjclose"),
+                  "Volume": quote.get("volume"),
+              })
+
+              # Events → dividends / splits
+              divs = {}
+              splits = {}
+              ev = res0.get("events") or {}
+              if "dividends" in ev:
+                  for k, v in (ev["dividends"] or {}).items():
+                      try:
+                          t = int(v.get("date") or k)
+                          divs[t] = float(v.get("amount", 0.0))
+                      except Exception:
+                          pass
+              if "splits" in ev:
+                  for k, v in (ev["splits"] or {}).items():
+                      try:
+                          t = int(v.get("date") or k)
+                          ratio = v.get("splitRatio") or "0/1"
+                          num, den = ratio.split("/")
+                          val = float(num) / float(den) if float(den) != 0 else 0.0
+                          splits[t] = float(val)
+                      except Exception:
+                          pass
+
+              if divs:
+                  m = {pd.to_datetime(k, unit="s").date(): v for k, v in divs.items()}
+                  df["Dividends"] = df["date"].dt.date.map(lambda d: float(m.get(d, 0.0)))
+              else:
+                  df["Dividends"] = 0.0
+
+              if splits:
+                  m = {pd.to_datetime(k, unit="s").date(): v for k, v in splits.items()}
+                  df["Stock Splits"] = df["date"].dt.date.map(lambda d: float(m.get(d, 0.0)))
+              else:
+                  df["Stock Splits"] = 0.0
+
+              # Ensure column order and sort
+              cols = ["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"]
+              return df[cols].sort_values("date")
+
+          # ---- Inputs
+          raw   = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
           start = (os.environ.get("INPUT_START") or "1996-01-01").strip()
-          end = (os.environ.get("INPUT_END") or "").strip() or None
+          end   = (os.environ.get("INPUT_END") or "").strip() or None
+          force = (os.environ.get("INPUT_FORCE","no").strip().lower() in ("1","y","yes","true"))
+
           tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
-          print("Jobs:", jobs)
 
+          # ---- Probe Yahoo
+          ok_probe, note = probe_yahoo()
+          print("Yahoo probe:", ok_probe, note)
           if not ok_probe and not force:
-              print("Yahoo seems blocked right now. Skipping ingest (set Force=yes to try anyway).")
+              print("Yahoo seems blocked now. Re-run later or set Force=yes.")
               sys.exit(0)
 
-          s = Storage.from_env()
-          print("Storage:", s.diagnostics())
-
+          # ---- Try your helper first (if present)
           summary = {"ok": 0, "failed": 0, "results": []}
+          used_helper = False
           try:
-              if ingest_raw_yahoo_batch is None:
-                  raise RuntimeError("ingest_raw_yahoo_batch not available in this build")
+              from data_lake.ingest import ingest_raw_yahoo_batch  # optional
+              used_helper = True
+              from data_lake.storage import Storage
+              s = Storage.from_env()
+              print("Storage:", s.diagnostics())
               summary = ingest_raw_yahoo_batch(s, jobs)
+              print("Helper summary:", json.dumps(summary, indent=2))
           except Exception as e:
-              print("ingest_raw_yahoo_batch raised:", repr(e))
-              summary = {
-                  "ok": 0,
-                  "failed": len(jobs),
-                  "results": [{"ticker": j["ticker"], "error": str(e)} for j in jobs],
-              }
+              print("Helper path unavailable/failing, falling back. Reason:", repr(e))
+
+          # ---- Fallback to direct chart API if helper not present or all failed
+          if (not used_helper) or int(summary.get("ok",0)) == 0:
+              print("Using direct Yahoo chart fallback…")
+              ok, fail = 0, 0
+              results = []
+              for j in jobs:
+                  t = j["ticker"]
+                  try:
+                      df = fetch_chart_df(t, j["start"], j["end"])
+                      if df.empty:
+                          raise RuntimeError("empty dataframe")
+                      buf = io.BytesIO()
+                      df.to_parquet(buf, index=False, compression="snappy")
+                      dest = f"prices/{t}.parquet"
+                      if write_bytes(dest, buf.getvalue()):
+                          ok += 1
+                          results.append({"ticker": t, "error": None})
+                      else:
+                          fail += 1
+                          results.append({"ticker": t, "error": "write failed"})
+                  except Exception as e:
+                      fail += 1
+                      results.append({"ticker": t, "error": str(e)})
+                      print(f"{t}: ERROR {e}")
+                      time.sleep(0.5)
+              summary = {"ok": ok, "failed": fail, "results": results}
 
           print("Summary:", json.dumps(summary, indent=2))
           if int(summary.get("ok", 0)) == 0:
