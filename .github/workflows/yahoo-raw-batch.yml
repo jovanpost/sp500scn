@@ -3,140 +3,22 @@ name: Yahoo RAW batch
 on:
   workflow_dispatch:
     inputs:
-      scope:
-        description: "Universe"
+      tickers:
+        description: "Comma-separated tickers (e.g. AAPL,MSFT,NVDA)"
         required: true
-        default: "Historical"
-        type: choice
-        options: ["Historical", "Current"]
-      batch_size:
-        description: "Tickers per run"
-        required: true
-        default: "75"
+        default: "AAPL,MSFT"
       start:
         description: "Start date (YYYY-MM-DD)"
         required: false
         default: "1996-01-01"
       end:
-        description: "End date (blank = today)"
+        description: "End date (optional; blank means up to today)"
         required: false
         default: ""
-      tickers:
-        description: "(Optional) CSV tickers to run instead of auto-pick"
-        required: false
-        default: ""
-      source:
-        description: "Data source"
-        required: true
-        default: "auto"
-        type: choice
-        options: ["auto", "yfinance", "chart"]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: yahoo-raw-batch
-  cancel-in-progress: false
-
-env:
-  SUPABASE_BUCKET: lake
 
 jobs:
-  plan:
-    name: Plan next batch
-    runs-on: ubuntu-latest
-    outputs:
-      tickers_csv: ${{ steps.plan.outputs.tickers_csv }}
-      picked: ${{ steps.plan.outputs.picked }}
-    env:
-      INPUT_TICKERS: ${{ github.event.inputs.tickers }}
-      INPUT_SCOPE: ${{ github.event.inputs.scope }}
-      INPUT_BATCH_SIZE: ${{ github.event.inputs.batch_size }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          python -m pip install -U pip
-          pip install -r requirements.txt
-
-      - name: Create Streamlit secrets (for Supabase)
-        run: |
-          mkdir -p .streamlit
-          cat > .streamlit/secrets.toml <<EOF
-          SUPABASE_URL = "${{ secrets.SUPABASE_URL }}"
-          SUPABASE_SERVICE_ROLE_KEY = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          SUPABASE_BUCKET = "${{ env.SUPABASE_BUCKET }}"
-          FORCE_SUPABASE = true
-          [supabase]
-          url = "${{ secrets.SUPABASE_URL }}"
-          service_role_key = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          bucket = "${{ env.SUPABASE_BUCKET }}"
-          EOF
-
-      - name: Select tickers (auto unless override provided)
-        id: plan
-        run: |
-          python - <<'PY'
-          import os
-          from data_lake.storage import Storage
-          from data_lake.membership import load_membership
-          from data_lake.ingest import lake_file_is_raw
-
-          override = (os.getenv("INPUT_TICKERS") or "").strip()
-          batch_size = max(1, int(os.getenv("INPUT_BATCH_SIZE") or "75"))
-          scope = (os.getenv("INPUT_SCOPE") or "Historical").strip()
-
-          if override:
-              picked = [t.strip().upper() for t in override.split(",") if t.strip()][:batch_size]
-          else:
-              s = Storage.from_env()  # use Supabase membership + prices
-              df = load_membership(s, cache_salt=s.cache_salt())
-
-              if scope.startswith("Historical"):
-                  universe = sorted(df["ticker"].astype(str).str.upper().str.strip().unique().tolist())
-              else:
-                  cur = df[df["end_date"].isna() | (df["end_date"]=="")] if "end_date" in df else df
-                  universe = sorted(cur["ticker"].astype(str).str.upper().str.strip().unique().tolist())
-
-              missing_or_not_raw = []
-              for t in universe:
-                  has_file = s.exists(f"prices/{t}.parquet")
-                  if not has_file:
-                      missing_or_not_raw.append(t); 
-                      if len(missing_or_not_raw) >= batch_size: break
-                      continue
-                  try:
-                      is_raw = lake_file_is_raw(s, t)
-                  except Exception:
-                      is_raw = False
-                  if not is_raw:
-                      missing_or_not_raw.append(t)
-                      if len(missing_or_not_raw) >= batch_size: break
-
-              picked = missing_or_not_raw[:batch_size]
-
-          tickers_csv = ",".join(picked)
-          print("Planned tickers:", tickers_csv)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"tickers_csv={tickers_csv}\n")
-              f.write(f"picked={len(picked)}\n")
-          PY
-
   ingest:
-    name: Ingest
-    needs: plan
-    if: ${{ needs.plan.outputs.picked != '0' || github.event.inputs.tickers != '' }}
     runs-on: ubuntu-latest
-    env:
-      TICKERS_CSV: ${{ github.event.inputs.tickers != '' && github.event.inputs.tickers || needs.plan.outputs.tickers_csv }}
-      INPUT_START: ${{ github.event.inputs.start }}
-      INPUT_END: ${{ github.event.inputs.end }}
-      INPUT_SOURCE: ${{ github.event.inputs.source }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -146,168 +28,33 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt || true
+          pip install yfinance pandas pyarrow requests supabase
 
-      - name: Create Streamlit secrets (for Supabase)
+      - name: Ingest via Yahoo RAW batch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          mkdir -p .streamlit
-          cat > .streamlit/secrets.toml <<EOF
-          SUPABASE_URL = "${{ secrets.SUPABASE_URL }}"
-          SUPABASE_SERVICE_ROLE_KEY = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          SUPABASE_BUCKET = "${{ env.SUPABASE_BUCKET }}"
-          FORCE_SUPABASE = true
-          [supabase]
-          url = "${{ secrets.SUPABASE_URL }}"
-          service_role_key = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
-          bucket = "${{ env.SUPABASE_BUCKET }}"
-          EOF
-
-      - name: Run Yahoo RAW ingest (yfinance with chart fallback)
-        run: |
-          echo "Tickers: $TICKERS_CSV"
           python - <<'PY'
-          import os, io, json, time
-          import pandas as pd
-          import requests
-          from datetime import datetime, timezone
+          import json
           from data_lake.storage import Storage
           from data_lake.ingest import ingest_raw_yahoo_batch
 
-          def yahoo_chart_df(tkr: str, start: str|None, end: str|None) -> pd.DataFrame:
-              # Build chart URL
-              params = {
-                  "range": "max",
-                  "interval": "1d",
-                  "events": "div,split",
-                  "includeAdjustedClose": "true",
-              }
-              url = f"https://query2.finance.yahoo.com/v8/finance/chart/{tkr.replace('.', '-').upper()}"
-              r = requests.get(url, params=params, headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
-              r.raise_for_status()
-              j = r.json()
-              res = j.get("chart", {}).get("result", [])
-              if not res:
-                  return pd.DataFrame(columns=["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"])
-              res = res[0]
-              ts = res.get("timestamp", []) or []
-              if not ts:
-                  return pd.DataFrame(columns=["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"])
+          raw = "${{ github.event.inputs.tickers }}"
+          start = "${{ github.event.inputs.start }}".strip() or "1996-01-01"
+          end = "${{ github.event.inputs.end }}".strip() or None
 
-              ind = res.get("indicators", {}) or {}
-              quote = (ind.get("quote") or [{}])[0]
-              opens  = quote.get("open",  [])
-              highs  = quote.get("high",  [])
-              lows   = quote.get("low",   [])
-              closes = quote.get("close", [])
-              vols   = quote.get("volume",[])
-              adjc   = (ind.get("adjclose") or [{}])[0].get("adjclose", [])
+          tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
+          jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
 
-              # convert timestamps
-              dates = pd.to_datetime(pd.Series(ts), unit="s", utc=True).dt.tz_convert(None)
-              df = pd.DataFrame({
-                  "date": dates,
-                  "Ticker": tkr.upper(),
-                  "Open": opens, "High": highs, "Low": lows,
-                  "Close": closes, "Adj Close": adjc if adjc else closes,
-                  "Volume": vols,
-              })
-              # clip by start/end if given
-              if start:
-                  df = df[df["date"] >= pd.to_datetime(start)]
-              if end:
-                  df = df[df["date"] <= pd.to_datetime(end)]
-
-              # actions
-              divs = {}
-              splits = {}
-              ev = res.get("events", {}) or {}
-              if "dividends" in ev and isinstance(ev["dividends"], dict):
-                  for k,v in ev["dividends"].items():
-                      try:
-                          tsd = pd.to_datetime(int(k), unit="s", utc=True).tz_convert(None)
-                          divs[tsd.normalize()] = float(v.get("amount", 0.0))
-                      except Exception:
-                          pass
-              if "splits" in ev and isinstance(ev["splits"], dict):
-                  for k,v in ev["splits"].items():
-                      try:
-                          tss = pd.to_datetime(int(k), unit="s", utc=True).tz_convert(None)
-                          # Prefer provided ratio; else numerator/denominator
-                          ratio = v.get("ratio")
-                          if ratio is None:
-                              num = float(v.get("numerator", 1.0))
-                              den = float(v.get("denominator", 1.0))
-                              ratio = num/den if den else 1.0
-                          splits[tss.normalize()] = float(ratio)
-                      except Exception:
-                          pass
-
-              df["Dividends"] = 0.0
-              df["Stock Splits"] = 0.0
-              # Map actions by date (normalize to midnight)
-              df["_d0"] = df["date"].dt.normalize()
-              df.loc[df["_d0"].map(divs).notna(), "Dividends"] = df["_d0"].map(divs).fillna(0.0)
-              df.loc[df["_d0"].map(splits).notna(), "Stock Splits"] = df["_d0"].map(splits).fillna(0.0)
-              df = df.drop(columns=["_d0"])
-              # clean and sort
-              df = df.dropna(subset=["Close"]).copy()
-              return df[["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"]].sort_values("date")
-
-          tickers = [t.strip().upper() for t in (os.getenv("TICKERS_CSV") or "").split(",") if t.strip()]
-          start = (os.getenv("INPUT_START") or "1996-01-01").strip()
-          end = (os.getenv("INPUT_END") or "").strip() or None
-          source = (os.getenv("INPUT_SOURCE") or "auto").strip().lower()
+          print("Jobs:", jobs)
 
           s = Storage.from_env()
+          summary = ingest_raw_yahoo_batch(s, jobs)
+          print(json.dumps(summary, indent=2))
 
-          ok_total, fail_total = 0, 0
-          failed = []
-
-          if source in ("auto","yfinance"):
-              try:
-                  from functools import partial
-                  # First try repository function (uses yfinance)
-                  summary = ingest_raw_yahoo_batch(s, [{"ticker":t, "start":start, "end":end} for t in tickers])
-                  print("yfinance summary:", json.dumps(summary, indent=2))
-                  ok_total += int(summary.get("ok", 0))
-                  fail_total += int(summary.get("failed", 0))
-                  for r in summary.get("results", []):
-                      if r.get("error"):
-                          failed.append(r["ticker"])
-              except Exception as e:
-                  print("yfinance ingest raised:", repr(e))
-                  failed = tickers  # fall back to chart for all
-
-          # Fallback or explicit chart mode
-          if source in ("auto","chart"):
-              for t in (failed if source=="auto" else tickers):
-                  try:
-                      df = yahoo_chart_df(t, start, end)
-                      if df.empty:
-                          print(f"{t}: chart returned 0 rows")
-                          fail_total += 1
-                          continue
-                      # backup then write
-                      dest = f"prices/{t}.parquet"
-                      ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-                      try:
-                          if s.exists(dest):
-                              prev = s.read_bytes(dest)
-                              s.write_bytes(f"backups/prices/{t}.{ts}.parquet", prev)
-                      except Exception as be:
-                          print(f"{t}: backup skipped: {be}")
-
-                      buf = io.BytesIO()
-                      df.to_parquet(buf, index=False, compression="snappy")
-                      s.write_bytes(dest, buf.getvalue())
-                      print(f"{t}: wrote {len(df)} rows [{df['date'].min().date()} → {df['date'].max().date()}]")
-                      ok_total += 1
-                  except Exception as e:
-                      print(f"{t}: chart fallback ERROR {e}")
-                      fail_total += 1
-                  time.sleep(0.25)  # be nice to Yahoo
-
-          print(json.dumps({"ok": ok_total, "failed": fail_total}, indent=2))
-          if ok_total == 0:
+          # Fail only if everything failed
+          if summary.get("ok", 0) == 0:
               raise SystemExit("All jobs failed")
           PY
