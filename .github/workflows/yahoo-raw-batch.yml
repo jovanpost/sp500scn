@@ -12,91 +12,214 @@ on:
         required: false
         default: "1996-01-01"
       end:
-        description: "End date (optional; blank means up to today)"
+        description: "End date (optional; blank = today)"
         required: false
         default: ""
+      force:
+        description: "Ignore Yahoo probe and attempt anyway (yes/no)"
+        required: false
+        default: "no"
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install minimal deps
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt || true
-          pip install yfinance pandas pyarrow requests supabase
+          pip install pandas==2.2.3 pyarrow==15.0.2 requests==2.32.3
 
-      - name: Ingest via Yahoo RAW batch
+      - name: Ingest via Yahoo (direct) and upload to Supabase
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: lake
+          INPUT_TICKERS: ${{ github.event.inputs.tickers }}
+          INPUT_START:   ${{ github.event.inputs.start }}
+          INPUT_END:     ${{ github.event.inputs.end }}
+          INPUT_FORCE:   ${{ github.event.inputs.force }}
         run: |
           python - <<'PY'
-          import json
-          import yfinance as yf
-          from data_lake.storage import Storage
-          from data_lake.ingest import ingest_raw_yahoo_batch
+          import os, sys, io, time, json
+          import pandas as pd
+          import requests
 
-          # Read input values
-          raw = "${{ github.event.inputs.tickers }}"
-          start = "${{ github.event.inputs.start }}".strip() or "1996-01-01"
-          end = "${{ github.event.inputs.end }}".strip() or None
+          # ---- Inputs ---------------------------------------------------------
+          raw   = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
+          start = (os.environ.get("INPUT_START") or "1996-01-01").strip()
+          end   = (os.environ.get("INPUT_END") or "").strip() or None
+          force = (os.environ.get("INPUT_FORCE","no").strip().lower() in ("1","y","yes","true"))
 
-          # Prepare tickers list
+          supabase_url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
+          supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or ""
+          bucket       = os.environ.get("SUPABASE_BUCKET", "lake")
+
+          if not supabase_url or not supabase_key:
+              print("Supabase not configured in repo secrets (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY).")
+              sys.exit(1)
+
           tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
-
           print("Jobs:", jobs)
 
-          # Initialize storage object
-          s = Storage.from_env()
+          # ---- Yahoo helpers --------------------------------------------------
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+          sess = requests.Session()
+          sess.headers.update({
+              "User-Agent": UA,
+              "Accept": "application/json,text/plain,*/*",
+              "Accept-Language": "en-US,en;q=0.9",
+          })
 
-          # Summary to track results
-          summary = {}
+          def y_symbol(tkr: str) -> str:
+              return tkr.replace(".", "-").upper()
 
-          # Loop through each job and attempt to fetch data
-          for job in jobs:
-              ticker = job["ticker"]
+          def to_epoch(date_str_or_none):
+              if not date_str_or_none:
+                  return None
+              ts = pd.Timestamp(str(date_str_or_none))
+              if ts.tzinfo is None:
+                  ts = ts.tz_localize("UTC")
+              else:
+                  ts = ts.tz_convert("UTC")
+              return int(ts.timestamp())
+
+          def probe_yahoo():
               try:
-                  print(f"Fetching data for {ticker}...")
-
-                  # Start by trying the original start date
-                  data = yf.download(ticker, start=job["start"], end=job["end"])
-
-                  # If no data is found, try to find the first available data date
-                  if data.empty:
-                      print(f"No data available for {ticker} starting from {job['start']}. Searching for first available data.")
-                      
-                      # Fetch the data starting from the earliest possible date and find the first available date
-                      temp_data = yf.download(ticker, start="1900-01-01", end=job["end"])
-                      if not temp_data.empty:
-                          first_valid_date = temp_data.index[0]
-                          print(f"First available data for {ticker} starts at {first_valid_date}")
-                          data = yf.download(ticker, start=first_valid_date, end=job["end"])
-
-                  if data.empty:
-                      print(f"Still no data available for {ticker}. Skipping.")
-                      summary[ticker] = "No data"
-                  else:
-                      # Ingest data if available
-                      ingest_raw_yahoo_batch(s, [{"ticker": ticker, "start": str(data.index[0]), "end": str(data.index[-1])}])
-                      print(f"Data ingested for {ticker}:")
-                      print(data.head())  # Log the first few rows of data for review
-                      summary[ticker] = "Success"
+                  u = "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d"
+                  r = sess.get(u, timeout=12, allow_redirects=True)
+                  return (r.status_code == 200), f"{u} status={r.status_code}"
               except Exception as e:
-                  # Log the error if it fails
-                  print(f"Failed to download {ticker}: {str(e)}")
-                  summary[ticker] = f"Failed: {str(e)}"
+                  return False, f"probe exc={repr(e)}"
 
-          # Print summary of results
-          print(json.dumps(summary, indent=2))
+          def fetch_chart_df(tkr: str, start: str, end: str | None) -> pd.DataFrame:
+              p1 = to_epoch(start)
+              p2 = to_epoch(end) or int(time.time()) + 86400
+              url = (
+                  "https://query2.finance.yahoo.com/v8/finance/chart/"
+                  f"{y_symbol(tkr)}?period1={p1}&period2={p2}"
+                  "&interval=1d&includeAdjustedClose=true&events=div%2Csplit&lang=en-US&region=US"
+              )
 
-          # Fail only if everything failed
-          if all(value == "Failed" for value in summary.values()):
-              raise SystemExit("All jobs failed")
+              last_err = None
+              for attempt in range(5):
+                  try:
+                      r = sess.get(url, timeout=20)
+                      if r.status_code == 200 and r.headers.get("content-type","").startswith("application/json"):
+                          js = r.json()
+                          break
+                      if r.status_code in (401,403,429,500,502,503):
+                          time.sleep(1.5 * (attempt + 1))
+                          continue
+                      last_err = RuntimeError(f"status {r.status_code}")
+                  except Exception as e:
+                      last_err = e
+                      time.sleep(1.5 * (attempt + 1))
+              else:
+                  raise RuntimeError(f"Yahoo chart fetch failed for {tkr}: {last_err}")
+
+              res = (js or {}).get("chart", {}).get("result")
+              if not res:
+                  raise RuntimeError(f"Yahoo returned no chart result for {tkr}")
+              res0 = res[0]
+              ts = res0.get("timestamp") or []
+              inds = res0.get("indicators", {}) or {}
+              quote = (inds.get("quote") or [{}])[0]
+              adjc  = (inds.get("adjclose") or [{}])[0]
+
+              closes = quote.get("close")
+              if not ts or not closes:
+                  raise RuntimeError(f"Yahoo returned no rows for {tkr}")
+
+              df = pd.DataFrame({
+                  "date": pd.to_datetime(ts, unit="s", utc=True).tz_convert(None),
+                  "Ticker": tkr.upper(),
+                  "Open":  quote.get("open"),
+                  "High":  quote.get("high"),
+                  "Low":   quote.get("low"),
+                  "Close": closes,
+                  "Adj Close": adjc.get("adjclose"),
+                  "Volume": quote.get("volume"),
+              })
+
+              # dividends / splits
+              df["Dividends"], df["Stock Splits"] = 0.0, 0.0
+              ev = res0.get("events") or {}
+              if "dividends" in ev:
+                  m = {pd.to_datetime(int(v.get("date") or k), unit="s").date(): float(v.get("amount", 0.0))
+                       for k, v in (ev["dividends"] or {}).items()}
+                  df["Dividends"] = df["date"].dt.date.map(lambda d: float(m.get(d, 0.0)))
+              if "splits" in ev:
+                  mm = {}
+                  for k, v in (ev["splits"] or {}).items():
+                      ratio = (v.get("splitRatio") or "0/1")
+                      try:
+                          num, den = ratio.split("/")
+                          mm[pd.to_datetime(int(v.get("date") or k), unit="s").date()] = float(num)/float(den) if float(den)!=0 else 0.0
+                      except Exception:
+                          pass
+                  df["Stock Splits"] = df["date"].dt.date.map(lambda d: float(mm.get(d, 0.0)))
+
+              cols = ["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"]
+              return df[cols].sort_values("date")
+
+          # ---- Supabase upload (raw HTTP) -------------------------------------
+          def upload_bytes(path: str, data: bytes) -> bool:
+              url = f"{supabase_url}/storage/v1/object/{bucket}/{path.lstrip('/')}"
+              headers = {
+                  "Authorization": f"Bearer {supabase_key}",
+                  "x-upsert": "true",
+                  "Content-Type": "application/octet-stream",
+              }
+              try:
+                  r = sess.post(url, headers=headers, data=data, timeout=30)
+                  if r.status_code in (200, 201, 204):
+                      return True
+                  # Some instances require PUT
+                  r2 = sess.put(url, headers=headers, data=data, timeout=30)
+                  return r2.status_code in (200, 201, 204)
+              except Exception as e:
+                  print("upload exception:", repr(e))
+                  return False
+
+          # ---- Run -------------------------------------------------------------
+          ok_probe, note = probe_yahoo()
+          print("Yahoo probe:", ok_probe, note)
+          if not ok_probe and not force:
+              print("Yahoo seems blocked right now; re-run later or set Force=yes.")
+              sys.exit(0)
+
+          ok, fail, results = 0, 0, []
+          for j in jobs:
+              t = j["ticker"]
+              try:
+                  df = fetch_chart_df(t, j["start"], j["end"])
+                  if df.empty:
+                      raise RuntimeError("empty dataframe")
+                  buf = io.BytesIO()
+                  df.to_parquet(buf, index=False, compression="snappy")
+                  dest = f"prices/{t}.parquet"
+                  if upload_bytes(dest, buf.getvalue()):
+                      ok += 1
+                      results.append({"ticker": t, "error": None})
+                  else:
+                      fail += 1
+                      results.append({"ticker": t, "error": "upload failed"})
+              except Exception as e:
+                  fail += 1
+                  results.append({"ticker": t, "error": str(e)})
+                  print(f"{t}: ERROR {e}")
+
+          summary = {"ok": ok, "failed": fail, "results": results}
+          print("Summary:", json.dumps(summary, indent=2))
+          if ok == 0:
+              sys.exit(1)
           PY
+
