@@ -6,3 +6,4 @@ pyarrow==15.0.2
 requests==2.32.3
 urllib3==2.2.2
 yfinance==0.2.43
+pandas-datareader==0.10.0
