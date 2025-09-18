@@ -21,11 +21,17 @@ on:
         description: "End date (blank = today)"
         required: false
         default: ""
-      # Power user override: give a CSV of tickers to force-run instead of auto selection
       tickers:
         description: "(Optional) CSV tickers to run instead of auto"
         required: false
         default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yahoo-raw-batch
+  cancel-in-progress: false
 
 jobs:
   plan:
@@ -34,6 +40,14 @@ jobs:
     outputs:
       tickers_csv: ${{ steps.plan.outputs.tickers_csv }}
       picked: ${{ steps.plan.outputs.picked }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_BUCKET: lake
+      FORCE_SUPABASE: "1"
+      INPUT_TICKERS: ${{ github.event.inputs.tickers }}
+      INPUT_SCOPE: ${{ github.event.inputs.scope }}
+      INPUT_BATCH_SIZE: ${{ github.event.inputs.batch_size }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,24 +55,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install minimal deps
+      - name: Install deps (match repo)
         run: |
           python -m pip install -U pip
-          pip install pandas pyarrow requests supabase==2.18.1
+          pip install -r requirements.txt
 
       - name: Select tickers (auto unless override provided)
         id: plan
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_BUCKET: lake
-          FORCE_SUPABASE: "1"
-          INPUT_TICKERS: ${{ github.event.inputs.tickers }}
-          INPUT_SCOPE: ${{ github.event.inputs.scope }}
-          INPUT_BATCH_SIZE: ${{ github.event.inputs.batch_size }}
         run: |
           python - <<'PY'
-          import os, sys, json
+          import os, json
           from data_lake.storage import Storage
           from data_lake.membership import load_membership
           from data_lake.ingest import lake_file_is_raw
@@ -71,39 +77,31 @@ jobs:
               raw = [t.strip().upper() for t in override.split(",") if t.strip()]
               picked = raw[:batch_size]
           else:
-              # Auto mode: read membership from Supabase, figure out what's missing/not-RAW
               s = Storage.from_env()
-              try:
-                  df = load_membership(s, cache_salt=s.cache_salt())
-              except Exception as e:
-                  print(f"::error::Could not load membership: {e}")
-                  picked = []
+              df = load_membership(s, cache_salt=s.cache_salt())
+
+              if scope.startswith("Historical"):
+                  universe = sorted(df["ticker"].astype(str).str.upper().str.strip().unique().tolist())
               else:
-                  if scope.startswith("Historical"):
-                      universe = sorted(df["ticker"].astype(str).str.upper().str.strip().unique().tolist())
-                  else:
-                      cur = df[df["end_date"].isna() | (df["end_date"]=="")] if "end_date" in df else df
-                      universe = sorted(cur["ticker"].astype(str).str.upper().str.strip().unique().tolist())
+                  cur = df[df["end_date"].isna() | (df["end_date"]=="")] if "end_date" in df else df
+                  universe = sorted(cur["ticker"].astype(str).str.upper().str.strip().unique().tolist())
 
-                  missing_or_not_raw = []
-                  for t in universe:
-                      has_file = s.exists(f"prices/{t}.parquet")
-                      if not has_file:
-                          missing_or_not_raw.append(t)
-                          continue
-                      try:
-                          is_raw = lake_file_is_raw(s, t)
-                      except Exception:
-                          # If detection fails, treat as needs rebuild
-                          is_raw = False
-                      if not is_raw:
-                          missing_or_not_raw.append(t)
+              missing_or_not_raw = []
+              for t in universe:
+                  has_file = s.exists(f"prices/{t}.parquet")
+                  if not has_file:
+                      missing_or_not_raw.append(t); continue
+                  try:
+                      is_raw = lake_file_is_raw(s, t)
+                  except Exception:
+                      is_raw = False
+                  if not is_raw:
+                      missing_or_not_raw.append(t)
 
-                  picked = missing_or_not_raw[:batch_size]
+              picked = missing_or_not_raw[:batch_size]
 
           tickers_csv = ",".join(picked)
           print("Auto-picked tickers:", tickers_csv)
-          # set outputs
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"tickers_csv={tickers_csv}\n")
               f.write(f"picked={len(picked)}\n")
@@ -129,19 +127,16 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install deps (match repo)
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt || true
-          pip install yfinance pandas pyarrow requests supabase==2.18.1
+          pip install -r requirements.txt
 
-      - name: Run Yahoo RAW ingest (with built-in retry/fallback)
+      - name: Run Yahoo RAW ingest
         run: |
           echo "Tickers: $TICKERS_CSV"
           python - <<'PY'
-          import os, json, time, traceback, io
-          import pandas as pd
-          import requests
+          import os, json, requests
           from data_lake.storage import Storage
           from data_lake.ingest import ingest_raw_yahoo_batch
 
@@ -152,7 +147,6 @@ jobs:
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
           print("Jobs:", jobs)
 
-          # Light reachability probe to avoid yfinance cookie/consent flake
           probe = requests.get(
               "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d",
               headers={"User-Agent": "Mozilla/5.0"},
@@ -161,20 +155,9 @@ jobs:
           print(f"Yahoo probe: {probe.ok} {probe.url} status={probe.status_code}")
 
           s = Storage.from_env()
-          try:
-              summary = ingest_raw_yahoo_batch(s, jobs)
-          except Exception as e:
-              print("ingest_raw_yahoo_batch raised, no writes performed.")
-              traceback.print_exc()
-              summary = {"ok": 0, "failed": len(jobs), "results": [{"ticker": j["ticker"], "error": str(e)} for j in jobs]}
-
+          summary = ingest_raw_yahoo_batch(s, jobs)
           print("Summary:", json.dumps(summary, indent=2))
 
-          # Fail job only if everything failed
           if int(summary.get("ok", 0)) == 0:
               raise SystemExit("All jobs failed")
           PY
-
-# Optional: to run automatically every hour, uncomment:
-#  schedule:
-#    - cron: "0 * * * *"
