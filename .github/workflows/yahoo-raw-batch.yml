@@ -15,6 +15,10 @@ on:
         description: "End date (optional; blank = today)"
         required: false
         default: ""
+      force:
+        description: "Ignore Yahoo probe and attempt anyway (yes/no)"
+        required: false
+        default: "no"
 
 jobs:
   ingest:
@@ -39,20 +43,23 @@ jobs:
           INPUT_TICKERS: ${{ github.event.inputs.tickers }}
           INPUT_START:   ${{ github.event.inputs.start }}
           INPUT_END:     ${{ github.event.inputs.end }}
+          INPUT_FORCE:   ${{ github.event.inputs.force }}
         run: |
           python - <<'PY'
-          import os, json, time, requests, sys
+          import os, json, sys, requests
           from data_lake.storage import Storage
+
+          # Try to import the helper; handle if not present
           try:
               from data_lake.ingest import ingest_raw_yahoo_batch
           except Exception as e:
-              ingest_raw_yahoo_batch = None
               print("Note: ingest_raw_yahoo_batch import failed:", repr(e))
+              ingest_raw_yahoo_batch = None
 
           UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
-          # Make every requests call look like a real browser and add sane timeouts.
+          # Patch requests so every call looks like a real browser
           _orig_request = requests.sessions.Session.request
           def _patched(self, method, url, **kwargs):
               headers = kwargs.get("headers") or {}
@@ -65,28 +72,38 @@ jobs:
           requests.sessions.Session.request = _patched
 
           def probe_yahoo():
-              url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL"
-              try:
-                  r = requests.get(url, timeout=10)
-                  ok = (r.status_code == 200) and ("quoteResponse" in r.text)
-                  return ok, f"status={r.status_code}"
-              except Exception as e:
-                  return False, repr(e)
+              """Return (ok, note). Try multiple lightweight endpoints."""
+              urls = [
+                  "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d",
+                  "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
+              ]
+              last = "no-attempt"
+              s = requests.Session()
+              for u in urls:
+                  try:
+                      r = s.get(u, allow_redirects=True, timeout=12)
+                      last = f"{u} status={r.status_code}"
+                      if r.status_code == 200 and "{" in r.text:
+                          return True, last
+                  except Exception as e:
+                      last = f"{u} exc={repr(e)}"
+              return False, last
 
           ok_probe, info = probe_yahoo()
           print("Yahoo probe:", ok_probe, info)
-          if not ok_probe:
-              print("Yahoo is not reachable from this runner right now. No writes attempted.")
-              # exit 78 = temporary failure; mark job success so you can re-run later.
-              sys.exit(0)
+
+          force = (os.environ.get("INPUT_FORCE","no").strip().lower() in ("yes","true","1","y"))
 
           raw = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
           start = (os.environ.get("INPUT_START") or "1996-01-01").strip()
           end = (os.environ.get("INPUT_END") or "").strip() or None
-
           tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
           print("Jobs:", jobs)
+
+          if not ok_probe and not force:
+              print("Yahoo seems blocked right now. Skipping ingest (set Force=yes to try anyway).")
+              sys.exit(0)
 
           s = Storage.from_env()
           print("Storage:", s.diagnostics())
@@ -97,7 +114,6 @@ jobs:
                   raise RuntimeError("ingest_raw_yahoo_batch not available in this build")
               summary = ingest_raw_yahoo_batch(s, jobs)
           except Exception as e:
-              # Make sure we never reference an undefined variable.
               print("ingest_raw_yahoo_batch raised:", repr(e))
               summary = {
                   "ok": 0,
@@ -106,8 +122,6 @@ jobs:
               }
 
           print("Summary:", json.dumps(summary, indent=2))
-
-          # Only fail if Yahoo was reachable AND nothing succeeded.
           if int(summary.get("ok", 0)) == 0:
               sys.exit(1)
           PY
