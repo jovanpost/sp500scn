@@ -17,8 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled in UI when invoked
 
 from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
-from data_lake.ingest import ingest_batch
-from data_lake.ingest import lake_file_is_raw
+from data_lake.ingest import ingest_batch, lake_file_is_raw
 
 # Try to import the optional Yahoo RAW batch helper. Older deployments may not
 # have it yet, so fall back gracefully if import fails.
