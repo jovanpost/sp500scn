@@ -3,26 +3,37 @@ name: Yahoo RAW batch
 on:
   workflow_dispatch:
     inputs:
-      tickers:
-        description: "Comma-separated tickers (e.g. AAPL,MSFT,NVDA)"
+      scope:
+        description: "Universe: Historical (since 1996) or Current only"
         required: true
-        default: "AAPL,MSFT"
+        default: "Historical"
+        type: choice
+        options: ["Historical", "Current"]
+      batch_size:
+        description: "How many tickers to process this run"
+        required: true
+        default: "75"
       start:
         description: "Start date (YYYY-MM-DD)"
         required: false
         default: "1996-01-01"
       end:
-        description: "End date (optional; blank = today)"
+        description: "End date (blank = today)"
         required: false
         default: ""
-      force:
-        description: "Ignore Yahoo probe and attempt anyway (yes/no)"
+      # Power user override: give a CSV of tickers to force-run instead of auto selection
+      tickers:
+        description: "(Optional) CSV tickers to run instead of auto"
         required: false
-        default: "no"
+        default: ""
 
 jobs:
-  ingest:
+  plan:
+    name: Plan next batch
     runs-on: ubuntu-latest
+    outputs:
+      tickers_csv: ${{ steps.plan.outputs.tickers_csv }}
+      picked: ${{ steps.plan.outputs.picked }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,192 +44,137 @@ jobs:
       - name: Install minimal deps
         run: |
           python -m pip install -U pip
-          pip install pandas==2.2.3 pyarrow==15.0.2 requests==2.32.3
+          pip install pandas pyarrow requests supabase==2.18.1
 
-      - name: Ingest via Yahoo (direct) and upload to Supabase
+      - name: Select tickers (auto unless override provided)
+        id: plan
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: lake
+          FORCE_SUPABASE: "1"
           INPUT_TICKERS: ${{ github.event.inputs.tickers }}
-          INPUT_START:   ${{ github.event.inputs.start }}
-          INPUT_END:     ${{ github.event.inputs.end }}
-          INPUT_FORCE:   ${{ github.event.inputs.force }}
+          INPUT_SCOPE: ${{ github.event.inputs.scope }}
+          INPUT_BATCH_SIZE: ${{ github.event.inputs.batch_size }}
         run: |
           python - <<'PY'
-          import os, sys, io, time, json
+          import os, sys, json
+          from data_lake.storage import Storage
+          from data_lake.membership import load_membership
+          from data_lake.ingest import lake_file_is_raw
+
+          override = (os.getenv("INPUT_TICKERS") or "").strip()
+          batch_size = max(1, int(os.getenv("INPUT_BATCH_SIZE") or "50"))
+          scope = (os.getenv("INPUT_SCOPE") or "Historical").strip()
+
+          if override:
+              raw = [t.strip().upper() for t in override.split(",") if t.strip()]
+              picked = raw[:batch_size]
+          else:
+              # Auto mode: read membership from Supabase, figure out what's missing/not-RAW
+              s = Storage.from_env()
+              try:
+                  df = load_membership(s, cache_salt=s.cache_salt())
+              except Exception as e:
+                  print(f"::error::Could not load membership: {e}")
+                  picked = []
+              else:
+                  if scope.startswith("Historical"):
+                      universe = sorted(df["ticker"].astype(str).str.upper().str.strip().unique().tolist())
+                  else:
+                      cur = df[df["end_date"].isna() | (df["end_date"]=="")] if "end_date" in df else df
+                      universe = sorted(cur["ticker"].astype(str).str.upper().str.strip().unique().tolist())
+
+                  missing_or_not_raw = []
+                  for t in universe:
+                      has_file = s.exists(f"prices/{t}.parquet")
+                      if not has_file:
+                          missing_or_not_raw.append(t)
+                          continue
+                      try:
+                          is_raw = lake_file_is_raw(s, t)
+                      except Exception:
+                          # If detection fails, treat as needs rebuild
+                          is_raw = False
+                      if not is_raw:
+                          missing_or_not_raw.append(t)
+
+                  picked = missing_or_not_raw[:batch_size]
+
+          tickers_csv = ",".join(picked)
+          print("Auto-picked tickers:", tickers_csv)
+          # set outputs
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"tickers_csv={tickers_csv}\n")
+              f.write(f"picked={len(picked)}\n")
+          PY
+
+  ingest:
+    name: Ingest
+    needs: plan
+    if: ${{ needs.plan.outputs.picked != '0' || github.event.inputs.tickers != '' }}
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_BUCKET: lake
+      FORCE_SUPABASE: "1"
+      TICKERS_CSV: ${{ github.event.inputs.tickers != '' && github.event.inputs.tickers || needs.plan.outputs.tickers_csv }}
+      INPUT_START: ${{ github.event.inputs.start }}
+      INPUT_END: ${{ github.event.inputs.end }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt || true
+          pip install yfinance pandas pyarrow requests supabase==2.18.1
+
+      - name: Run Yahoo RAW ingest (with built-in retry/fallback)
+        run: |
+          echo "Tickers: $TICKERS_CSV"
+          python - <<'PY'
+          import os, json, time, traceback, io
           import pandas as pd
           import requests
+          from data_lake.storage import Storage
+          from data_lake.ingest import ingest_raw_yahoo_batch
 
-          # ---- Inputs ---------------------------------------------------------
-          raw   = (os.environ.get("INPUT_TICKERS") or "AAPL,MSFT").strip()
-          start = (os.environ.get("INPUT_START") or "1996-01-01").strip()
-          end   = (os.environ.get("INPUT_END") or "").strip() or None
-          force = (os.environ.get("INPUT_FORCE","no").strip().lower() in ("1","y","yes","true"))
+          tickers = [t.strip().upper() for t in (os.getenv("TICKERS_CSV") or "").split(",") if t.strip()]
+          start = (os.getenv("INPUT_START") or "1996-01-01").strip()
+          end = (os.getenv("INPUT_END") or "").strip() or None
 
-          supabase_url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
-          supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or ""
-          bucket       = os.environ.get("SUPABASE_BUCKET", "lake")
-
-          if not supabase_url or not supabase_key:
-              print("Supabase not configured in repo secrets (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY).")
-              sys.exit(1)
-
-          tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
           print("Jobs:", jobs)
 
-          # ---- Yahoo helpers --------------------------------------------------
-          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-          sess = requests.Session()
-          sess.headers.update({
-              "User-Agent": UA,
-              "Accept": "application/json,text/plain,*/*",
-              "Accept-Language": "en-US,en;q=0.9",
-          })
+          # Light reachability probe to avoid yfinance cookie/consent flake
+          probe = requests.get(
+              "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d",
+              headers={"User-Agent": "Mozilla/5.0"},
+              timeout=10,
+          )
+          print(f"Yahoo probe: {probe.ok} {probe.url} status={probe.status_code}")
 
-          def y_symbol(tkr: str) -> str:
-              return tkr.replace(".", "-").upper()
+          s = Storage.from_env()
+          try:
+              summary = ingest_raw_yahoo_batch(s, jobs)
+          except Exception as e:
+              print("ingest_raw_yahoo_batch raised, no writes performed.")
+              traceback.print_exc()
+              summary = {"ok": 0, "failed": len(jobs), "results": [{"ticker": j["ticker"], "error": str(e)} for j in jobs]}
 
-          def to_epoch(date_str_or_none):
-              if not date_str_or_none:
-                  return None
-              ts = pd.Timestamp(str(date_str_or_none))
-              if ts.tzinfo is None:
-                  ts = ts.tz_localize("UTC")
-              else:
-                  ts = ts.tz_convert("UTC")
-              return int(ts.timestamp())
-
-          def probe_yahoo():
-              try:
-                  u = "https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=1d"
-                  r = sess.get(u, timeout=12, allow_redirects=True)
-                  return (r.status_code == 200), f"{u} status={r.status_code}"
-              except Exception as e:
-                  return False, f"probe exc={repr(e)}"
-
-          def fetch_chart_df(tkr: str, start: str, end: str | None) -> pd.DataFrame:
-              p1 = to_epoch(start)
-              p2 = to_epoch(end) or int(time.time()) + 86400
-              url = (
-                  "https://query2.finance.yahoo.com/v8/finance/chart/"
-                  f"{y_symbol(tkr)}?period1={p1}&period2={p2}"
-                  "&interval=1d&includeAdjustedClose=true&events=div%2Csplit&lang=en-US&region=US"
-              )
-
-              last_err = None
-              for attempt in range(5):
-                  try:
-                      r = sess.get(url, timeout=20)
-                      if r.status_code == 200 and r.headers.get("content-type","").startswith("application/json"):
-                          js = r.json()
-                          break
-                      if r.status_code in (401,403,429,500,502,503):
-                          time.sleep(1.5 * (attempt + 1))
-                          continue
-                      last_err = RuntimeError(f"status {r.status_code}")
-                  except Exception as e:
-                      last_err = e
-                      time.sleep(1.5 * (attempt + 1))
-              else:
-                  raise RuntimeError(f"Yahoo chart fetch failed for {tkr}: {last_err}")
-
-              res = (js or {}).get("chart", {}).get("result")
-              if not res:
-                  raise RuntimeError(f"Yahoo returned no chart result for {tkr}")
-              res0 = res[0]
-              ts = res0.get("timestamp") or []
-              inds = res0.get("indicators", {}) or {}
-              quote = (inds.get("quote") or [{}])[0]
-              adjc  = (inds.get("adjclose") or [{}])[0]
-
-              closes = quote.get("close")
-              if not ts or not closes:
-                  raise RuntimeError(f"Yahoo returned no rows for {tkr}")
-
-              df = pd.DataFrame({
-                  "date": pd.to_datetime(ts, unit="s", utc=True).tz_convert(None),
-                  "Ticker": tkr.upper(),
-                  "Open":  quote.get("open"),
-                  "High":  quote.get("high"),
-                  "Low":   quote.get("low"),
-                  "Close": closes,
-                  "Adj Close": adjc.get("adjclose"),
-                  "Volume": quote.get("volume"),
-              })
-
-              # dividends / splits
-              df["Dividends"], df["Stock Splits"] = 0.0, 0.0
-              ev = res0.get("events") or {}
-              if "dividends" in ev:
-                  m = {pd.to_datetime(int(v.get("date") or k), unit="s").date(): float(v.get("amount", 0.0))
-                       for k, v in (ev["dividends"] or {}).items()}
-                  df["Dividends"] = df["date"].dt.date.map(lambda d: float(m.get(d, 0.0)))
-              if "splits" in ev:
-                  mm = {}
-                  for k, v in (ev["splits"] or {}).items():
-                      ratio = (v.get("splitRatio") or "0/1")
-                      try:
-                          num, den = ratio.split("/")
-                          mm[pd.to_datetime(int(v.get("date") or k), unit="s").date()] = float(num)/float(den) if float(den)!=0 else 0.0
-                      except Exception:
-                          pass
-                  df["Stock Splits"] = df["date"].dt.date.map(lambda d: float(mm.get(d, 0.0)))
-
-              cols = ["date","Ticker","Open","High","Low","Close","Adj Close","Volume","Dividends","Stock Splits"]
-              return df[cols].sort_values("date")
-
-          # ---- Supabase upload (raw HTTP) -------------------------------------
-          def upload_bytes(path: str, data: bytes) -> bool:
-              url = f"{supabase_url}/storage/v1/object/{bucket}/{path.lstrip('/')}"
-              headers = {
-                  "Authorization": f"Bearer {supabase_key}",
-                  "x-upsert": "true",
-                  "Content-Type": "application/octet-stream",
-              }
-              try:
-                  r = sess.post(url, headers=headers, data=data, timeout=30)
-                  if r.status_code in (200, 201, 204):
-                      return True
-                  # Some instances require PUT
-                  r2 = sess.put(url, headers=headers, data=data, timeout=30)
-                  return r2.status_code in (200, 201, 204)
-              except Exception as e:
-                  print("upload exception:", repr(e))
-                  return False
-
-          # ---- Run -------------------------------------------------------------
-          ok_probe, note = probe_yahoo()
-          print("Yahoo probe:", ok_probe, note)
-          if not ok_probe and not force:
-              print("Yahoo seems blocked right now; re-run later or set Force=yes.")
-              sys.exit(0)
-
-          ok, fail, results = 0, 0, []
-          for j in jobs:
-              t = j["ticker"]
-              try:
-                  df = fetch_chart_df(t, j["start"], j["end"])
-                  if df.empty:
-                      raise RuntimeError("empty dataframe")
-                  buf = io.BytesIO()
-                  df.to_parquet(buf, index=False, compression="snappy")
-                  dest = f"prices/{t}.parquet"
-                  if upload_bytes(dest, buf.getvalue()):
-                      ok += 1
-                      results.append({"ticker": t, "error": None})
-                  else:
-                      fail += 1
-                      results.append({"ticker": t, "error": "upload failed"})
-              except Exception as e:
-                  fail += 1
-                  results.append({"ticker": t, "error": str(e)})
-                  print(f"{t}: ERROR {e}")
-
-          summary = {"ok": ok, "failed": fail, "results": results}
           print("Summary:", json.dumps(summary, indent=2))
-          if ok == 0:
-              sys.exit(1)
+
+          # Fail job only if everything failed
+          if int(summary.get("ok", 0)) == 0:
+              raise SystemExit("All jobs failed")
           PY
+
+# Optional: to run automatically every hour, uncomment:
+#  schedule:
+#    - cron: "0 * * * *"
