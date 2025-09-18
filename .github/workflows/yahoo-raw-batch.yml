@@ -12,97 +12,88 @@ on:
         required: false
         default: "1996-01-01"
       end:
-        description: "End date (YYYY-MM-DD, optional; blank = today)"
+        description: "End date (optional; blank = up to today)"
         required: false
         default: ""
 
-permissions:
-  contents: read
-
-concurrency:
-  group: yahoo-raw-batch
-  cancel-in-progress: false
-
 jobs:
   ingest:
-    name: Ingest
     runs-on: ubuntu-latest
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
 
       - name: Install deps
         run: |
           python -m pip install -U pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          pip install "yfinance==0.2.43" "pandas==2.2.3" "pyarrow==15.0.2" "requests==2.32.3" "urllib3==2.2.2"
+          pip install -r requirements.txt || true
+          # make sure these are present even if requirements.txt changes
+          pip install yfinance pandas pyarrow requests supabase
 
-      - name: Run ingest (Yahoo RAW if possible)
+      - name: Ingest via Yahoo RAW batch
         env:
-          TICKERS: ${{ inputs.tickers }}
-          START: ${{ inputs.start }}
-          END: ${{ inputs.end }}
-        shell: bash
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python - <<'PY'
-          import os, sys, json, requests
+          import json, sys
+          from datetime import datetime
+          from urllib.parse import urlparse
           from data_lake.storage import Storage
-          from data_lake.ingest import ingest_batch, lake_file_is_raw
-          try:
-              from data_lake.ingest import ingest_raw_yahoo_batch  # type: ignore
-          except Exception:
-              ingest_raw_yahoo_batch = None  # type: ignore
+          from data_lake.ingest import ingest_raw_yahoo_batch
 
-          def yahoo_ok() -> bool:
-              try:
-                  r = requests.get(
-                      "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
-                      headers={"User-Agent": "Mozilla/5.0"},
-                      timeout=8,
-                  )
-                  print("Yahoo probe:", r.status_code, "len:", len(r.content))
-                  return r.ok and "quoteResponse" in r.text
-              except Exception as e:
-                  print("Yahoo probe error:", e)
-                  return False
-
-          raw = (os.getenv("TICKERS") or "").strip()
-          start = (os.getenv("START") or "").strip() or "1996-01-01"
-          end = (os.getenv("END") or "").strip() or None
-
+          # ---- inputs ---------------------------------------------------------
+          raw = "${{ github.event.inputs.tickers }}"
+          start = "${{ github.event.inputs.start }}".strip() or "1996-01-01"
+          end = "${{ github.event.inputs.end }}".strip() or None
           tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
           if not tickers:
-              print("No tickers provided; exiting 0.")
+              print("No tickers provided; nothing to do.")
               sys.exit(0)
 
+          # ---- storage diagnostics -------------------------------------------
+          s = Storage.from_env()
+          diag = getattr(s, "diagnostics", lambda: {})()
+          mode = diag.get("mode", getattr(s, "mode", None))
+          bucket = diag.get("bucket", getattr(s, "bucket", None))
+          host = urlparse(getattr(s, "supabase_url", "")).netloc
+          print("Storage:", {"mode": mode, "bucket": bucket, "host": host})
+
+          # ---- plan -----------------------------------------------------------
           jobs = [{"ticker": t, "start": start, "end": end} for t in tickers]
           print("Jobs:", jobs)
 
-          s = Storage.from_env()
+          # ---- run ------------------------------------------------------------
+          summary = ingest_raw_yahoo_batch(s, jobs, progress_cb=None, pause_s=0.2)
+          print("Summary:", json.dumps(summary, indent=2))
 
-          if yahoo_ok() and ingest_raw_yahoo_batch:
-              print("Using Yahoo RAW batch helper.")
-              summary = ingest_raw_yahoo_batch(s, jobs)
-          elif yahoo_ok():
-              print("Yahoo reachable but helper missing; using ingest_batch.")
-              summary = ingest_batch(s, jobs)
-          else:
-              print("Yahoo not reachable from runner; skipping without error.")
-              sys.exit(0)
+          # ---- write a tiny marker so we can confirm the bucket/path ----------
+          ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+          try:
+              s.write_bytes(f"debug/ci_touch_{ts}.txt", b"ok")
+              print(f"Wrote debug marker: debug/ci_touch_{ts}.txt")
+          except Exception as e:
+              print("WARN: could not write debug marker:", e)
 
-          print(json.dumps(summary, indent=2))
+          # ---- check existence of each output --------------------------------
+          for t in tickers:
+              path = f"prices/{t}.parquet"
+              try:
+                  exists = s.exists(path)
+              except Exception:
+                  try:
+                      s.read_bytes(path); exists = True
+                  except Exception:
+                      exists = False
+              wrote_ok = any(r.get("ticker")==t and not r.get("error") for r in summary.get("results", []))
+              print(f"{t}: wrote_ok={wrote_ok}, exists_now={exists}, path={path}")
+
+          # Fail only if *everything* failed (Yahoo can be flaky)
           if summary.get("ok", 0) == 0:
               raise SystemExit("All jobs failed")
           PY
