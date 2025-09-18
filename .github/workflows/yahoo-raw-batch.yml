@@ -64,14 +64,27 @@ jobs:
               ticker = job["ticker"]
               try:
                   print(f"Fetching data for {ticker}...")
+
+                  # Start by trying the original start date
                   data = yf.download(ticker, start=job["start"], end=job["end"])
 
+                  # If no data is found, try to find the first available data date
                   if data.empty:
-                      print(f"No data available for {ticker}. Skipping.")
+                      print(f"No data available for {ticker} starting from {job['start']}. Searching for first available data.")
+                      
+                      # Fetch the data starting from the earliest possible date and find the first available date
+                      temp_data = yf.download(ticker, start="1900-01-01", end=job["end"])
+                      if not temp_data.empty:
+                          first_valid_date = temp_data.index[0]
+                          print(f"First available data for {ticker} starts at {first_valid_date}")
+                          data = yf.download(ticker, start=first_valid_date, end=job["end"])
+
+                  if data.empty:
+                      print(f"Still no data available for {ticker}. Skipping.")
                       summary[ticker] = "No data"
                   else:
                       # Ingest data if available
-                      ingest_raw_yahoo_batch(s, [job])
+                      ingest_raw_yahoo_batch(s, [{"ticker": ticker, "start": str(data.index[0]), "end": str(data.index[-1])}])
                       summary[ticker] = "Success"
               except Exception as e:
                   # Log the error if it fails
