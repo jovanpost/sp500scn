@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import time
 from datetime import date
-from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -17,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled in UI when invoked
 
 from data_lake.storage import Storage, supabase_available
 from data_lake.membership import build_membership, load_membership
-from data_lake.ingest import ingest_batch
+from data_lake.ingest import ingest_batch, ingest_raw_yahoo_batch, lake_file_is_raw
 from data_lake.schemas import IngestJob
 from ui.components.debug import debug_panel, _get_dbg
 
@@ -45,11 +44,6 @@ def _storage_has_file(storage: Storage, path: str) -> bool:
 def render_data_lake_tab() -> None:
     st.subheader("Data Lake (Phase 1)")
     dbg = _get_dbg("lake")
-
-    if "auto_run" not in st.session_state:
-        st.session_state.auto_run = False
-    if "auto_meta" not in st.session_state:
-        st.session_state.auto_meta = {}
 
     storage = Storage()
     diag = storage.diagnostics()
@@ -177,105 +171,94 @@ def render_data_lake_tab() -> None:
 
     st.markdown("### Prices coverage")
     try:
-        mdf = load_membership(storage, cache_salt=storage.cache_salt())
+        membership_df = load_membership(storage, cache_salt=storage.cache_salt())
         scope = st.radio("Scope", ["Historical (since 1996)", "Current only"], horizontal=True)
         if scope.startswith("Historical"):
-            total = sorted(
-                mdf["ticker"].astype(str).str.upper().str.strip().unique().tolist()
+            tickers = sorted(
+                membership_df["ticker"].astype(str).str.upper().str.strip().unique().tolist()
             )
         else:
-            cur = mdf[mdf["end_date"].isna() | (mdf["end_date"] == "")] if "end_date" in mdf else mdf
-            total = sorted(
-                cur["ticker"].astype(str).str.upper().str.strip().unique().tolist()
+            current = (
+                membership_df[
+                    membership_df["end_date"].isna() | (membership_df["end_date"] == "")
+                ]
+                if "end_date" in membership_df
+                else membership_df
+            )
+            tickers = sorted(
+                current["ticker"].astype(str).str.upper().str.strip().unique().tolist()
             )
 
-        files = storage.list_all("prices")
-        present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
-        total_set = set(total)
-        missing = sorted(total_set - present)
+        target = st.radio(
+            "Target dataset",
+            options=["Files present", "RAW (unadjusted)"],
+            index=1,
+            horizontal=True,
+        )
 
-        st.write(f"Coverage: **{len(present)} / {len(total_set)}** tickers with price files")
-        st.caption(f"files discovered {len(files)} | coverage {len(present)} unique tickers")
-        if missing:
-            with st.expander("Show first 25 missing tickers"):
-                st.code(", ".join(missing[:25]))
+        present: list[tuple[str, bool]] = []
+        needs_rebuild: list[tuple[str, bool]] = []
 
-        max_run = st.number_input("max tickers per run", 1, 200, 50)
+        with st.spinner("Scanning lake…"):
+            for ticker in tickers:
+                has_file = storage.exists(f"prices/{ticker.upper()}.parquet")
+                if not has_file:
+                    present.append((ticker, False))
+                    needs_rebuild.append((ticker, False))
+                    continue
 
-        if st.button("Ingest missing only"):
+                is_raw = lake_file_is_raw(storage, ticker)
+                present.append((ticker, True))
+                needs_rebuild.append((ticker, not is_raw))
+
+        if target == "Files present":
+            covered = sum(1 for _, ok in present if ok)
+            missing = [ticker for ticker, ok in present if not ok]
+        else:
+            covered = sum(
+                1
+                for (_, has_file), (_, rebuild) in zip(present, needs_rebuild)
+                if has_file and not rebuild
+            )
+            missing = [
+                ticker
+                for (ticker, has_file), (_, rebuild) in zip(present, needs_rebuild)
+                if (not has_file) or rebuild
+            ]
+
+        st.markdown(
+            f"Coverage: **{covered} / {len(tickers)}** tickers with "
+            f"{'files' if target == 'Files present' else 'RAW (unadjusted)'}"
+        )
+
+        with st.expander("Show first 25 missing tickers"):
+            st.write(missing[:25])
+
+        max_run = st.number_input("max tickers per run", 1, 1000, 50, key="cov_max_run")
+        if st.button("Run until target coverage", use_container_width=True, type="primary"):
             jobs = [
-                {"ticker": t, "start": "1990-01-01", "end": str(date.today())}
+                {"ticker": t, "start": "1990-01-01", "end": None}
                 for t in missing[: int(max_run)]
             ]
-            progress_bar = st.progress(0)
-            summary = ingest_batch(
-                storage, jobs, progress_cb=lambda d, t: progress_bar.progress(d / t)
-            )
-            st.success(f"ok {summary['ok']}, failed {summary['failed']}")
-            st.write(f"manifest: {summary['manifest_path']}")
-            st.cache_data.clear()
-            files = storage.list_all("prices")
-            present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
-            missing = sorted(total_set - present)
-            st.info(
-                f"post-run coverage {len(present)} / {len(total_set)}; {len(missing)} remaining"
-            )
-
-        batch_size = st.number_input("batch size", 1, 200, 50, key="auto_batch_size")
-        max_minutes = st.number_input("max minutes", 1, 120, 15, key="auto_max_minutes")
-        max_iters = st.number_input("max iters", 1, 1000, 50, key="auto_max_iters")
-        pause_seconds_between_batches = st.number_input(
-            "pause seconds between batches", 0, 60, 5, key="auto_pause_seconds"
-        )
-
-        col_run, col_stop = st.columns(2)
-        if col_run.button("Run until target coverage"):
-            st.session_state.auto_run = True
-            st.session_state.auto_meta = {"start_ts": time.time(), "iters": 0}
-        if col_stop.button("Stop"):
-            st.session_state.auto_run = False
-
-        meta = st.session_state.get("auto_meta", {})
-        elapsed = time.time() - meta.get("start_ts", time.time())
-        elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
-        last = meta.get("last")
-        last_str = (f"ok {last['ok']}, failed {last['failed']}"
-                    if isinstance(last, dict) else "n/a")
-        st.info(
-            f"present {len(present)} / {len(total_set)} | remaining {len(missing)} | "
-            f"iters {meta.get('iters', 0)} | elapsed {elapsed_str} | last batch {last_str}"
-        )
-
-        if st.session_state.auto_run:
-            if (not missing) or (meta.get("iters", 0) >= int(max_iters)) or (elapsed >= int(max_minutes) * 60):
-                st.session_state.auto_run = False
-                if not missing:
-                    st.success("Coverage complete")
-                else:
-                    st.info("Auto run stopped (limits reached)")
+            if not jobs:
+                st.success("Already at target coverage.")
             else:
-                chunk = missing[: int(batch_size)]
-                jobs = [
-                    {"ticker": t, "start": "1990-01-01", "end": str(date.today())}
-                    for t in chunk
-                ]
-                progress_placeholder = st.empty()
-                progress_bar = progress_placeholder.progress(0)
-                summary = ingest_batch(
-                    storage, jobs, progress_cb=lambda d, t: progress_bar.progress(d / t)
-                )
-                progress_placeholder.empty()
-                meta["iters"] = meta.get("iters", 0) + 1
-                meta["last"] = summary
-                st.session_state.auto_meta = meta
+                progress_bar = st.progress(0.0)
+                if target == "RAW (unadjusted)":
+                    summary = ingest_raw_yahoo_batch(
+                        storage,
+                        jobs,
+                        progress_cb=lambda d, t: progress_bar.progress(d / t),
+                    )
+                else:
+                    summary = ingest_batch(
+                        storage,
+                        jobs,
+                        progress_cb=lambda d, t: progress_bar.progress(d / t),
+                    )
+                st.success(f"ok {summary['ok']}, failed {summary['failed']}")
+                st.write(f"manifest: {summary['manifest_path']}")
                 st.cache_data.clear()
-                files = storage.list_all("prices")
-                present = {Path(p).stem.upper() for p in files if p.endswith(".parquet")}
-                missing = sorted(total_set - present)
-                st.info(
-                    f"Batch {meta['iters']} ok {summary['ok']} failed {summary['failed']}; {len(missing)} remaining"
-                )
-                time.sleep(int(pause_seconds_between_batches))
                 st.experimental_rerun()
     except Exception:
         st.caption("Membership parquet not available")
