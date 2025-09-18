@@ -46,12 +46,11 @@ jobs:
       INPUT_BATCH_SIZE: ${{ github.event.inputs.batch_size }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps (match repo)
+      - name: Install deps (repo)
         run: |
           python -m pip install -U pip
           pip install -r requirements.txt
@@ -73,8 +72,8 @@ jobs:
               raw = [t.strip().upper() for t in override.split(",") if t.strip()]
               picked = raw[:batch_size]
           else:
-              # PLAN LOCALLY — do NOT force Supabase here
-              s = Storage()  # defaults to local mode in CI
+              # PLAN LOCALLY — no Supabase required here
+              s = Storage()  # local mode in CI
               df = load_membership(s, cache_salt=s.cache_salt())
 
               if scope.startswith("Historical"):
@@ -85,7 +84,6 @@ jobs:
 
               missing_or_not_raw = []
               for t in universe:
-                  # local .lake is empty in CI → everything looks missing, which is OK
                   has_file = s.exists(f"prices/{t}.parquet")
                   if not has_file:
                       missing_or_not_raw.append(t); continue
@@ -111,25 +109,37 @@ jobs:
     if: ${{ needs.plan.outputs.picked != '0' || github.event.inputs.tickers != '' }}
     runs-on: ubuntu-latest
     env:
-      # ONLY the ingest job needs Supabase + forcing remote mode
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      SUPABASE_BUCKET: lake
-      FORCE_SUPABASE: "1"
+      # prefer manual override; else use planned list
       TICKERS_CSV: ${{ github.event.inputs.tickers != '' && github.event.inputs.tickers || needs.plan.outputs.tickers_csv }}
       INPUT_START: ${{ github.event.inputs.start }}
       INPUT_END: ${{ github.event.inputs.end }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps (match repo)
+      - name: Install deps (repo)
         run: |
           python -m pip install -U pip
           pip install -r requirements.txt
+
+      - name: Create Streamlit secrets (so Storage.from_env sees Supabase)
+        run: |
+          mkdir -p .streamlit
+          cat > .streamlit/secrets.toml <<EOF
+          # Top-level keys
+          SUPABASE_URL = "${{ secrets.SUPABASE_URL }}"
+          SUPABASE_SERVICE_ROLE_KEY = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          SUPABASE_BUCKET = "lake"
+          FORCE_SUPABASE = true
+
+          # Also provide nested, in case Storage() expects this shape
+          [supabase]
+          url = "${{ secrets.SUPABASE_URL }}"
+          service_role_key = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
+          bucket = "lake"
+          EOF
 
       - name: Run Yahoo RAW ingest
         run: |
@@ -153,7 +163,7 @@ jobs:
           )
           print(f"Yahoo probe: {probe.ok} {probe.url} status={probe.status_code}")
 
-          s = Storage.from_env()  # now we DO expect SUPABASE URL+KEY
+          s = Storage.from_env()  # finds creds via .streamlit/secrets.toml
           summary = ingest_raw_yahoo_batch(s, jobs)
           print("Summary:", json.dumps(summary, indent=2))
 
