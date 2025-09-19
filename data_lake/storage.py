@@ -13,10 +13,11 @@ import pandas as pd
 import streamlit as st
 from pandas.api.types import is_numeric_dtype
 
+# NEW: for HTTP HEAD verification
+import requests
+
 log = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Supabase client (optional)
 try:
     from supabase import Client, create_client  # type: ignore
 except Exception as exc:  # pragma: no cover - supabase optional
@@ -26,9 +27,9 @@ except Exception as exc:  # pragma: no cover - supabase optional
 else:  # pragma: no cover - exercised when package installed
     _SUPABASE_IMPORT_ERROR = None
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Back-compat re-export for pages importing from data_lake.storage
+
 try:
+    # Back-compat: prefer importing at module load if available.
     from .prices import load_prices_cached as _dl_load_prices_cached  # type: ignore[attr-defined]
 except Exception:
     _dl_load_prices_cached = None
@@ -49,7 +50,6 @@ DEFAULT_BUCKET = "lake"
 class ConfigurationError(RuntimeError):
     """Raised when data lake configuration prevents price availability checks."""
     pass
-
 
 # Stable price schema used across ingest + read paths.
 PRICE_COLUMNS = [
@@ -325,16 +325,10 @@ class Storage:
         api.upload(norm, payload, file_options=options or None)
 
     # ------------------------------------------------------------------
-    # Listing helpers (fixed for supabase-py)
+    # Listing helpers (supabase-py signature variations handled)
     def list_prefix(self, prefix: str) -> List[str]:
-        """
-        List objects under a given prefix (folder-like) and return fully-qualified
-        names (as strings) relative to bucket root. Compatible with multiple
-        supabase-py versions which differ in `.list()` signatures.
-        """
         norm = prefix.strip("/")
         if self.mode == "supabase":
-            # Get API handle
             if self.supabase_client is not None:
                 api = self._get_bucket_api()
             elif hasattr(self.bucket, "list"):
@@ -342,7 +336,7 @@ class Storage:
             else:  # pragma: no cover - defensive
                 raise RuntimeError("Supabase client not configured")
 
-            limit = 100
+            limit = 1000
             offset = 0
             out: list[str] = []
             seen: set[str] = set()
@@ -422,6 +416,64 @@ class Storage:
         target = f"{parent}/{name}" if parent else name
         return target in set(items)
 
+    # NEW: robust presence check via HTTP HEAD (public or signed)
+    def _public_object_url(self, path: str) -> str:
+        base = (self.supabase_url or "").rstrip("/")
+        bkt = str(self.bucket).strip("/")
+        p = path.lstrip("/")
+        return f"{base}/storage/v1/object/public/{bkt}/{p}"
+
+    def http_head_exists(self, path: str) -> bool:
+        """
+        True if the object exists, using HTTP HEAD to public URL
+        (or signed URL on 401/403). Bypasses directory listings.
+        """
+        norm = path.strip("/")
+        if self.mode == "local":
+            return (self._norm(norm)).exists()
+
+        # Public URL HEAD
+        try:
+            url = self._public_object_url(norm)
+            r = requests.head(url, allow_redirects=True, timeout=10)
+            if r.status_code == 200:
+                return True
+            if r.status_code in (301, 302, 307, 308):
+                r2 = requests.get(url, headers={"Range": "bytes=0-0"}, timeout=15)
+                if r2.status_code in (200, 206):
+                    return True
+            if r.status_code not in (401, 403):
+                return False
+        except Exception:
+            # fall through to signed
+            pass
+
+        # Signed URL fallback for private buckets
+        try:
+            if create_client is None or not (self.supabase_url and self.supabase_key):
+                return False
+            api = self._get_bucket_api()
+            # supabase-py may return dict with "signedURL" or "data": {"signedURL": ...}
+            signed = api.create_signed_url(norm, 60)
+            signed_url = None
+            if isinstance(signed, dict):
+                signed_url = (
+                    signed.get("signedURL")
+                    or signed.get("signed_url")
+                    or (signed.get("data") or {}).get("signedURL")
+                )
+            if not signed_url:
+                return False
+            r3 = requests.head(signed_url, allow_redirects=True, timeout=10)
+            if r3.status_code == 200:
+                return True
+            if r3.status_code in (301, 302, 307, 308):
+                r4 = requests.get(signed_url, headers={"Range": "bytes=0-0"}, timeout=15)
+                return r4.status_code in (200, 206)
+            return False
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Factories
     @classmethod
@@ -436,6 +488,7 @@ def _normalize_key(name: str) -> str:
 
 
 def _normalize_ticker_symbol(raw: str) -> str:
+    """Normalize a ticker symbol to uppercase without leading/trailing whitespace."""
     return str(raw).strip().upper()
 
 
@@ -443,10 +496,12 @@ _TICKER_CANON_TRANSLATION = str.maketrans({".": "_", "-": "_", " ": "_"})
 
 
 def _canonicalize_ticker_symbol(raw: str) -> str:
+    """Return a canonical representation resilient to punctuation differences."""
     return _normalize_ticker_symbol(raw).translate(_TICKER_CANON_TRANSLATION)
 
 
 def _candidate_price_stems(ticker: str) -> list[str]:
+    """Possible filename stems for ``ticker`` in the ``prices`` folder."""
     normalized = _normalize_ticker_symbol(ticker)
     canonical = _canonicalize_ticker_symbol(normalized)
     variants: set[str] = {normalized, canonical}
@@ -726,8 +781,8 @@ def _classify_probe_exception(exc: Exception) -> str:
 def _probe_key(storage: Storage, key: str, layout: str) -> str:
     try:
         if layout == "flat":
-            exists = storage.exists(key)
-            return "200" if exists else "404"
+            # Use robust HTTP-based existence
+            return "200" if storage.http_head_exists(key) else "404"
         entries = storage.list_prefix(key)
         return "200" if entries else "404"
     except Exception as exc:  # pragma: no cover - defensive
@@ -758,7 +813,7 @@ def filter_tickers_with_parquet(
         return [], []
 
     prefix = _resolve_prices_prefix(storage)
-    layout = _resolve_layout(storage, prefix)  # <-- auto-detects flat vs partitioned
+    layout = _resolve_layout(storage, prefix)
 
     available_canonical: set[str] = set()
 
@@ -787,29 +842,27 @@ def filter_tickers_with_parquet(
             if canonical:
                 available_canonical.add(canonical)
 
-        # 2) Verification pass: if listing looks suspicious, probe exact keys per ticker.
-        # Heuristics: requested >= 100 and discovered < 0.5 * requested  (e.g., S&P 505 → <253)
+        # 2) Robust verification pass: HTTP HEAD per ticker for suspected misses.
+        # Trigger when listing looks obviously short.
         if len(requested) >= 100 and len(available_canonical) < max(1, len(requested) // 2):
             log.warning(
                 "price-filter: suspicious listing (%s present from list, %s requested) — "
-                "probing per-ticker keys for verification",
+                "probing per-ticker via HEAD",
                 len(available_canonical),
                 len(requested),
             )
-            # Probe each requested ticker directly
             for t in requested:
-                # Skip if already marked present
                 canon = canonical_by_ticker[t]
                 if canon in available_canonical:
                     continue
+                # Try all common stems; mark present on first HEAD success.
                 for stem in _candidate_price_stems(t):
                     key = _build_storage_key(prefix, stem, layout="flat")
                     try:
-                        if storage.exists(key):
+                        if storage.http_head_exists(key):
                             available_canonical.add(_canonicalize_ticker_symbol(stem))
                             break
                     except Exception:
-                        # Ignore and keep probing variants
                         continue
 
     else:
@@ -835,15 +888,14 @@ def filter_tickers_with_parquet(
     present = [t for t in requested if canonical_by_ticker.get(t) in available_canonical]
     missing = [t for t in requested if canonical_by_ticker.get(t) not in available_canonical]
 
-    # Extra breadcrumbs when coverage is poor
+    # Breadcrumbs when coverage is poor
     if len(requested) >= 100 and len(present) < max(1, len(requested) // 2):
-        # Probe up to 3 "missing" names and log exact paths + status (helps spot prefix/layout/RLS)
         probes = []
         for t in missing[:3]:
             stem = _candidate_price_stems(t)[0]
             key = _build_storage_key(prefix, stem, layout)
             status = _probe_key(storage, key, layout)
-            probes.append(( _display_key(key, layout), status))
+            probes.append((_display_key(key, layout), status))
         for k, s in probes:
             log.warning("price-filter: probe %s -> %s", k, s)
 
@@ -866,6 +918,3 @@ __all__ = [
     "ConfigurationError",
     "load_prices_cached",
 ]
-
-
-
