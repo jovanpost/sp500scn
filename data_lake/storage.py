@@ -34,11 +34,9 @@ except Exception:
 
 def load_prices_cached(*args, **kwargs):
     """Back-compat shim delegating to :mod:`data_lake.prices`."""
-
     if _dl_load_prices_cached is None:
         # Lazy import to tolerate Streamlit hot-reload import ordering.
         from .prices import load_prices_cached as _impl
-
         return _impl(*args, **kwargs)
     return _dl_load_prices_cached(*args, **kwargs)
 
@@ -49,8 +47,8 @@ DEFAULT_BUCKET = "lake"
 
 class ConfigurationError(RuntimeError):
     """Raised when data lake configuration prevents price availability checks."""
-
     pass
+
 
 # Stable price schema used across ingest + read paths.
 PRICE_COLUMNS = [
@@ -69,7 +67,6 @@ PRICE_COLUMNS = [
 
 def supabase_available() -> tuple[bool, str]:
     """Return ``(available, reason)`` for Supabase client support."""
-
     if create_client is None:
         reason = (
             "supabase python client not installed"
@@ -82,7 +79,6 @@ def supabase_available() -> tuple[bool, str]:
 
 def validate_prices_schema(df: pd.DataFrame, *, strict: bool = True) -> None:
     """Ensure frames store raw OHLC alongside provider Adj Close."""
-
     if df is None or df.empty:
         return
 
@@ -185,7 +181,6 @@ def _load_supabase_config(
     bucket: str | None = None,
 ) -> _SupabaseConfig:
     """Read Supabase configuration from environment + Streamlit secrets."""
-
     secrets_cfg: dict[str, Any] = {}
     try:  # pragma: no branch - streamlit secrets may be unavailable
         secrets_cfg = _coerce_secrets_dict(getattr(st, "secrets", {})).get("supabase", {})
@@ -331,8 +326,14 @@ class Storage:
     # ------------------------------------------------------------------
     # Listing helpers
     def list_prefix(self, prefix: str) -> List[str]:
+        """
+        List objects under a given prefix (folder-like) and return fully-qualified
+        names (as strings) relative to bucket root. Compatible with multiple
+        supabase-py versions which differ in `.list()` signatures.
+        """
         norm = prefix.strip("/")
         if self.mode == "supabase":
+            # Get API handle
             if self.supabase_client is not None:
                 api = self._get_bucket_api()
             elif hasattr(self.bucket, "list"):
@@ -344,22 +345,24 @@ class Storage:
             offset = 0
             out: list[str] = []
             seen: set[str] = set()
+            supports_offset = True
 
             while True:
-                used_pagination = True
+                # Try the preferred (newer) signature first
                 try:
-                    if norm != "":
-                        response = api.list(norm, limit=limit, offset=offset)
-                    else:
-                        response = api.list(limit=limit, offset=offset)
+                    response = api.list(
+                        path=norm,
+                        limit=limit,
+                        offset=offset,
+                        sort_by={"column": "name", "order": "asc"},
+                    )
                 except TypeError:
-                    used_pagination = False
-                    if offset > 0:
-                        break
-                    if norm:
-                        response = api.list(prefix=norm)
-                    else:
-                        response = api.list()
+                    # Older SDK variants: positional path (no limit/offset) or path-only kw
+                    supports_offset = False
+                    try:
+                        response = api.list(norm) if norm else api.list()
+                    except TypeError:
+                        response = api.list(path=norm) if norm else api.list()
 
                 items = getattr(response, "data", response)
                 if isinstance(items, dict):
@@ -375,26 +378,23 @@ class Storage:
                     if not name:
                         continue
                     name = str(name).lstrip("/")
-                    if norm and name.startswith(f"{norm}/"):
-                        full = name
-                    else:
-                        full = f"{norm}/{name}" if norm else name
+                    full = f"{norm}/{name}" if norm else name
                     if full in seen:
                         continue
                     seen.add(full)
                     out.append(full)
                     new_items += 1
 
-                if not used_pagination:
+                # Stop if we can't page or we got a short page
+                if not supports_offset:
                     break
-                if len(raw_items) < limit:
-                    break
-                if new_items == 0:
+                if len(raw_items) < limit or new_items == 0:
                     break
                 offset += limit
 
             return sorted(out)
 
+        # Local FS
         base = self._norm(norm)
         if not base.exists() or not base.is_dir():
             return []
@@ -442,7 +442,6 @@ def _normalize_key(name: str) -> str:
 
 def _normalize_ticker_symbol(raw: str) -> str:
     """Normalize a ticker symbol to uppercase without leading/trailing whitespace."""
-
     return str(raw).strip().upper()
 
 
@@ -451,13 +450,11 @@ _TICKER_CANON_TRANSLATION = str.maketrans({".": "_", "-": "_", " ": "_"})
 
 def _canonicalize_ticker_symbol(raw: str) -> str:
     """Return a canonical representation resilient to punctuation differences."""
-
     return _normalize_ticker_symbol(raw).translate(_TICKER_CANON_TRANSLATION)
 
 
 def _candidate_price_stems(ticker: str) -> list[str]:
     """Possible filename stems for ``ticker`` in the ``prices`` folder."""
-
     normalized = _normalize_ticker_symbol(ticker)
     canonical = _canonicalize_ticker_symbol(normalized)
 
@@ -476,7 +473,6 @@ def _candidate_price_stems(ticker: str) -> list[str]:
     }
 
     variants.update(filter(None, punctuation_swaps))
-
     return sorted({v.strip().upper() for v in variants if v})
 
 
@@ -729,7 +725,6 @@ def filter_tickers_with_parquet(
     storage: Storage, tickers: Iterable[str]
 ) -> tuple[list[str], list[str]]:
     """Split ``tickers`` into those with and without price parquet data."""
-
     requested: list[str] = []
     canonical_by_ticker: dict[str, str] = {}
     seen_canonical: set[str] = set()
@@ -796,14 +791,10 @@ def filter_tickers_with_parquet(
                     break
 
     present = [
-        t
-        for t in requested
-        if canonical_by_ticker.get(t) in available_canonical
+        t for t in requested if canonical_by_ticker.get(t) in available_canonical
     ]
     missing = [
-        t
-        for t in requested
-        if canonical_by_ticker.get(t) not in available_canonical
+        t for t in requested if canonical_by_ticker.get(t) not in available_canonical
     ]
 
     log.debug(
@@ -846,3 +837,4 @@ __all__ = [
     "ConfigurationError",
     "load_prices_cached",
 ]
+
