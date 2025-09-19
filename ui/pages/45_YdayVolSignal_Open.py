@@ -6,14 +6,13 @@ import pandas as pd
 import streamlit as st
 
 import engine.signal_scan as sigscan
-from engine.signal_scan import scan_day, ScanParams, members_on_date
+from engine.signal_scan import ScanParams, members_on_date, scan_day
 from data_lake.storage import Storage, load_prices_cached
-from data_lake import storage as _dl_storage
 
 
-def _fallback_filter_tickers_with_parquet(storage: Storage, tickers):
-    seen = set()
-    requested = []
+def _fallback_filter_tickers_with_parquet(storage: "Storage", tickers):
+    seen: set[str] = set()
+    requested: list[str] = []
     for ticker in tickers or []:
         if not ticker:
             continue
@@ -25,16 +24,24 @@ def _fallback_filter_tickers_with_parquet(storage: Storage, tickers):
     present: list[str] = []
     missing: list[str] = []
     for normalized in requested:
-        if storage.exists(f"prices/{normalized}.parquet"):
-            present.append(normalized)
-        else:
+        try:
+            if storage.exists(f"prices/{normalized}.parquet"):
+                present.append(normalized)
+            else:
+                missing.append(normalized)
+        except Exception:
             missing.append(normalized)
     return present, missing
 
 
-filter_tickers_with_parquet = getattr(
-    _dl_storage, "filter_tickers_with_parquet", _fallback_filter_tickers_with_parquet
-)
+try:
+    from data_lake.storage import filter_tickers_with_parquet as _filter_tickers_with_parquet
+except Exception:  # pragma: no cover - exercised in fallback test
+    _FILTER_TICKER_SOURCE = "fallback"
+    filter_tickers_with_parquet = _fallback_filter_tickers_with_parquet
+else:
+    _FILTER_TICKER_SOURCE = "package"
+    filter_tickers_with_parquet = _filter_tickers_with_parquet
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
 from ui.components.tables import show_df
@@ -45,8 +52,17 @@ def render_page() -> None:
 
     storage = Storage()
     dbg = _get_dbg("scan")
-    dbg.set_env(storage_mode=getattr(storage, "mode", "unknown"), bucket=getattr(storage, "bucket", None))
+    dbg.set_env(
+        storage_mode=getattr(storage, "mode", "unknown"),
+        bucket=getattr(storage, "bucket", None),
+        ticker_filter_source=_FILTER_TICKER_SOURCE,
+    )
     st.caption(f"storage: {storage.info()} mode={storage.mode}")
+    if _FILTER_TICKER_SOURCE != "package":
+        st.warning(
+            "Price availability helper import failed; falling back to direct parquet probes."
+            " Filtering may be slower until deployments finish."
+        )
     if getattr(storage, "force_supabase", False) and storage.mode == "local":
         st.error(
             "Supabase is required but not available. Check secrets: [supabase] url/key, or disable supabase.force."
