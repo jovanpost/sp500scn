@@ -6,7 +6,34 @@ import pandas as pd
 from pandas.tseries.offsets import BDay
 import streamlit as st
 
-from data_lake.storage import Storage, load_prices_cached, filter_tickers_with_parquet
+from data_lake.storage import Storage, load_prices_cached
+from data_lake import storage as _dl_storage
+
+
+def _fallback_filter_tickers_with_parquet(storage: Storage, tickers):
+    seen = set()
+    requested = []
+    for ticker in tickers or []:
+        if not ticker:
+            continue
+        normalized = str(ticker).strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            requested.append(normalized)
+
+    present: list[str] = []
+    missing: list[str] = []
+    for normalized in requested:
+        if storage.exists(f"prices/{normalized}.parquet"):
+            present.append(normalized)
+        else:
+            missing.append(normalized)
+    return present, missing
+
+
+filter_tickers_with_parquet = getattr(
+    _dl_storage, "filter_tickers_with_parquet", _fallback_filter_tickers_with_parquet
+)
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
