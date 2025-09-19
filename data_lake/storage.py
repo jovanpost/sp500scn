@@ -613,6 +613,7 @@ def load_prices_cached(
             except FileNotFoundError:
                 continue
         tidy = _tidy_prices(df_raw, ticker=ticker)
+        # Ensure index is datetime to avoid comparison failures
         tidy.index = pd.to_datetime(tidy.index, errors="coerce").tz_localize(None)
         if tidy.index.isna().any():
             bad = int(tidy.index.isna().sum())
@@ -656,7 +657,9 @@ def load_prices_cached(
         except Exception:
             out["Volume"] = vol
 
+    # Enforce raw OHLC semantics before handing data to callers.
     validate_prices_schema(out)
+
     return out.reset_index(drop=True)
 
 
@@ -756,6 +759,7 @@ def filter_tickers_with_parquet(
     available_canonical: set[str] = set()
 
     if layout == "flat":
+        # 1) Fast path: directory list
         try:
             entries = storage.list_prefix(prefix)
         except Exception as exc:
@@ -764,6 +768,7 @@ def filter_tickers_with_parquet(
                 f"Unable to list price objects under prefix '{display_prefix}': {exc}"
             ) from exc
 
+        parquet_stems: set[str] = set()
         for entry in entries:
             name = Path(str(entry)).name
             stem, ext = os.path.splitext(name)
@@ -771,9 +776,38 @@ def filter_tickers_with_parquet(
                 continue
             if ext and ext.lower() != ".parquet":
                 continue
+            parquet_stems.add(stem.upper())
+
+        for stem in parquet_stems:
             canonical = _canonicalize_ticker_symbol(stem)
             if canonical:
                 available_canonical.add(canonical)
+
+        # 2) Verification pass: if listing looks suspicious, probe exact keys per ticker.
+        # Heuristics: requested >= 100 and discovered < 0.5 * requested  (e.g., S&P 505 → <253)
+        if len(requested) >= 100 and len(available_canonical) < max(1, len(requested) // 2):
+            log.warning(
+                "price-filter: suspicious listing (%s present from list, %s requested) — "
+                "probing per-ticker keys for verification",
+                len(available_canonical),
+                len(requested),
+            )
+            # Probe each requested ticker directly
+            for t in requested:
+                # Skip if already marked present
+                canon = canonical_by_ticker[t]
+                if canon in available_canonical:
+                    continue
+                for stem in _candidate_price_stems(t):
+                    key = _build_storage_key(prefix, stem, layout="flat")
+                    try:
+                        if storage.exists(key):
+                            available_canonical.add(_canonicalize_ticker_symbol(stem))
+                            break
+                    except Exception:
+                        # Ignore and keep probing variants
+                        continue
+
     else:
         probed_paths: set[str] = set()
         for ticker in requested:
@@ -797,6 +831,18 @@ def filter_tickers_with_parquet(
     present = [t for t in requested if canonical_by_ticker.get(t) in available_canonical]
     missing = [t for t in requested if canonical_by_ticker.get(t) not in available_canonical]
 
+    # Extra breadcrumbs when coverage is poor
+    if len(requested) >= 100 and len(present) < max(1, len(requested) // 2):
+        # Probe up to 3 "missing" names and log exact paths + status (helps spot prefix/layout/RLS)
+        probes = []
+        for t in missing[:3]:
+            stem = _candidate_price_stems(t)[0]
+            key = _build_storage_key(prefix, stem, layout)
+            status = _probe_key(storage, key, layout)
+            probes.append(( _display_key(key, layout), status))
+        for k, s in probes:
+            log.warning("price-filter: probe %s -> %s", k, s)
+
     log.debug(
         "filter_tickers_with_parquet: prefix=%s layout=%s requested=%s present=%s missing=%s",
         prefix or "<root>",
@@ -805,27 +851,6 @@ def filter_tickers_with_parquet(
         len(present),
         len(missing),
     )
-
-    if requested:
-        coverage = len(present) / max(1, len(requested))
-        if coverage < 0.7:
-            log.warning(
-                "filter_tickers_with_parquet: availability below 70%% (%s/%s)",
-                len(present),
-                len(requested),
-            )
-            diagnostics: list[tuple[str, str]] = []
-            for ticker in requested:
-                if len(diagnostics) >= 3:
-                    break
-                stems = _candidate_price_stems(ticker)
-                if not stems:
-                    continue
-                path = _build_storage_key(prefix, stems[0], layout)
-                status = _probe_key(storage, path, layout)
-                diagnostics.append((_display_key(path, layout), status))
-            for probe_key, status in diagnostics:
-                log.warning("filter_tickers_with_parquet: probe %s -> %s", probe_key, status)
 
     return present, missing
 
@@ -837,5 +862,6 @@ __all__ = [
     "ConfigurationError",
     "load_prices_cached",
 ]
+
 
 
