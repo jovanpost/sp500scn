@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Iterable, List
 
 import pandas as pd
 import streamlit as st
@@ -581,3 +581,61 @@ def load_prices_cached(
     validate_prices_schema(out)
 
     return out.reset_index(drop=True)
+
+
+def filter_tickers_with_parquet(
+    storage: Storage, tickers: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    """Split ``tickers`` into those with and without ``prices/*.parquet`` data."""
+
+    seen: set[str] = set()
+    requested: list[str] = []
+    for raw in tickers:
+        if not raw:
+            continue
+        ticker = str(raw).strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        requested.append(ticker)
+
+    if not requested:
+        return [], []
+
+    available: set[str] = set()
+    entries: list[str]
+    try:
+        entries = storage.list_prefix("prices")
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        log.warning("filter_tickers_with_parquet: list_prefix failed: %s", exc)
+        entries = []
+
+    for entry in entries:
+        name = Path(str(entry)).name
+        stem, ext = os.path.splitext(name)
+        if not stem:
+            continue
+        if ext and ext.lower() != ".parquet":
+            continue
+        available.add(stem.upper())
+
+    if not available:
+        for ticker in requested:
+            path = f"prices/{ticker}.parquet"
+            try:
+                if storage.exists(path):
+                    available.add(ticker)
+            except Exception:  # pragma: no cover - defensive
+                continue
+
+    present = [t for t in requested if t in available]
+    missing = [t for t in requested if t not in available]
+
+    log.debug(
+        "filter_tickers_with_parquet: requested=%s present=%s missing=%s",
+        len(requested),
+        len(present),
+        len(missing),
+    )
+
+    return present, missing
