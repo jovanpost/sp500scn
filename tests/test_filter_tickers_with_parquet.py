@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib
+import sys
 
 from data_lake import storage
 
@@ -76,3 +78,30 @@ def test_filter_tickers_with_parquet_normalizes_ticker_variants(tmp_path, monkey
 
     assert present == ["BRK.B", "BF.B"]
     assert missing == ["ALLY"]
+
+
+def test_ui_fallback_filter(monkeypatch, tmp_path):
+    from data_lake import storage as dl_storage
+
+    if hasattr(dl_storage, "filter_tickers_with_parquet"):
+        monkeypatch.delattr(dl_storage, "filter_tickers_with_parquet", raising=False)
+
+    local_root = tmp_path / ".lake"
+    monkeypatch.setattr(dl_storage, "LOCAL_ROOT", local_root)
+    st = dl_storage.Storage()
+
+    prices_dir = local_root / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    (prices_dir / "AAPL.parquet").write_text("data")
+
+    module_name = "ui.pages.45_YdayVolSignal_Open"
+    sys.modules.pop(module_name, None)
+    page_module = importlib.import_module(module_name)
+
+    present, missing = page_module.filter_tickers_with_parquet(st, ["AAPL", "MSFT"])
+
+    assert present == ["AAPL"]
+    assert missing == ["MSFT"]
+    assert page_module.filter_tickers_with_parquet is page_module._fallback_filter_tickers_with_parquet
+
+    sys.modules.pop(module_name, None)
