@@ -28,8 +28,9 @@ else:  # pragma: no cover - exercised when package installed
     _SUPABASE_IMPORT_ERROR = None
 
 
+# Back-compat alias: if other modules import from data_lake.prices, they still work.
+# We keep a shim, but note that the concrete implementation below overrides the name.
 try:
-    # Back-compat: prefer importing at module load if available.
     from .prices import load_prices_cached as _dl_load_prices_cached  # type: ignore[attr-defined]
 except Exception:
     _dl_load_prices_cached = None
@@ -453,7 +454,6 @@ class Storage:
             if create_client is None or not (self.supabase_url and self.supabase_key):
                 return False
             api = self._get_bucket_api()
-            # supabase-py may return dict with "signedURL" or "data": {"signedURL": ...}
             signed = api.create_signed_url(norm, 60)
             signed_url = None
             if isinstance(signed, dict):
@@ -914,7 +914,6 @@ def filter_tickers_with_parquet(
 __all__ = [
     "Storage",
     "filter_tickers_with_parquet",
-    "list_prefix",
     "ConfigurationError",
     "load_prices_cached",
 ]
