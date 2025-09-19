@@ -15,6 +15,8 @@ from pandas.api.types import is_numeric_dtype
 
 log = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Supabase client (optional)
 try:
     from supabase import Client, create_client  # type: ignore
 except Exception as exc:  # pragma: no cover - supabase optional
@@ -24,9 +26,9 @@ except Exception as exc:  # pragma: no cover - supabase optional
 else:  # pragma: no cover - exercised when package installed
     _SUPABASE_IMPORT_ERROR = None
 
-
+# ──────────────────────────────────────────────────────────────────────────────
+# Back-compat re-export for pages importing from data_lake.storage
 try:
-    # Back-compat: prefer importing at module load if available.
     from .prices import load_prices_cached as _dl_load_prices_cached  # type: ignore[attr-defined]
 except Exception:
     _dl_load_prices_cached = None
@@ -35,7 +37,6 @@ except Exception:
 def load_prices_cached(*args, **kwargs):
     """Back-compat shim delegating to :mod:`data_lake.prices`."""
     if _dl_load_prices_cached is None:
-        # Lazy import to tolerate Streamlit hot-reload import ordering.
         from .prices import load_prices_cached as _impl
         return _impl(*args, **kwargs)
     return _dl_load_prices_cached(*args, **kwargs)
@@ -324,7 +325,7 @@ class Storage:
         api.upload(norm, payload, file_options=options or None)
 
     # ------------------------------------------------------------------
-    # Listing helpers
+    # Listing helpers (fixed for supabase-py)
     def list_prefix(self, prefix: str) -> List[str]:
         """
         List objects under a given prefix (folder-like) and return fully-qualified
@@ -348,7 +349,6 @@ class Storage:
             supports_offset = True
 
             while True:
-                # Try the preferred (newer) signature first
                 try:
                     response = api.list(
                         path=norm,
@@ -357,7 +357,6 @@ class Storage:
                         sort_by={"column": "name", "order": "asc"},
                     )
                 except TypeError:
-                    # Older SDK variants: positional path (no limit/offset) or path-only kw
                     supports_offset = False
                     try:
                         response = api.list(norm) if norm else api.list()
@@ -385,7 +384,6 @@ class Storage:
                     out.append(full)
                     new_items += 1
 
-                # Stop if we can't page or we got a short page
                 if not supports_offset:
                     break
                 if len(raw_items) < limit or new_items == 0:
@@ -411,9 +409,7 @@ class Storage:
         return self.list_prefix(prefix)
 
     def exists(self, path: str) -> bool:
-        if not path:
-            return False
-        if path.endswith("/"):
+        if not path or path.endswith("/"):
             return False
         norm = path.strip("/")
         if not norm:
@@ -435,13 +431,11 @@ class Storage:
 
 # ====== Price helpers =======================================================
 
-
 def _normalize_key(name: str) -> str:
     return name.strip().lower().replace(" ", "_").replace("-", "_")
 
 
 def _normalize_ticker_symbol(raw: str) -> str:
-    """Normalize a ticker symbol to uppercase without leading/trailing whitespace."""
     return str(raw).strip().upper()
 
 
@@ -449,18 +443,13 @@ _TICKER_CANON_TRANSLATION = str.maketrans({".": "_", "-": "_", " ": "_"})
 
 
 def _canonicalize_ticker_symbol(raw: str) -> str:
-    """Return a canonical representation resilient to punctuation differences."""
     return _normalize_ticker_symbol(raw).translate(_TICKER_CANON_TRANSLATION)
 
 
 def _candidate_price_stems(ticker: str) -> list[str]:
-    """Possible filename stems for ``ticker`` in the ``prices`` folder."""
     normalized = _normalize_ticker_symbol(ticker)
     canonical = _canonicalize_ticker_symbol(normalized)
-
     variants: set[str] = {normalized, canonical}
-
-    # Generate variants that commonly appear in vendor exports ("BRK.B" vs "BRK_B").
     punctuation_swaps = {
         normalized.replace(".", "_"),
         normalized.replace(".", "-"),
@@ -471,7 +460,6 @@ def _candidate_price_stems(ticker: str) -> list[str]:
         canonical.replace("_", "."),
         canonical.replace("_", "-"),
     }
-
     variants.update(filter(None, punctuation_swaps))
     return sorted({v.strip().upper() for v in variants if v})
 
@@ -534,7 +522,6 @@ def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     for col in keep:
         if col not in working.columns:
             if col == "Adj Close":
-                # Preserve provider adjustment data without manufacturing values.
                 working[col] = pd.NA
             elif col in {"Dividends", "Stock Splits"}:
                 working[col] = 0.0
@@ -626,7 +613,6 @@ def load_prices_cached(
             except FileNotFoundError:
                 continue
         tidy = _tidy_prices(df_raw, ticker=ticker)
-        # Ensure index is datetime to avoid comparison failures
         tidy.index = pd.to_datetime(tidy.index, errors="coerce").tz_localize(None)
         if tidy.index.isna().any():
             bad = int(tidy.index.isna().sum())
@@ -670,9 +656,7 @@ def load_prices_cached(
         except Exception:
             out["Volume"] = vol
 
-    # Enforce raw OHLC semantics before handing data to callers.
     validate_prices_schema(out)
-
     return out.reset_index(drop=True)
 
 
@@ -690,6 +674,28 @@ def _resolve_prices_prefix(storage: Storage) -> str:
     if bucket and prefix.startswith(f"{bucket}/"):
         prefix = prefix[len(bucket) + 1 :]
     return prefix.strip("/")
+
+
+def _resolve_layout(storage: Storage, prefix: str) -> str:
+    """
+    Resolve layout with auto-detection:
+    - If LAKE_LAYOUT is 'flat' or 'partitioned', use it.
+    - Else detect: if any '.parquet' exists directly under prefix -> 'flat',
+      otherwise assume 'partitioned'.
+    """
+    val = (os.getenv("LAKE_LAYOUT", "auto") or "auto").strip().lower()
+    if val in {"flat", "partitioned"}:
+        return val
+    try:
+        entries = storage.list_prefix(prefix)
+    except Exception:
+        # Conservative default that matches most setups (flat files)
+        return "flat"
+    for e in entries[:200]:  # cheap sample
+        name = Path(str(e)).name
+        if os.path.splitext(name)[1].lower() == ".parquet":
+            return "flat"
+    return "partitioned"
 
 
 def _build_storage_key(prefix: str, stem: str, layout: str) -> str:
@@ -745,9 +751,7 @@ def filter_tickers_with_parquet(
         return [], []
 
     prefix = _resolve_prices_prefix(storage)
-    layout = os.getenv("LAKE_LAYOUT", "flat").strip().lower() or "flat"
-    if layout not in {"flat", "partitioned"}:
-        raise ConfigurationError(f"Unsupported LAKE_LAYOUT value: {layout!r}")
+    layout = _resolve_layout(storage, prefix)  # <-- auto-detects flat vs partitioned
 
     available_canonical: set[str] = set()
 
@@ -790,12 +794,8 @@ def filter_tickers_with_parquet(
                         available_canonical.add(canonical)
                     break
 
-    present = [
-        t for t in requested if canonical_by_ticker.get(t) in available_canonical
-    ]
-    missing = [
-        t for t in requested if canonical_by_ticker.get(t) not in available_canonical
-    ]
+    present = [t for t in requested if canonical_by_ticker.get(t) in available_canonical]
+    missing = [t for t in requested if canonical_by_ticker.get(t) not in available_canonical]
 
     log.debug(
         "filter_tickers_with_parquet: prefix=%s layout=%s requested=%s present=%s missing=%s",
@@ -837,4 +837,5 @@ __all__ = [
     "ConfigurationError",
     "load_prices_cached",
 ]
+
 
