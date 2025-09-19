@@ -6,7 +6,7 @@ import pandas as pd
 from pandas.tseries.offsets import BDay
 import streamlit as st
 
-from data_lake.storage import Storage, load_prices_cached
+from data_lake.storage import Storage, load_prices_cached, filter_tickers_with_parquet
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
@@ -246,6 +246,60 @@ def render_page() -> None:
                 st.info("No eligible tickers found in selected range.")
                 debug_panel("backtest")
                 return
+
+            requested_count = len(active_tickers)
+            filtered_tickers, missing_tickers = filter_tickers_with_parquet(
+                storage, active_tickers
+            )
+            dbg.event(
+                "ticker_filter",
+                requested=requested_count,
+                available=len(filtered_tickers),
+                missing=len(missing_tickers),
+            )
+
+            if missing_tickers:
+                warn_text = (
+                    f"{requested_count} tickers were requested. "
+                    f"{len(filtered_tickers)} were found with available price data. "
+                    "Running backtest on valid tickers only."
+                )
+                st.warning(warn_text)
+                log(warn_text)
+                preview = ", ".join(missing_tickers[:10])
+                if preview:
+                    more = "…" if len(missing_tickers) > 10 else ""
+                    st.caption(
+                        f"Missing tickers ({len(missing_tickers)} total, first 10 shown): {preview}{more}"
+                    )
+                toggle_fn = getattr(st, "toggle", None)
+                if callable(toggle_fn):
+                    enable_export = toggle_fn(
+                        "Enable download for missing tickers", key="bt_missing_toggle"
+                    )
+                else:  # pragma: no cover - Streamlit fallback
+                    enable_export = st.checkbox(
+                        "Enable download for missing tickers", key="bt_missing_toggle"
+                    )
+                if enable_export:
+                    st.download_button(
+                        "Download missing tickers (.txt)",
+                        data="\n".join(missing_tickers),
+                        file_name="missing_tickers.txt",
+                        mime="text/plain",
+                        key="bt_missing_download",
+                    )
+
+            if not filtered_tickers:
+                status.update(label="Backtest cancelled ❌", state="error")
+                st.error(
+                    "No valid price data found for the provided tickers. "
+                    "Please check your list or reload parquet files."
+                )
+                debug_panel("backtest")
+                return
+
+            active_tickers = filtered_tickers
 
             log(f"Preloading {len(active_tickers)} tickers…")
             with dbg.step("preload_prices"):
