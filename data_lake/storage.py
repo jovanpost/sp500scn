@@ -413,6 +413,46 @@ def _normalize_key(name: str) -> str:
     return name.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+def _normalize_ticker_symbol(raw: str) -> str:
+    """Normalize a ticker symbol to uppercase without leading/trailing whitespace."""
+
+    return str(raw).strip().upper()
+
+
+_TICKER_CANON_TRANSLATION = str.maketrans({".": "_", "-": "_", " ": "_"})
+
+
+def _canonicalize_ticker_symbol(raw: str) -> str:
+    """Return a canonical representation resilient to punctuation differences."""
+
+    return _normalize_ticker_symbol(raw).translate(_TICKER_CANON_TRANSLATION)
+
+
+def _candidate_price_stems(ticker: str) -> list[str]:
+    """Possible filename stems for ``ticker`` in the ``prices`` folder."""
+
+    normalized = _normalize_ticker_symbol(ticker)
+    canonical = _canonicalize_ticker_symbol(normalized)
+
+    variants: set[str] = {normalized, canonical}
+
+    # Generate variants that commonly appear in vendor exports ("BRK.B" vs "BRK_B").
+    punctuation_swaps = {
+        normalized.replace(".", "_"),
+        normalized.replace(".", "-"),
+        normalized.replace("-", "_"),
+        normalized.replace("-", "."),
+        normalized.replace("_", "."),
+        normalized.replace("_", "-"),
+        canonical.replace("_", "."),
+        canonical.replace("_", "-"),
+    }
+
+    variants.update(filter(None, punctuation_swaps))
+
+    return sorted({v.strip().upper() for v in variants if v})
+
+
 def _tidy_prices(df: pd.DataFrame, ticker: str | None = None) -> pd.DataFrame:
     if df is None or df.empty:
         empty = pd.DataFrame(columns=[c for c in PRICE_COLUMNS if c != "date"])
@@ -618,21 +658,26 @@ def filter_tickers_with_parquet(
 ) -> tuple[list[str], list[str]]:
     """Split ``tickers`` into those with and without ``prices/*.parquet`` data."""
 
-    seen: set[str] = set()
     requested: list[str] = []
+    canonical_by_ticker: dict[str, str] = {}
+    seen_canonical: set[str] = set()
     for raw in tickers:
         if not raw:
             continue
-        ticker = str(raw).strip().upper()
-        if not ticker or ticker in seen:
+        ticker = _normalize_ticker_symbol(raw)
+        if not ticker:
             continue
-        seen.add(ticker)
+        canonical = _canonicalize_ticker_symbol(ticker)
+        if canonical in seen_canonical:
+            continue
         requested.append(ticker)
+        canonical_by_ticker[ticker] = canonical
+        seen_canonical.add(canonical)
 
     if not requested:
         return [], []
 
-    available: set[str] = set()
+    available_canonical: set[str] = set()
     entries: list[str]
     try:
         entries = storage.list_prefix("prices")
@@ -647,19 +692,31 @@ def filter_tickers_with_parquet(
             continue
         if ext and ext.lower() != ".parquet":
             continue
-        available.add(stem.upper())
+        canonical = _canonicalize_ticker_symbol(stem)
+        if canonical:
+            available_canonical.add(canonical)
 
-    if not available:
+    if not available_canonical:
         for ticker in requested:
-            path = f"prices/{ticker}.parquet"
-            try:
-                if storage.exists(path):
-                    available.add(ticker)
-            except Exception:  # pragma: no cover - defensive
-                continue
+            for stem in _candidate_price_stems(ticker):
+                path = f"prices/{stem}.parquet"
+                try:
+                    if storage.exists(path):
+                        available_canonical.add(_canonicalize_ticker_symbol(stem))
+                        break
+                except Exception:  # pragma: no cover - defensive
+                    continue
 
-    present = [t for t in requested if t in available]
-    missing = [t for t in requested if t not in available]
+    present = [
+        t
+        for t in requested
+        if canonical_by_ticker.get(t) in available_canonical
+    ]
+    missing = [
+        t
+        for t in requested
+        if canonical_by_ticker.get(t) not in available_canonical
+    ]
 
     log.debug(
         "filter_tickers_with_parquet: requested=%s present=%s missing=%s",

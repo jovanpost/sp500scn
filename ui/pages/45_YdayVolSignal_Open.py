@@ -94,29 +94,27 @@ def render_page() -> None:
             )
 
             if missing_tickers:
+                missing_count = len(missing_tickers)
+                available_count = len(filtered_tickers)
                 warn_text = (
-                    f"{requested_count} tickers were requested. "
-                    f"{len(filtered_tickers)} were found with available price data. "
-                    "Running scan on valid tickers only."
+                    f"Out of {requested_count} S&P tickers for {D.date()}, "
+                    f"{available_count} have price files for scanning. "
+                    f"{missing_count} are missing and were excluded automatically."
                 )
                 st.warning(warn_text)
                 log(warn_text)
-                preview = ", ".join(missing_tickers[:10])
-                if preview:
-                    more = "…" if len(missing_tickers) > 10 else ""
+
+                with st.expander("Missing ticker diagnostics", expanded=False):
                     st.caption(
-                        f"Missing tickers ({len(missing_tickers)} total, first 10 shown): {preview}{more}"
+                        "Tickers listed below were not found in Supabase Storage under "
+                        "`prices/*.parquet`."
                     )
-                toggle_fn = getattr(st, "toggle", None)
-                if callable(toggle_fn):
-                    enable_export = toggle_fn(
-                        "Enable download for missing tickers", key="scan_missing_toggle"
-                    )
-                else:  # pragma: no cover - Streamlit fallback
-                    enable_export = st.checkbox(
-                        "Enable download for missing tickers", key="scan_missing_toggle"
-                    )
-                if enable_export:
+                    preview_count = min(50, missing_count)
+                    st.code("\n".join(missing_tickers[:preview_count]))
+                    if missing_count > preview_count:
+                        st.caption(
+                            f"Showing the first {preview_count} tickers (of {missing_count} total)."
+                        )
                     st.download_button(
                         "Download missing tickers (.txt)",
                         data="\n".join(missing_tickers),
