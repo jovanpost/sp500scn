@@ -103,5 +103,6 @@ def test_ui_fallback_filter(monkeypatch, tmp_path):
     assert present == ["AAPL"]
     assert missing == ["MSFT"]
     assert page_module.filter_tickers_with_parquet is page_module._fallback_filter_tickers_with_parquet
+    assert page_module._FILTER_TICKER_SOURCE == "fallback"
 
     sys.modules.pop(module_name, None)
