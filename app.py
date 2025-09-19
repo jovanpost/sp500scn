@@ -2,12 +2,15 @@ import os
 import importlib.util
 from pathlib import Path
 import streamlit as st
+
 from ui.layout import setup_page, render_header
+from ui.price_filter import initialize_price_filter
 
 os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 
 # Initialize page and global layout/CSS
 setup_page()
+initialize_price_filter()
 
 # ---- Brand header ----
 render_header()

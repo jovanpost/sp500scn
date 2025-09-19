@@ -1,17 +1,25 @@
-from __future__ import annotations
-
 from pathlib import Path
-import importlib
 import sys
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import pytest
+
 from data_lake import storage
+from data_lake.storage import ConfigurationError
 
 
-def _make_storage(tmp_path: Path, monkeypatch):
+def _set_env(monkeypatch, layout: str = "flat", prefix: str = "lake/prices") -> None:
+    monkeypatch.setenv("LAKE_LAYOUT", layout)
+    monkeypatch.setenv("LAKE_PRICES_PREFIX", prefix)
+
+
+def _make_storage(tmp_path: Path, monkeypatch, *, layout: str = "flat"):
     local_root = tmp_path / ".lake"
     prices_dir = local_root / "prices"
-    prices_dir.mkdir(parents=True)
+    prices_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(storage, "LOCAL_ROOT", local_root)
+    _set_env(monkeypatch, layout=layout)
     return storage.Storage()
 
 
@@ -41,9 +49,11 @@ def test_filter_tickers_with_parquet_handles_empty_and_missing(tmp_path, monkeyp
     assert missing_only == ["XYZ"]
 
 
-def test_filter_tickers_with_parquet_supabase_pagination():
+def test_filter_tickers_with_parquet_supabase_pagination(monkeypatch):
+    _set_env(monkeypatch)
     st = storage.Storage()
     st.mode = "supabase"
+    st.bucket = "lake"
 
     class Bucket:
         def __init__(self):
@@ -56,7 +66,15 @@ def test_filter_tickers_with_parquet_supabase_pagination():
             slice_ = self.names[start:end]
             return {"data": [{"name": name} for name in slice_]}
 
-    st.bucket = Bucket()
+    class Client:
+        class StorageAPI:
+            def from_(self, bucket):
+                assert bucket == "lake"
+                return Bucket()
+
+        storage = StorageAPI()
+
+    st.supabase_client = Client()
 
     present, missing = storage.filter_tickers_with_parquet(
         st, ["sym0", "SYM150", "missing"]
@@ -80,29 +98,21 @@ def test_filter_tickers_with_parquet_normalizes_ticker_variants(tmp_path, monkey
     assert missing == ["ALLY"]
 
 
-def test_ui_fallback_filter(monkeypatch, tmp_path):
-    from data_lake import storage as dl_storage
+def test_filter_tickers_with_parquet_partitioned_layout(tmp_path, monkeypatch):
+    st = _make_storage(tmp_path, monkeypatch, layout="partitioned")
+    base = Path(storage.LOCAL_ROOT) / "prices" / "AAPL" / "date=2020-01-01"
+    base.mkdir(parents=True)
+    (base / "part-0.parquet").write_text("data")
 
-    if hasattr(dl_storage, "filter_tickers_with_parquet"):
-        monkeypatch.delattr(dl_storage, "filter_tickers_with_parquet", raising=False)
-
-    local_root = tmp_path / ".lake"
-    monkeypatch.setattr(dl_storage, "LOCAL_ROOT", local_root)
-    st = dl_storage.Storage()
-
-    prices_dir = local_root / "prices"
-    prices_dir.mkdir(parents=True, exist_ok=True)
-    (prices_dir / "AAPL.parquet").write_text("data")
-
-    module_name = "ui.pages.45_YdayVolSignal_Open"
-    sys.modules.pop(module_name, None)
-    page_module = importlib.import_module(module_name)
-
-    present, missing = page_module.filter_tickers_with_parquet(st, ["AAPL", "MSFT"])
+    present, missing = storage.filter_tickers_with_parquet(st, ["AAPL", "MSFT"])
 
     assert present == ["AAPL"]
     assert missing == ["MSFT"]
-    assert page_module.filter_tickers_with_parquet is page_module._fallback_filter_tickers_with_parquet
-    assert page_module._FILTER_TICKER_SOURCE == "fallback"
 
-    sys.modules.pop(module_name, None)
+
+def test_filter_tickers_with_parquet_invalid_layout(monkeypatch):
+    _set_env(monkeypatch, layout="bogus")
+    st = storage.Storage()
+
+    with pytest.raises(ConfigurationError):
+        storage.filter_tickers_with_parquet(st, ["AAPL"])

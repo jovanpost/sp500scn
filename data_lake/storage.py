@@ -28,6 +28,12 @@ else:  # pragma: no cover - exercised when package installed
 LOCAL_ROOT = Path(".lake")
 DEFAULT_BUCKET = "lake"
 
+
+class ConfigurationError(RuntimeError):
+    """Raised when data lake configuration prevents price availability checks."""
+
+    pass
+
 # Stable price schema used across ingest + read paths.
 PRICE_COLUMNS = [
     "date",
@@ -374,11 +380,14 @@ class Storage:
         base = self._norm(norm)
         if not base.exists() or not base.is_dir():
             return []
-        return [
-            f"{norm}/{child.name}" if norm else child.name
-            for child in sorted(base.iterdir())
-            if child.is_file()
-        ]
+        entries: list[str] = []
+        for child in sorted(base.iterdir()):
+            rel = f"{norm}/{child.name}" if norm else child.name
+            if child.is_dir():
+                entries.append(f"{rel}/")
+            elif child.is_file():
+                entries.append(rel)
+        return entries
 
     def list_all(self, prefix: str) -> List[str]:
         return self.list_prefix(prefix)
@@ -653,10 +662,55 @@ def load_prices_cached(
     return out.reset_index(drop=True)
 
 
+def _resolve_prices_prefix(storage: Storage) -> str:
+    raw_prefix = os.getenv("LAKE_PRICES_PREFIX", "lake/prices")
+    prefix = str(raw_prefix or "").strip().strip("/")
+
+    bucket_value = getattr(storage, "bucket", "") or ""
+    if isinstance(bucket_value, str):
+        bucket = bucket_value.strip().strip("/")
+    else:
+        bucket = ""
+    if bucket and prefix == bucket:
+        return ""
+    if bucket and prefix.startswith(f"{bucket}/"):
+        prefix = prefix[len(bucket) + 1 :]
+    return prefix.strip("/")
+
+
+def _build_storage_key(prefix: str, stem: str, layout: str) -> str:
+    base = f"{prefix}/{stem}" if prefix else stem
+    if layout == "flat":
+        return f"{base}.parquet"
+    return base
+
+
+def _display_key(path: str, layout: str) -> str:
+    return f"{path}/" if layout == "partitioned" else path
+
+
+def _classify_probe_exception(exc: Exception) -> str:
+    text = str(exc).lower()
+    if any(token in text for token in ["401", "403", "forbidden", "permission", "denied", "rls"]):
+        return "401"
+    return "404"
+
+
+def _probe_key(storage: Storage, key: str, layout: str) -> str:
+    try:
+        if layout == "flat":
+            exists = storage.exists(key)
+            return "200" if exists else "404"
+        entries = storage.list_prefix(key)
+        return "200" if entries else "404"
+    except Exception as exc:  # pragma: no cover - defensive
+        return _classify_probe_exception(exc)
+
+
 def filter_tickers_with_parquet(
     storage: Storage, tickers: Iterable[str]
 ) -> tuple[list[str], list[str]]:
-    """Split ``tickers`` into those with and without ``prices/*.parquet`` data."""
+    """Split ``tickers`` into those with and without price parquet data."""
 
     requested: list[str] = []
     canonical_by_ticker: dict[str, str] = {}
@@ -677,35 +731,51 @@ def filter_tickers_with_parquet(
     if not requested:
         return [], []
 
+    prefix = _resolve_prices_prefix(storage)
+    layout = os.getenv("LAKE_LAYOUT", "flat").strip().lower() or "flat"
+    if layout not in {"flat", "partitioned"}:
+        raise ConfigurationError(f"Unsupported LAKE_LAYOUT value: {layout!r}")
+
     available_canonical: set[str] = set()
-    entries: list[str]
-    try:
-        entries = storage.list_prefix("prices")
-    except Exception as exc:  # pragma: no cover - defensive guardrail
-        log.warning("filter_tickers_with_parquet: list_prefix failed: %s", exc)
-        entries = []
 
-    for entry in entries:
-        name = Path(str(entry)).name
-        stem, ext = os.path.splitext(name)
-        if not stem:
-            continue
-        if ext and ext.lower() != ".parquet":
-            continue
-        canonical = _canonicalize_ticker_symbol(stem)
-        if canonical:
-            available_canonical.add(canonical)
+    if layout == "flat":
+        try:
+            entries = storage.list_prefix(prefix)
+        except Exception as exc:
+            display_prefix = prefix or "<root>"
+            raise ConfigurationError(
+                f"Unable to list price objects under prefix '{display_prefix}': {exc}"
+            ) from exc
 
-    if not available_canonical:
+        for entry in entries:
+            name = Path(str(entry)).name
+            stem, ext = os.path.splitext(name)
+            if not stem:
+                continue
+            if ext and ext.lower() != ".parquet":
+                continue
+            canonical = _canonicalize_ticker_symbol(stem)
+            if canonical:
+                available_canonical.add(canonical)
+    else:
+        probed_paths: set[str] = set()
         for ticker in requested:
             for stem in _candidate_price_stems(ticker):
-                path = f"prices/{stem}.parquet"
-                try:
-                    if storage.exists(path):
-                        available_canonical.add(_canonicalize_ticker_symbol(stem))
-                        break
-                except Exception:  # pragma: no cover - defensive
+                key = _build_storage_key(prefix, stem, layout)
+                if key in probed_paths:
                     continue
+                probed_paths.add(key)
+                try:
+                    entries = storage.list_prefix(key)
+                except Exception as exc:
+                    raise ConfigurationError(
+                        f"Unable to list partitioned price objects under '{key}': {exc}"
+                    ) from exc
+                if entries:
+                    canonical = _canonicalize_ticker_symbol(stem)
+                    if canonical:
+                        available_canonical.add(canonical)
+                    break
 
     present = [
         t
@@ -719,10 +789,33 @@ def filter_tickers_with_parquet(
     ]
 
     log.debug(
-        "filter_tickers_with_parquet: requested=%s present=%s missing=%s",
+        "filter_tickers_with_parquet: prefix=%s layout=%s requested=%s present=%s missing=%s",
+        prefix or "<root>",
+        layout,
         len(requested),
         len(present),
         len(missing),
     )
+
+    if requested:
+        coverage = len(present) / max(1, len(requested))
+        if coverage < 0.7:
+            log.warning(
+                "filter_tickers_with_parquet: availability below 70%% (%s/%s)",
+                len(present),
+                len(requested),
+            )
+            diagnostics: list[tuple[str, str]] = []
+            for ticker in requested:
+                if len(diagnostics) >= 3:
+                    break
+                stems = _candidate_price_stems(ticker)
+                if not stems:
+                    continue
+                path = _build_storage_key(prefix, stems[0], layout)
+                status = _probe_key(storage, path, layout)
+                diagnostics.append((_display_key(path, layout), status))
+            for probe_key, status in diagnostics:
+                log.warning("filter_tickers_with_parquet: probe %s -> %s", probe_key, status)
 
     return present, missing
