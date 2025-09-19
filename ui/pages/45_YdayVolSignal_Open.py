@@ -7,7 +7,23 @@ import streamlit as st
 
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date, scan_day
-from data_lake.storage import ConfigurationError, Storage, load_prices_cached
+
+# --- resilient imports (handles refactors) ---
+try:
+    # original path used by this page before refactors
+    from data_lake.storage import ConfigurationError, Storage, load_prices_cached
+except Exception:
+    # canonical homes after refactor
+    try:
+        from data_lake.errors import ConfigurationError
+    except Exception:
+        # last-resort shim so the page doesn't crash on import
+        class ConfigurationError(Exception):
+            """Configuration error (temporary shim in page)."""
+            pass
+    from data_lake.storage import Storage
+    from data_lake.prices import load_prices_cached
+
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
 from ui.components.tables import show_df
