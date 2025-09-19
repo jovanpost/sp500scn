@@ -25,6 +25,24 @@ else:  # pragma: no cover - exercised when package installed
     _SUPABASE_IMPORT_ERROR = None
 
 
+try:
+    # Back-compat: prefer importing at module load if available.
+    from .prices import load_prices_cached as _dl_load_prices_cached  # type: ignore[attr-defined]
+except Exception:
+    _dl_load_prices_cached = None
+
+
+def load_prices_cached(*args, **kwargs):
+    """Back-compat shim delegating to :mod:`data_lake.prices`."""
+
+    if _dl_load_prices_cached is None:
+        # Lazy import to tolerate Streamlit hot-reload import ordering.
+        from .prices import load_prices_cached as _impl
+
+        return _impl(*args, **kwargs)
+    return _dl_load_prices_cached(*args, **kwargs)
+
+
 LOCAL_ROOT = Path(".lake")
 DEFAULT_BUCKET = "lake"
 
@@ -819,3 +837,12 @@ def filter_tickers_with_parquet(
                 log.warning("filter_tickers_with_parquet: probe %s -> %s", probe_key, status)
 
     return present, missing
+
+
+__all__ = [
+    "Storage",
+    "filter_tickers_with_parquet",
+    "list_prefix",
+    "ConfigurationError",
+    "load_prices_cached",
+]
