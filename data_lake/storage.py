@@ -689,6 +689,10 @@ def _resolve_layout(storage: Storage, prefix: str) -> str:
     val = (os.getenv("LAKE_LAYOUT", "auto") or "auto").strip().lower()
     if val in {"flat", "partitioned"}:
         return val
+    if val not in {"auto"}:
+        raise ConfigurationError(
+            "Invalid LAKE_LAYOUT value. Expected 'flat', 'partitioned', or 'auto'."
+        )
     try:
         entries = storage.list_prefix(prefix)
     except Exception:
