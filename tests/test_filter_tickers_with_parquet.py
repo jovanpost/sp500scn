@@ -62,3 +62,17 @@ def test_filter_tickers_with_parquet_supabase_pagination():
 
     assert present == ["SYM0", "SYM150"]
     assert missing == ["MISSING"]
+
+
+def test_filter_tickers_with_parquet_normalizes_ticker_variants(tmp_path, monkeypatch):
+    st = _make_storage(tmp_path, monkeypatch)
+    prices_dir = Path(storage.LOCAL_ROOT) / "prices"
+    (prices_dir / "BRK_B.parquet").write_text("b")
+    (prices_dir / "BF-B.parquet").write_text("bf")
+
+    present, missing = storage.filter_tickers_with_parquet(
+        st, ["brk.b", "BF.B", "ally"]
+    )
+
+    assert present == ["BRK.B", "BF.B"]
+    assert missing == ["ALLY"]
