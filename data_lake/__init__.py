@@ -6,12 +6,14 @@ historical members of the S&P 500 index.
 """
 
 from .storage import (
+    ConfigurationError,
     Storage,
     filter_tickers_with_parquet,
     load_prices_cached,
 )
 
 __all__ = [
+    "ConfigurationError",
     "Storage",
     "filter_tickers_with_parquet",
     "load_prices_cached",

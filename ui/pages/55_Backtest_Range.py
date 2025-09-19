@@ -6,50 +6,23 @@ import pandas as pd
 from pandas.tseries.offsets import BDay
 import streamlit as st
 
-from data_lake.storage import Storage, load_prices_cached
-
-
-def _fallback_filter_tickers_with_parquet(storage: "Storage", tickers):
-    seen: set[str] = set()
-    requested: list[str] = []
-    for ticker in tickers or []:
-        if not ticker:
-            continue
-        normalized = str(ticker).strip().upper()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            requested.append(normalized)
-
-    present: list[str] = []
-    missing: list[str] = []
-    for normalized in requested:
-        try:
-            if storage.exists(f"prices/{normalized}.parquet"):
-                present.append(normalized)
-            else:
-                missing.append(normalized)
-        except Exception:
-            missing.append(normalized)
-    return present, missing
-
-
-try:
-    from data_lake.storage import filter_tickers_with_parquet as _filter_tickers_with_parquet
-except Exception:  # pragma: no cover - exercised in fallback test
-    _FILTER_TICKER_SOURCE = "fallback"
-    filter_tickers_with_parquet = _fallback_filter_tickers_with_parquet
-else:
-    _FILTER_TICKER_SOURCE = "package"
-    filter_tickers_with_parquet = _filter_tickers_with_parquet
+from data_lake.storage import ConfigurationError, Storage, load_prices_cached
 
 import engine.signal_scan as sigscan
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
 from ui.components.tables import show_df
+from ui.price_filter import (
+    CALLOUT_MESSAGE,
+    STRUCTURED_ERROR_MESSAGE,
+    PriceFilterUnavailableError,
+    get_price_filter,
+    handle_filter_exception,
+)
 
 
-def render_page() -> None:
+def page() -> None:
     st.header("📅 Backtest (range)")
     storage = Storage()
 
@@ -64,17 +37,25 @@ def render_page() -> None:
             "supabase_available": getattr(storage, "supabase_available", lambda: False)(),
         }
 
+    try:
+        filter_tickers_with_parquet, filter_source = get_price_filter()
+    except PriceFilterUnavailableError as exc:
+        filter_tickers_with_parquet = None
+        filter_source = "unavailable"
+        filter_error = exc
+    else:
+        filter_error = None
+
     dbg = _get_dbg("backtest")
     dbg.set_env(
         storage_mode=getattr(storage, "mode", "unknown"),
         bucket=getattr(storage, "bucket", None),
-        ticker_filter_source=_FILTER_TICKER_SOURCE,
+        ticker_filter_source=filter_source,
     )
     st.caption(f"storage: mode={diag['mode']} bucket={diag['bucket']}")
-    if _FILTER_TICKER_SOURCE != "package":
+    if filter_source == "fallback":
         st.warning(
-            "Price availability helper import failed; falling back to direct parquet probes."
-            " Filtering may be slower until deployments finish."
+            "Price availability helper unavailable; ALLOW_FALLBACK enabled — using direct parquet probes."
         )
 
     if getattr(storage, "force_supabase", False) and storage.mode == "local":
@@ -277,6 +258,18 @@ def render_page() -> None:
                 return
             date_list = list(date_index)
 
+            if filter_tickers_with_parquet is None:
+                status.update(label="Backtest cancelled ❌", state="error")
+                st.error(CALLOUT_MESSAGE)
+                log(STRUCTURED_ERROR_MESSAGE)
+                dbg.event(
+                    "price_filter_unavailable",
+                    code=PriceFilterUnavailableError.code,
+                    reason=getattr(filter_error, "reason", None),
+                )
+                debug_panel("backtest")
+                return
+
             members = sigscan._load_members(storage, cache_salt=storage.cache_salt())
             members_ticker_upper = members["ticker"].astype(str).str.upper()
 
@@ -292,9 +285,22 @@ def render_page() -> None:
                 return
 
             requested_count = len(active_tickers)
-            filtered_tickers, missing_tickers = filter_tickers_with_parquet(
-                storage, active_tickers
-            )
+            try:
+                filtered_tickers, missing_tickers = filter_tickers_with_parquet(
+                    storage, active_tickers
+                )
+            except ConfigurationError as exc:
+                error = handle_filter_exception(exc)
+                status.update(label="Backtest cancelled ❌", state="error")
+                st.error(error.user_message)
+                log(error.structured_message)
+                dbg.event(
+                    "price_filter_unavailable",
+                    code=error.code,
+                    reason=getattr(error, "reason", str(exc)),
+                )
+                debug_panel("backtest")
+                return
             dbg.event(
                 "ticker_filter",
                 requested=requested_count,
@@ -789,5 +795,5 @@ def render_page() -> None:
     debug_panel("backtest")
 
 
-def page() -> None:
-    render_page()
+def render_page() -> None:  # pragma: no cover - compatibility shim
+    page()
