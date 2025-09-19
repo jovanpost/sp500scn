@@ -315,30 +315,60 @@ class Storage:
                 api = self.bucket  # type: ignore[assignment]
             else:  # pragma: no cover - defensive
                 raise RuntimeError("Supabase client not configured")
-            try:
-                response = api.list(norm) if norm != "" else api.list()
-            except TypeError:
-                if norm:
-                    response = api.list(prefix=norm)
-                else:
-                    response = api.list()
-            items = getattr(response, "data", response)
-            if isinstance(items, dict):
-                items = items.get("data")
+
+            limit = 100
+            offset = 0
             out: list[str] = []
-            for item in items or []:
-                if isinstance(item, dict):
-                    name = item.get("name")
-                else:
-                    name = getattr(item, "name", None) or str(item)
-                if not name:
-                    continue
-                name = str(name).lstrip("/")
-                if norm and name.startswith(f"{norm}/"):
-                    full = name
-                else:
-                    full = f"{norm}/{name}" if norm else name
-                out.append(full)
+            seen: set[str] = set()
+
+            while True:
+                used_pagination = True
+                try:
+                    if norm != "":
+                        response = api.list(norm, limit=limit, offset=offset)
+                    else:
+                        response = api.list(limit=limit, offset=offset)
+                except TypeError:
+                    used_pagination = False
+                    if offset > 0:
+                        break
+                    if norm:
+                        response = api.list(prefix=norm)
+                    else:
+                        response = api.list()
+
+                items = getattr(response, "data", response)
+                if isinstance(items, dict):
+                    items = items.get("data")
+                raw_items = list(items or [])
+
+                new_items = 0
+                for item in raw_items:
+                    if isinstance(item, dict):
+                        name = item.get("name")
+                    else:
+                        name = getattr(item, "name", None) or str(item)
+                    if not name:
+                        continue
+                    name = str(name).lstrip("/")
+                    if norm and name.startswith(f"{norm}/"):
+                        full = name
+                    else:
+                        full = f"{norm}/{name}" if norm else name
+                    if full in seen:
+                        continue
+                    seen.add(full)
+                    out.append(full)
+                    new_items += 1
+
+                if not used_pagination:
+                    break
+                if len(raw_items) < limit:
+                    break
+                if new_items == 0:
+                    break
+                offset += limit
+
             return sorted(out)
 
         base = self._norm(norm)

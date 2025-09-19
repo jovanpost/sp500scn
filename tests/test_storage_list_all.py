@@ -39,3 +39,30 @@ def test_list_all_handles_apiresponse():
     st.bucket = Bucket()
     items = st.list_all("prices")
     assert items == ["prices/a.parquet", "prices/b.parquet"]
+
+
+def test_list_all_supabase_paginates():
+    st = storage.Storage()
+    st.mode = "supabase"
+
+    class Bucket:
+        def __init__(self):
+            self.calls: list[tuple[str | None, int, int]] = []
+
+        def list(self, path="", limit=100, offset=0, **kwargs):
+            self.calls.append((path, limit, offset))
+            assert path in {"", "prices"}
+            total = 205
+            start = offset
+            end = min(offset + limit, total)
+            data = [{"name": f"{i}.parquet"} for i in range(start, end)]
+            return {"data": data}
+
+    bucket = Bucket()
+    st.bucket = bucket
+
+    items = st.list_all("prices")
+
+    assert len(items) == 205
+    assert set(items) == {f"prices/{i}.parquet" for i in range(205)}
+    assert len(bucket.calls) >= 3

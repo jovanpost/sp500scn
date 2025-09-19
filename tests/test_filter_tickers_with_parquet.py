@@ -37,3 +37,28 @@ def test_filter_tickers_with_parquet_handles_empty_and_missing(tmp_path, monkeyp
     present_missing, missing_only = storage.filter_tickers_with_parquet(st, ["XYZ"])
     assert present_missing == []
     assert missing_only == ["XYZ"]
+
+
+def test_filter_tickers_with_parquet_supabase_pagination():
+    st = storage.Storage()
+    st.mode = "supabase"
+
+    class Bucket:
+        def __init__(self):
+            self.names = [f"SYM{i}.parquet" for i in range(220)]
+
+        def list(self, path="", limit=100, offset=0, **kwargs):
+            assert path in {"", "prices"}
+            start = offset
+            end = min(offset + limit, len(self.names))
+            slice_ = self.names[start:end]
+            return {"data": [{"name": name} for name in slice_]}
+
+    st.bucket = Bucket()
+
+    present, missing = storage.filter_tickers_with_parquet(
+        st, ["sym0", "SYM150", "missing"]
+    )
+
+    assert present == ["SYM0", "SYM150"]
+    assert missing == ["MISSING"]
