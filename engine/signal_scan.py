@@ -253,12 +253,12 @@ def scan_day(
                     fail_count += 1
                     continue
                 D_ts = df["date"].iloc[idx_loc]
-            idx_found = df.index[df["date"] == D_ts]
-            if len(idx_found) == 0 or idx_found[0] == 0:
-                fail_count += 1
-                continue
-            i = idx_found[0]
-            dm1 = i - 1
+idx_found = df.index[df["date"] == D_ts]
+if len(idx_found) == 0 or int(idx_found[0]) == 0:
+    fail_count += 1
+    continue
+i = int(idx_found[0])
+dm1 = i - 1
 
             m = _compute_metrics(
                 df,
@@ -377,19 +377,20 @@ def scan_day(
 
             row["precedent_ok"] = int(prec_ok_bool)
 
-            atr_ok_bool = (
-                bool(
-                    atr_feasible(
-                        df,
-                        dm1,
-                        float(tp_frac),
-                        atr_window,
-                        atr_method=atr_method,
-                    )
-                )
-                if tp_frac_valid
-                else False
-            )
+df_pos = df.reset_index(drop=True)  # ensure 0..N-1 positional index
+atr_ok_bool = (
+    bool(
+        atr_feasible(
+            df_pos,
+            int(dm1),
+            float(tp_frac),
+            atr_window,
+            atr_method=atr_method,
+        )
+    )
+    if tp_frac_valid
+    else False
+)
             row["atr_ok"] = int(atr_ok_bool)
 
             # ---- Persist ATR numbers for transparency (no logic change) ----
