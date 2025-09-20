@@ -21,11 +21,11 @@ log = logging.getLogger(__name__)
 
 class ScanParams(TypedDict, total=False):
     min_close_up_pct: float
-    min_vol_multiple: float               # UI sometimes sends "min_volume_multiple"
+    min_vol_multiple: float
     min_gap_open_pct: float
     atr_window: int
     atr_method: str
-    lookback_days: int                    # volume lookback
+    lookback_days: int
     horizon_days: int
     sr_min_ratio: float
     sr_lookback: int
@@ -54,7 +54,7 @@ def members_on_date(m: pd.DataFrame, date: dt.date) -> pd.DataFrame:
 
 
 def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame | None:
-    """Load one ticker and enforce a clean schema with RangeIndex."""
+    """Load one ticker and enforce a clean schema with RangeIndex and unique dates."""
     try:
         df = storage.read_parquet_df(f"prices/{ticker}.parquet")
         if "date" not in df.columns:
@@ -65,12 +65,24 @@ def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame | None:
             df[["date", "open", "high", "low", "close", "volume"]]
             .dropna()
             .sort_values("date")
-            .reset_index(drop=True)  # <- critical so integer indexing is positional
         )
+        # Deduplicate same-day bars (keep last) then force positional index
+        df = df[~df["date"].duplicated(keep="last")].reset_index(drop=True)
         return df
     except Exception as e:
         log.warning("price load failed for %s: %s", ticker, e)
         return None
+
+
+def _align_date_pos(dates_np: np.ndarray, D: pd.Timestamp) -> int | None:
+    """Return the *position* of the first bar at/after D using numpy-only ops."""
+    if dates_np.dtype != "datetime64[ns]":
+        dates_np = dates_np.astype("datetime64[ns]")
+    target = np.datetime64(pd.Timestamp(D).to_pydatetime(), "ns")
+    pos = int(np.searchsorted(dates_np, target, side="left"))
+    if pos < 0 or pos >= len(dates_np):
+        return None
+    return pos
 
 
 def _compute_metrics(
@@ -82,24 +94,17 @@ def _compute_metrics(
     sr_lookback: int,
 ) -> Dict[str, Any] | None:
     """Compute all per-ticker metrics at date D using *positional* indexing only."""
-    # Ensure positional index safety
+    # Safety: positional index and unique dates
     if not isinstance(df.index, pd.RangeIndex):
         df = df.reset_index(drop=True)
+    if df["date"].duplicated().any():
+        df = df[~df["date"].duplicated(keep="last")].reset_index(drop=True)
 
-    # Align D to an existing trading day in the series (choose the next available if in between)
-    D = pd.to_datetime(D)
-    if D not in df["date"].values:
-        idx = df["date"].searchsorted(D)
-        if idx == 0 or idx >= len(df):
-            return None
-        D = df["date"].iloc[idx]
-
-    idx_match = df.index[df["date"] == D]
-    if len(idx_match) == 0:
-        return None
-    i = int(idx_match[0])
-    if i == 0:
-        return None
+    dates_np = pd.to_datetime(df["date"]).values.astype("datetime64[ns]")
+    pos = _align_date_pos(dates_np, pd.to_datetime(D))
+    if pos is None or pos == 0:
+        return None  # no bar at/after D or not enough history for D-1
+    i = pos
     dm1 = i - 1
 
     # Day-over-day close change (D-1 vs D-2)
@@ -110,9 +115,9 @@ def _compute_metrics(
 
     # Volume multiple over lookback window up to D-1
     w0 = max(0, dm1 - vol_lookback + 1)
-    lookback_vol = df["volume"].iloc[w0:dm1 + 1].mean()
+    lookback_vol = float(df["volume"].iloc[w0:dm1 + 1].mean())
     vol_multiple = (
-        df["volume"].iloc[dm1] / lookback_vol
+        float(df["volume"].iloc[dm1]) / lookback_vol
         if (lookback_vol and not np.isnan(lookback_vol)) else np.nan
     )
 
@@ -121,7 +126,6 @@ def _compute_metrics(
 
     # ATR (positional). compute_atr returns a Series aligned to df order
     atr_series = compute_atr(df[["high", "low", "close"]], window=atr_window, method=atr_method)
-    # atr_series length may be shorter than df during warmup; guard index
     atr_val = float(atr_series.iloc[dm1]) if dm1 < len(atr_series) else np.nan
     atr_pct = (atr_val / df["close"].iloc[dm1] * 100.0) if df["close"].iloc[dm1] else np.nan
 
@@ -184,10 +188,7 @@ def scan_day(
     atr_window = int(params.get("atr_window", 14))
     atr_method = str(params.get("atr_method", "wilder") or "wilder").strip().lower()
     min_close = float(params.get("min_close_up_pct", 0.0))
-    # Accept both keys from UI/config
-    min_vol = float(
-        params.get("min_vol_multiple", params.get("min_volume_multiple", 0.0))
-    )
+    min_vol = float(params.get("min_vol_multiple", params.get("min_volume_multiple", 0.0)))
     min_gap = float(params.get("min_gap_open_pct", 0.0))
     horizon = int(params.get("horizon_days", 30))
     sr_min = float(params.get("sr_min_ratio", 2.0))
@@ -216,46 +217,37 @@ def scan_day(
                 continue
             stats["loaded"] += 1
 
-            # Find trading day actually present in df at or after D
-            D_ts = pd.to_datetime(D)
-            if D_ts not in df["date"].values:
-                idx_loc = df["date"].searchsorted(D_ts)
-                if idx_loc == 0 or idx_loc >= len(df):
-                    fail_count += 1
-                    continue
-                D_ts = df["date"].iloc[idx_loc]
-
-            idx_found = df.index[df["date"] == D_ts]
-            if len(idx_found) == 0 or int(idx_found[0]) == 0:
+            # Align D to first bar at/after D using numpy positions
+            dates_np = pd.to_datetime(df["date"]).values.astype("datetime64[ns]")
+            pos = _align_date_pos(dates_np, pd.to_datetime(D))
+            if pos is None or pos == 0:
                 fail_count += 1
                 continue
-            i = int(idx_found[0])
+            D_ts = df["date"].iloc[pos]
+            i = int(pos)
             dm1 = i - 1
 
             m = _compute_metrics(
-                df,
-                D_ts,
-                vol_lookback,
-                atr_window,
-                atr_method,
-                sr_lookback,
+                df, D_ts, vol_lookback, atr_window, atr_method, sr_lookback
             )
             if not m:
                 fail_count += 1
                 continue
 
-            # Build a time-indexed view for replay/precedent
-            df_idx = df.set_index("date").sort_index()
+            # Build a time-indexed view for replay/precedent (dedup again to be safe)
+            df_idx = (
+                df.set_index("date")
+                .sort_index()
+                [~df.set_index("date").index.duplicated(keep="last")]
+            )
             df_idx.index = pd.to_datetime(df_idx.index).tz_localize(None)
-            df_idx = df_idx[~df_idx.index.duplicated(keep="last")]
 
             # Filters
             close_ok = (not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close)
             vol_ok = (not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol)
             gap_ok = m["gap_open_pct"] >= min_gap
-            sr_ratio_val = m.get("sr_ratio")
             try:
-                sr_ratio_float = float(sr_ratio_val)
+                sr_ratio_float = float(m.get("sr_ratio"))
             except (TypeError, ValueError):
                 sr_ratio_float = float("nan")
             sr_ok = not np.isnan(sr_ratio_float) and sr_ratio_float >= sr_min
@@ -282,7 +274,7 @@ def scan_day(
             row["sr_resistance"] = m.get("sr_resistance")
             row["sr_ok"] = int(sr_ok)
 
-            # Determine target fraction from row (supports absolute, pct, halfway)
+            # Determine target fraction from row
             tp_frac = tp_fraction_from_row(
                 row.get("entry_open"),
                 row.get("tp_price_abs_target"),
@@ -290,7 +282,6 @@ def scan_day(
                 row.get("tp_price_pct_target"),
             )
             tp_frac_valid = (tp_frac is not None and not pd.isna(tp_frac) and float(tp_frac) > 0)
-
             row["tp_frac_used"] = float(tp_frac) if tp_frac_valid else float("nan")
             row["tp_pct_used"] = float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
 
@@ -340,10 +331,9 @@ def scan_day(
                     )
             elif use_precedent and not tp_frac_valid:
                 prec_ok_bool = True
-
             row["precedent_ok"] = int(prec_ok_bool)
 
-            # ATR feasible check must be positional
+            # ATR feasible check (positional)
             df_pos = df.reset_index(drop=True)
             atr_ok_bool = (
                 bool(
@@ -360,27 +350,19 @@ def scan_day(
             )
             row["atr_ok"] = int(atr_ok_bool)
 
-            # ---- Persist ATR numbers for transparency (no logic change) ----
+            # ---- Persist ATR numbers for transparency ----
             atr_value_dm1 = float(m.get("atr21")) if m.get("atr21") is not None else float("nan")
-            tp_required_dollars = (
-                float(row["entry_open"]) * float(tp_frac) if tp_frac_valid else float("nan")
-            )
-            atr_budget_dollars = (
-                atr_value_dm1 * int(atr_window) if not pd.isna(atr_value_dm1) else float("nan")
-            )
+            tp_required_dollars = float(row["entry_open"]) * float(tp_frac) if tp_frac_valid else float("nan")
+            atr_budget_dollars = atr_value_dm1 * int(atr_window) if not pd.isna(atr_value_dm1) else float("nan")
 
             row["atr_window"] = int(atr_window)
             row["atr_method"] = atr_method
             atr_value_raw = None if pd.isna(atr_value_dm1) else float(atr_value_dm1)
             row["atr_value_dm1"] = None if atr_value_raw is None else round(atr_value_raw, 6)
             row["atr_dminus1"] = atr_value_raw
-            row["atr_budget_dollars"] = (
-                None if pd.isna(atr_budget_dollars) else round(atr_budget_dollars, 6)
-            )
-            row["tp_required_dollars"] = (
-                None if pd.isna(tp_required_dollars) else round(tp_required_dollars, 6)
-            )
-            # ---------------------------------------------------------------
+            row["atr_budget_dollars"] = None if pd.isna(atr_budget_dollars) else round(atr_budget_dollars, 6)
+            row["tp_required_dollars"] = None if pd.isna(tp_required_dollars) else round(tp_required_dollars, 6)
+            # ------------------------------------------------
 
             reasons: List[str] = []
             if use_precedent and tp_frac_valid and not prec_ok_bool:
@@ -430,6 +412,10 @@ def scan_day(
                     )
                     out_row = {**row, "exit_model": exit_model, "tp_price": tp_price, **out}
                     out_rows.append(out_row)
+        except Exception as e:
+            # Hard-guard: skip any pathological ticker instead of aborting whole run
+            fail_count += 1
+            log.warning("scan_day: ticker %s skipped due to error: %s", t, e)
         finally:
             if on_step:
                 try:
@@ -536,5 +522,6 @@ def scan_day(
     stats["candidates"] = len(cand_df)
 
     return cand_df, out_df, fail_count, stats
+
 
 
