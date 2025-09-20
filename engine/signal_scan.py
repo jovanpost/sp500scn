@@ -21,11 +21,11 @@ log = logging.getLogger(__name__)
 
 class ScanParams(TypedDict, total=False):
     min_close_up_pct: float
-    min_vol_multiple: float
+    min_vol_multiple: float               # UI sometimes sends "min_volume_multiple"
     min_gap_open_pct: float
     atr_window: int
     atr_method: str
-    lookback_days: int
+    lookback_days: int                    # volume lookback
     horizon_days: int
     sr_min_ratio: float
     sr_lookback: int
@@ -54,12 +54,20 @@ def members_on_date(m: pd.DataFrame, date: dt.date) -> pd.DataFrame:
 
 
 def _load_prices(storage: Storage, ticker: str) -> pd.DataFrame | None:
+    """Load one ticker and enforce a clean schema with RangeIndex."""
     try:
         df = storage.read_parquet_df(f"prices/{ticker}.parquet")
         if "date" not in df.columns:
             df["date"] = pd.to_datetime(df.get("index") or df.get("Date"))
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
-        return df[["date", "open", "high", "low", "close", "volume"]].dropna().sort_values("date")
+
+        df = (
+            df[["date", "open", "high", "low", "close", "volume"]]
+            .dropna()
+            .sort_values("date")
+            .reset_index(drop=True)  # <- critical so integer indexing is positional
+        )
+        return df
     except Exception as e:
         log.warning("price load failed for %s: %s", ticker, e)
         return None
@@ -73,10 +81,12 @@ def _compute_metrics(
     atr_method: str,
     sr_lookback: int,
 ) -> Dict[str, Any] | None:
-    # NEW: make integer indexing safe no matter the incoming index
+    """Compute all per-ticker metrics at date D using *positional* indexing only."""
+    # Ensure positional index safety
     if not isinstance(df.index, pd.RangeIndex):
         df = df.reset_index(drop=True)
 
+    # Align D to an existing trading day in the series (choose the next available if in between)
     D = pd.to_datetime(D)
     if D not in df["date"].values:
         idx = df["date"].searchsorted(D)
@@ -84,38 +94,44 @@ def _compute_metrics(
             return None
         D = df["date"].iloc[idx]
 
-    idx = df.index[df["date"] == D]
-    if len(idx) == 0:
+    idx_match = df.index[df["date"] == D]
+    if len(idx_match) == 0:
         return None
-    i = int(idx[0])
+    i = int(idx_match[0])
     if i == 0:
         return None
     dm1 = i - 1
 
-    # CHANGED: use iloc (position) everywhere we index by integer
+    # Day-over-day close change (D-1 vs D-2)
     close_up_pct = (
-        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - 1] - 1.0) * 100
+        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - 1] - 1.0) * 100.0
         if dm1 > 0 else np.nan
     )
 
+    # Volume multiple over lookback window up to D-1
     w0 = max(0, dm1 - vol_lookback + 1)
     lookback_vol = df["volume"].iloc[w0:dm1 + 1].mean()
     vol_multiple = (
         df["volume"].iloc[dm1] / lookback_vol
-        if lookback_vol and not np.isnan(lookback_vol) else np.nan
+        if (lookback_vol and not np.isnan(lookback_vol)) else np.nan
     )
 
-    gap_open_pct = (df["open"].iloc[i] / df["close"].iloc[dm1] - 1.0) * 100
+    # Gap open (D open vs D-1 close)
+    gap_open_pct = (df["open"].iloc[i] / df["close"].iloc[dm1] - 1.0) * 100.0
 
+    # ATR (positional). compute_atr returns a Series aligned to df order
     atr_series = compute_atr(df[["high", "low", "close"]], window=atr_window, method=atr_method)
+    # atr_series length may be shorter than df during warmup; guard index
     atr_val = float(atr_series.iloc[dm1]) if dm1 < len(atr_series) else np.nan
-    atr_pct = atr_val / df["close"].iloc[dm1] * 100 if df["close"].iloc[dm1] else np.nan
+    atr_pct = (atr_val / df["close"].iloc[dm1] * 100.0) if df["close"].iloc[dm1] else np.nan
 
+    # Rolling return over ATR window ending at D-1
     ret = (
-        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - atr_window] - 1.0) * 100
+        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - atr_window] - 1.0) * 100.0
         if dm1 >= atr_window else np.nan
     )
 
+    # Support/Resistance over sr_lookback ending at D-1
     sr_start = max(0, dm1 - sr_lookback + 1) if sr_lookback and sr_lookback > 0 else 0
     sr_slice = df.iloc[sr_start:dm1 + 1]
     support = float(sr_slice["low"].min()) if not sr_slice.empty else float("nan")
@@ -127,55 +143,7 @@ def _compute_metrics(
     if support > 0 and resistance > entry:
         up = resistance - entry
         down = entry - support
-        sr_ratio = up / down if down > 0 else np.nan
-        tp_halfway_pct = (entry + up / 2) / entry - 1.0
-
-    return {
-        "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
-        "vol_multiple": float(vol_multiple) if not np.isnan(vol_multiple) else np.nan,
-        "gap_open_pct": float(gap_open_pct),
-        "atr21": float(atr_val) if not np.isnan(atr_val) else np.nan,
-        "atr21_pct": float(atr_pct) if not np.isnan(atr_pct) else np.nan,
-        "ret21_pct": float(ret) if not np.isnan(ret) else np.nan,
-        "support": support,
-        "resistance": resistance,
-        "sr_support": support,
-        "sr_resistance": resistance,
-        "sr_window_len": int(sr_slice.shape[0]) if not sr_slice.empty else 0,
-        "sr_ratio": sr_ratio,
-        "tp_halfway_pct": float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan,
-        "entry_open": entry,
-        "atr_method": atr_method,
-    }
-
-    gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
-
-    atr_series = compute_atr(
-        df[["high", "low", "close"]], window=atr_window, method=atr_method
-    )
-    atr_val = float(atr_series.loc[dm1]) if dm1 in atr_series.index else np.nan
-    atr_pct = atr_val / df.loc[dm1, "close"] * 100 if df.loc[dm1, "close"] else np.nan
-
-    if dm1 >= atr_window:
-        ret = (df.loc[dm1, "close"] / df.loc[dm1 - atr_window, "close"] - 1.0) * 100
-    else:
-        ret = np.nan
-
-    if sr_lookback and sr_lookback > 0:
-        sr_start = max(0, dm1 - sr_lookback + 1)
-    else:
-        sr_start = 0
-    sr_slice = df.loc[sr_start:dm1]
-    support = float(sr_slice["low"].min()) if not sr_slice.empty else float("nan")
-    resistance = float(sr_slice["high"].max()) if not sr_slice.empty else float("nan")
-
-    entry = float(df.loc[i, "open"])
-    sr_ratio = np.nan
-    tp_halfway_pct = np.nan
-    if support > 0 and resistance > entry:
-        up = resistance - entry
-        down = entry - support
-        sr_ratio = up / down if down > 0 else np.nan
+        sr_ratio = (up / down) if down > 0 else np.nan
         tp_halfway_pct = (entry + up / 2) / entry - 1.0
 
     return {
@@ -216,7 +184,10 @@ def scan_day(
     atr_window = int(params.get("atr_window", 14))
     atr_method = str(params.get("atr_method", "wilder") or "wilder").strip().lower()
     min_close = float(params.get("min_close_up_pct", 0.0))
-    min_vol = float(params.get("min_vol_multiple", 0.0))
+    # Accept both keys from UI/config
+    min_vol = float(
+        params.get("min_vol_multiple", params.get("min_volume_multiple", 0.0))
+    )
     min_gap = float(params.get("min_gap_open_pct", 0.0))
     horizon = int(params.get("horizon_days", 30))
     sr_min = float(params.get("sr_min_ratio", 2.0))
@@ -226,8 +197,7 @@ def scan_day(
     prec_lookback = int(params.get("precedent_lookback", 252))
     prec_window = int(params.get("precedent_window", 21))
     min_prec_hits = int(params.get("min_precedent_hits", 1))
-    exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only")
-    exit_model = exit_model.strip().lower()
+    exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only").strip().lower()
 
     cand_rows: List[Dict[str, Any]] = []
     out_rows: List[Dict[str, Any]] = []
@@ -246,6 +216,7 @@ def scan_day(
                 continue
             stats["loaded"] += 1
 
+            # Find trading day actually present in df at or after D
             D_ts = pd.to_datetime(D)
             if D_ts not in df["date"].values:
                 idx_loc = df["date"].searchsorted(D_ts)
@@ -253,12 +224,13 @@ def scan_day(
                     fail_count += 1
                     continue
                 D_ts = df["date"].iloc[idx_loc]
-idx_found = df.index[df["date"] == D_ts]
-if len(idx_found) == 0 or int(idx_found[0]) == 0:
-    fail_count += 1
-    continue
-i = int(idx_found[0])
-dm1 = i - 1
+
+            idx_found = df.index[df["date"] == D_ts]
+            if len(idx_found) == 0 or int(idx_found[0]) == 0:
+                fail_count += 1
+                continue
+            i = int(idx_found[0])
+            dm1 = i - 1
 
             m = _compute_metrics(
                 df,
@@ -272,10 +244,12 @@ dm1 = i - 1
                 fail_count += 1
                 continue
 
+            # Build a time-indexed view for replay/precedent
             df_idx = df.set_index("date").sort_index()
             df_idx.index = pd.to_datetime(df_idx.index).tz_localize(None)
             df_idx = df_idx[~df_idx.index.duplicated(keep="last")]
 
+            # Filters
             close_ok = (not np.isnan(m["close_up_pct"]) and m["close_up_pct"] >= min_close)
             vol_ok = (not np.isnan(m["vol_multiple"]) and m["vol_multiple"] >= min_vol)
             gap_ok = m["gap_open_pct"] >= min_gap
@@ -308,23 +282,19 @@ dm1 = i - 1
             row["sr_resistance"] = m.get("sr_resistance")
             row["sr_ok"] = int(sr_ok)
 
+            # Determine target fraction from row (supports absolute, pct, halfway)
             tp_frac = tp_fraction_from_row(
                 row.get("entry_open"),
                 row.get("tp_price_abs_target"),
                 row.get("tp_halfway_pct"),
                 row.get("tp_price_pct_target"),
             )
-            tp_frac_valid = (
-                tp_frac is not None and not pd.isna(tp_frac) and float(tp_frac) > 0
-            )
+            tp_frac_valid = (tp_frac is not None and not pd.isna(tp_frac) and float(tp_frac) > 0)
 
-            row["tp_frac_used"] = (
-                float(tp_frac) if tp_frac_valid else float("nan")
-            )
-            row["tp_pct_used"] = (
-                float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
-            )
+            row["tp_frac_used"] = float(tp_frac) if tp_frac_valid else float("nan")
+            row["tp_pct_used"] = float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
 
+            # Precedent hits
             hits_count = 0
             hits_details: List[Dict[str, object]] = []
             if use_precedent and tp_frac_valid:
@@ -341,9 +311,8 @@ dm1 = i - 1
             row["precedent_details_hits"] = json.dumps(
                 hits_details, separators=(",", ":"), ensure_ascii=False
             )
-            row["precedent_hit_start_dates"] = ",".join(
-                e.get("date", "") for e in hits_details
-            )
+            row["precedent_hit_start_dates"] = ",".join(e.get("date", "") for e in hits_details)
+
             hit_dates = []
             for e in hits_details:
                 hit_date_val = e.get("hit_date")
@@ -352,12 +321,9 @@ dm1 = i - 1
                         hit_dates.append(pd.Timestamp(hit_date_val).tz_localize(None))
                     except Exception:
                         continue
-            if hit_dates:
-                max_hit_ts = max(hit_dates)
-                row["precedent_max_hit_date"] = max_hit_ts.date().isoformat()
-            else:
-                row["precedent_max_hit_date"] = ""
+            row["precedent_max_hit_date"] = max(hit_dates).date().isoformat() if hit_dates else ""
 
+            # Precedent gate
             prec_ok_bool = True
             if use_precedent and tp_frac_valid:
                 prec_ok_bool = hits_count >= min_prec_hits
@@ -377,41 +343,36 @@ dm1 = i - 1
 
             row["precedent_ok"] = int(prec_ok_bool)
 
-df_pos = df.reset_index(drop=True)  # ensure 0..N-1 positional index
-atr_ok_bool = (
-    bool(
-        atr_feasible(
-            df_pos,
-            int(dm1),
-            float(tp_frac),
-            atr_window,
-            atr_method=atr_method,
-        )
-    )
-    if tp_frac_valid
-    else False
-)
+            # ATR feasible check must be positional
+            df_pos = df.reset_index(drop=True)
+            atr_ok_bool = (
+                bool(
+                    atr_feasible(
+                        df_pos,
+                        int(dm1),
+                        float(tp_frac),
+                        atr_window,
+                        atr_method=atr_method,
+                    )
+                )
+                if tp_frac_valid
+                else False
+            )
             row["atr_ok"] = int(atr_ok_bool)
 
             # ---- Persist ATR numbers for transparency (no logic change) ----
             atr_value_dm1 = float(m.get("atr21")) if m.get("atr21") is not None else float("nan")
             tp_required_dollars = (
-                float(row["entry_open"]) * float(tp_frac)
-                if tp_frac_valid
-                else float("nan")
+                float(row["entry_open"]) * float(tp_frac) if tp_frac_valid else float("nan")
             )
             atr_budget_dollars = (
-                atr_value_dm1 * int(atr_window)
-                if not pd.isna(atr_value_dm1)
-                else float("nan")
+                atr_value_dm1 * int(atr_window) if not pd.isna(atr_value_dm1) else float("nan")
             )
 
             row["atr_window"] = int(atr_window)
             row["atr_method"] = atr_method
             atr_value_raw = None if pd.isna(atr_value_dm1) else float(atr_value_dm1)
-            row["atr_value_dm1"] = (
-                None if atr_value_raw is None else round(atr_value_raw, 6)
-            )
+            row["atr_value_dm1"] = None if atr_value_raw is None else round(atr_value_raw, 6)
             row["atr_dminus1"] = atr_value_raw
             row["atr_budget_dollars"] = (
                 None if pd.isna(atr_budget_dollars) else round(atr_budget_dollars, 6)
@@ -428,9 +389,7 @@ atr_ok_bool = (
                 reasons.append("atr_insufficient")
             row["reasons"] = ",".join(reasons)
 
-            include = ((not use_precedent) or prec_ok_bool) and (
-                (not use_atr_feasible) or atr_ok_bool
-            )
+            include = ((not use_precedent) or prec_ok_bool) and ((not use_atr_feasible) or atr_ok_bool)
             if include:
                 cand_rows.append(row)
 
@@ -438,9 +397,7 @@ atr_ok_bool = (
                     if not tp_frac_valid:
                         continue
                     entry_open = float(row["entry_open"])
-                    price_cols = [
-                        col for col in ("open", "high", "low", "close") if col in df_idx.columns
-                    ]
+                    price_cols = [c for c in ("open", "high", "low", "close") if c in df_idx.columns]
                     if not price_cols:
                         continue
                     tp_pct_percent = float(tp_frac) * 100.0
@@ -483,6 +440,7 @@ atr_ok_bool = (
     cand_df = pd.DataFrame(cand_rows)
     out_df = pd.DataFrame(out_rows)
 
+    # Light sanity checks
     checked_rows = out_rows[:50]
     json_match = 0
     peek_violations = 0
@@ -561,7 +519,7 @@ atr_ok_bool = (
                 "event": "atr_sanity",
                 "checked": int(len(checked_atr_rows)),
                 "present": int(atr_present),
-                "window_default": int(expected_window),  # was hard-coded 14
+                "window_default": int(expected_window),
                 "method": atr_method,
             }
         )
@@ -578,4 +536,5 @@ atr_ok_bool = (
     stats["candidates"] = len(cand_df)
 
     return cand_df, out_df, fail_count, stats
+
 
