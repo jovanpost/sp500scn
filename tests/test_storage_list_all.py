@@ -49,10 +49,10 @@ def test_list_all_supabase_paginates():
         def __init__(self):
             self.calls: list[tuple[str | None, int, int]] = []
 
-        def list(self, path="", limit=100, offset=0, **kwargs):
+        def list(self, path="", limit=1000, offset=0, **kwargs):
             self.calls.append((path, limit, offset))
             assert path in {"", "prices"}
-            total = 205
+            total = 2050
             start = offset
             end = min(offset + limit, total)
             data = [{"name": f"{i}.parquet"} for i in range(start, end)]
@@ -63,6 +63,6 @@ def test_list_all_supabase_paginates():
 
     items = st.list_all("prices")
 
-    assert len(items) == 205
-    assert set(items) == {f"prices/{i}.parquet" for i in range(205)}
+    assert len(items) == 2050
+    assert set(items) == {f"prices/{i}.parquet" for i in range(2050)}
     assert len(bucket.calls) >= 3
