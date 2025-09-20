@@ -75,9 +75,15 @@ def page() -> None:
     min_close_up_pct = float(st.number_input("Min close-up on D-1 (%)", value=3.0, step=0.5))
     min_vol_multiple = float(st.number_input("Min volume multiple", value=1.5, step=0.1))
     min_gap_open_pct = float(st.number_input("Min gap open (%)", value=0.0, step=0.1))
-    atr_window = int(st.number_input("ATR window", min_value=1, value=21, step=1))
+    atr_window = int(st.number_input("ATR window", min_value=1, value=14, step=1))
+    atr_method = st.selectbox(
+        "ATR method",
+        options=("wilder", "sma"),
+        format_func=lambda opt: "Wilder (RMA)" if opt == "wilder" else opt.upper(),
+    )
     horizon = int(st.number_input("Horizon (days)", min_value=1, value=30, step=1))
     sr_min_ratio = float(st.number_input("Min S:R ratio", value=2.0, step=0.1))
+    sr_lookback = int(st.number_input("S/R lookback (days)", min_value=10, value=21, step=1))
     exit_model = st.selectbox(
         "Exit model",
         options=("pct_tp_only", "sr_tp_vs_stop"),
@@ -96,9 +102,11 @@ def page() -> None:
                 "min_vol_multiple": min_vol_multiple,
                 "min_gap_open_pct": min_gap_open_pct,
                 "atr_window": atr_window,
+                "atr_method": atr_method,
                 "lookback_days": vol_lookback,
                 "horizon_days": horizon,
                 "sr_min_ratio": sr_min_ratio,
+                "sr_lookback": sr_lookback,
                 "exit_model": exit_model,
             }
             dbg.set_params(
@@ -108,8 +116,10 @@ def page() -> None:
                 min_gap_open_pct=min_gap_open_pct,
                 min_volume_multiple=min_vol_multiple,
                 atr_window=atr_window,
+                atr_method=atr_method,
                 horizon=horizon,
                 sr_min_ratio=sr_min_ratio,
+                sr_lookback=sr_lookback,
                 exit_model=exit_model,
             )
 

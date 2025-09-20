@@ -2,16 +2,25 @@ import numpy as np
 import pandas as pd
 from pandas.tseries.offsets import BDay
 
+from .features import atr as _atr
 from .replay import _col
 
-def _calc_atr(series_h, series_l, series_c, window: int) -> pd.Series:
-    cprev = series_c.shift(1)
-    tr = pd.concat([
-        (series_h - series_l).abs(),
-        (series_h - cprev).abs(),
-        (series_l - cprev).abs()
-    ], axis=1).max(axis=1)
-    return tr.rolling(window, min_periods=window).mean()
+
+def _calc_atr(
+    series_h: pd.Series,
+    series_l: pd.Series,
+    series_c: pd.Series,
+    window: int,
+    method: str = "wilder",
+) -> pd.Series:
+    """Internal ATR helper supporting Wilder and SMA modes."""
+
+    df = pd.DataFrame({"high": series_h, "low": series_l, "close": series_c})
+    method = (method or "wilder").strip().lower()
+    if method in ("wilder", "rma", "sma", "ema"):
+        return _atr(df, window=window, method=method)
+
+    raise ValueError(f"Unsupported ATR method: {method}")
 
 
 def has_21d_precedent(df: pd.DataFrame, asof_idx: int, required_pct: float,
@@ -98,7 +107,13 @@ def precedent_hits_pct_target(
     return int(hits)
 
 
-def atr_feasible(df: pd.DataFrame, asof_idx: int, required_pct: float, atr_window: int) -> bool:
+def atr_feasible(
+    df: pd.DataFrame,
+    asof_idx: int,
+    required_pct: float,
+    atr_window: int,
+    atr_method: str = "wilder",
+) -> bool:
     """
     df must have: high, low, close, open. asof_idx = D-1; entry is open at asof_idx+1 (if exists).
     Checks: ATR(at D-1) * atr_window >= entry_price * required_pct
@@ -108,7 +123,9 @@ def atr_feasible(df: pd.DataFrame, asof_idx: int, required_pct: float, atr_windo
     if asof_idx + 1 >= len(df):
         return False
     entry_price = float(df["open"].iloc[asof_idx + 1])
-    atr = _calc_atr(df["high"], df["low"], df["close"], atr_window).iloc[asof_idx]
+    atr = _calc_atr(
+        df["high"], df["low"], df["close"], atr_window, method=atr_method
+    ).iloc[asof_idx]
     if pd.isna(atr):
         return False
     required_dollars = entry_price * required_pct

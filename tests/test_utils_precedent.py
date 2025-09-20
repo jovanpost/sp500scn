@@ -34,6 +34,7 @@ def test_compute_hits_simple_5pct_no_peek_two_starts():
         S = pd.Timestamp(e["date"])
         hit_day = S + BDay(int(e["days_to_hit"]))
         assert hit_day <= D - BDay(1)
+        assert pd.Timestamp(e["hit_date"]) == hit_day
         first_touch_days.add(hit_day)
     assert pd.Timestamp("2020-01-15") in first_touch_days
     assert pd.Timestamp("2020-01-22") in first_touch_days

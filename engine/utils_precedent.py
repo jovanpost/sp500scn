@@ -99,6 +99,7 @@ def compute_precedent_hit_details(
             days_to_hit = int(hit_pos - s_pos)
             max_high = float(fwd[hc].max())
             max_gain_pct = (max_high / oS - 1.0) * 100.0
+            hit_date = pd.Timestamp(first_hit).tz_localize(None)
 
             hits.append(
                 {
@@ -107,6 +108,7 @@ def compute_precedent_hit_details(
                     "target_pct": round(float(tp_frac) * 100.0, 6),
                     "days_to_hit": days_to_hit,
                     "max_gain_pct": round(max_gain_pct, 6),
+                    "hit_date": str(hit_date.date()),
                 }
             )
             if len(hits) >= limit:
