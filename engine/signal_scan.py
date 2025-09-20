@@ -514,7 +514,7 @@ def scan_day(
                 "event": "atr_sanity",
                 "checked": int(len(checked_atr_rows)),
                 "present": int(atr_present),
-                "window_default": 14,
+                "window_default": int(expected_window),  # was hard-coded 14
                 "method": atr_method,
             }
         )
@@ -531,3 +531,4 @@ def scan_day(
     stats["candidates"] = len(cand_df)
 
     return cand_df, out_df, fail_count, stats
+
