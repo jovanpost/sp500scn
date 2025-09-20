@@ -1,3 +1,5 @@
+# (full replacement content)
+# storage.py
 from __future__ import annotations
 
 import io
@@ -13,7 +15,7 @@ import pandas as pd
 import streamlit as st
 from pandas.api.types import is_numeric_dtype
 
-# NEW: for HTTP HEAD verification
+# HTTP for optional HEAD verification
 import requests
 
 log = logging.getLogger(__name__)
@@ -24,12 +26,11 @@ except Exception as exc:  # pragma: no cover - supabase optional
     Client = Any  # type: ignore[assignment]
     create_client = None  # type: ignore[assignment]
     _SUPABASE_IMPORT_ERROR: Exception | None = exc
-else:  # pragma: no cover - exercised when package installed
+else:  # pragma: no cover
     _SUPABASE_IMPORT_ERROR = None
 
 
-# Back-compat alias: if other modules import from data_lake.prices, they still work.
-# We keep a shim, but note that the concrete implementation below overrides the name.
+# Back-compat alias to the prices module (kept; we override below anyway)
 try:
     from .prices import load_prices_cached as _dl_load_prices_cached  # type: ignore[attr-defined]
 except Exception:
@@ -37,7 +38,6 @@ except Exception:
 
 
 def load_prices_cached(*args, **kwargs):
-    """Back-compat shim delegating to :mod:`data_lake.prices`."""
     if _dl_load_prices_cached is None:
         from .prices import load_prices_cached as _impl
         return _impl(*args, **kwargs)
@@ -49,10 +49,9 @@ DEFAULT_BUCKET = "lake"
 
 
 class ConfigurationError(RuntimeError):
-    """Raised when data lake configuration prevents price availability checks."""
     pass
 
-# Stable price schema used across ingest + read paths.
+
 PRICE_COLUMNS = [
     "date",
     "Ticker",
@@ -68,7 +67,6 @@ PRICE_COLUMNS = [
 
 
 def supabase_available() -> tuple[bool, str]:
-    """Return ``(available, reason)`` for Supabase client support."""
     if create_client is None:
         reason = (
             "supabase python client not installed"
@@ -80,10 +78,8 @@ def supabase_available() -> tuple[bool, str]:
 
 
 def validate_prices_schema(df: pd.DataFrame, *, strict: bool = True) -> None:
-    """Ensure frames store raw OHLC alongside provider Adj Close."""
     if df is None or df.empty:
         return
-
     req = set(PRICE_COLUMNS)
     missing = sorted(req - set(df.columns))
     if missing:
@@ -142,7 +138,7 @@ def _coerce_secrets_dict(obj: Any) -> dict[str, Any]:
         return {}
     if isinstance(obj, dict):
         return dict(obj)
-    try:  # pragma: no cover - defensive; depends on secrets object implementation
+    try:
         return dict(obj)
     except Exception:
         return {}
@@ -182,13 +178,11 @@ def _load_supabase_config(
     key: str | None = None,
     bucket: str | None = None,
 ) -> _SupabaseConfig:
-    """Read Supabase configuration from environment + Streamlit secrets."""
     secrets_cfg: dict[str, Any] = {}
-    try:  # pragma: no branch - streamlit secrets may be unavailable
+    try:
         secrets_cfg = _coerce_secrets_dict(getattr(st, "secrets", {})).get("supabase", {})
-    except Exception:  # pragma: no cover - secrets access can raise
+    except Exception:
         secrets_cfg = {}
-
     env_bucket = os.getenv("SUPABASE_BUCKET")
     env_url = os.getenv("SUPABASE_URL")
     env_key = os.getenv("SUPABASE_KEY")
@@ -236,7 +230,7 @@ class Storage:
             if not (cfg.url and cfg.key):
                 raise RuntimeError("Supabase configuration requires url+key")
             if self.supabase_client is None:
-                assert create_client is not None  # for type checkers
+                assert create_client is not None
                 self.supabase_client = create_client(cfg.url, cfg.key)  # type: ignore[misc]
             self.mode = "supabase"
             self.bucket = cfg.bucket
@@ -244,9 +238,8 @@ class Storage:
             self.mode = "local"
             self.bucket = cfg.bucket
 
-    # ------------------------------------------------------------------
-    # Basic helpers
-    def supabase_available(self) -> tuple[bool, str]:  # pragma: no cover - thin wrapper
+    # ---------------- Basic helpers ----------------
+    def supabase_available(self) -> tuple[bool, str]:
         return supabase_available()
 
     def diagnostics(self) -> dict[str, Any]:
@@ -267,8 +260,7 @@ class Storage:
     def selftest(self) -> dict[str, Any]:
         return {"ok": True, "mode": self.mode}
 
-    # ------------------------------------------------------------------
-    # I/O primitives
+    # ---------------- I/O primitives ----------------
     def _resolved_root(self) -> Path:
         root = Path(self.local_root if self.local_root is not None else LOCAL_ROOT)
         if not root.is_absolute():
@@ -325,8 +317,7 @@ class Storage:
             options = {"content_type": content_type}
         api.upload(norm, payload, file_options=options or None)
 
-    # ------------------------------------------------------------------
-    # Listing helpers (supabase-py signature variations handled)
+    # ---------------- Listing helpers ----------------
     def list_prefix(self, prefix: str) -> List[str]:
         norm = prefix.strip("/")
         if self.mode == "supabase":
@@ -334,7 +325,7 @@ class Storage:
                 api = self._get_bucket_api()
             elif hasattr(self.bucket, "list"):
                 api = self.bucket  # type: ignore[assignment]
-            else:  # pragma: no cover - defensive
+            else:
                 raise RuntimeError("Supabase client not configured")
 
             limit = 1000
@@ -352,6 +343,7 @@ class Storage:
                         sort_by={"column": "name", "order": "asc"},
                     )
                 except TypeError:
+                    # Older clients (or Streamlit’s proxy) don’t accept kwargs → no pagination.
                     supports_offset = False
                     try:
                         response = api.list(norm) if norm else api.list()
@@ -417,7 +409,7 @@ class Storage:
         target = f"{parent}/{name}" if parent else name
         return target in set(items)
 
-    # NEW: robust presence check via HTTP HEAD (public or signed)
+    # ------------- Optional HTTP HEAD presence -------------
     def _public_object_url(self, path: str) -> str:
         base = (self.supabase_url or "").rstrip("/")
         bkt = str(self.bucket).strip("/")
@@ -425,31 +417,24 @@ class Storage:
         return f"{base}/storage/v1/object/public/{bkt}/{p}"
 
     def http_head_exists(self, path: str) -> bool:
-        """
-        True if the object exists, using HTTP HEAD to public URL
-        (or signed URL on 401/403). Bypasses directory listings.
-        """
         norm = path.strip("/")
         if self.mode == "local":
             return (self._norm(norm)).exists()
-
         # Public URL HEAD
         try:
             url = self._public_object_url(norm)
-            r = requests.head(url, allow_redirects=True, timeout=10)
+            r = requests.head(url, allow_redirects=True, timeout=8)
             if r.status_code == 200:
                 return True
             if r.status_code in (301, 302, 307, 308):
-                r2 = requests.get(url, headers={"Range": "bytes=0-0"}, timeout=15)
+                r2 = requests.get(url, headers={"Range": "bytes=0-0"}, timeout=12)
                 if r2.status_code in (200, 206):
                     return True
             if r.status_code not in (401, 403):
                 return False
         except Exception:
-            # fall through to signed
             pass
-
-        # Signed URL fallback for private buckets
+        # Signed URL fallback (private buckets)
         try:
             if create_client is None or not (self.supabase_url and self.supabase_key):
                 return False
@@ -464,18 +449,17 @@ class Storage:
                 )
             if not signed_url:
                 return False
-            r3 = requests.head(signed_url, allow_redirects=True, timeout=10)
+            r3 = requests.head(signed_url, allow_redirects=True, timeout=8)
             if r3.status_code == 200:
                 return True
             if r3.status_code in (301, 302, 307, 308):
-                r4 = requests.get(signed_url, headers={"Range": "bytes=0-0"}, timeout=15)
+                r4 = requests.get(signed_url, headers={"Range": "bytes=0-0"}, timeout=12)
                 return r4.status_code in (200, 206)
             return False
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Factories
+    # ---------------- Factories ----------------
     @classmethod
     def from_env(cls) -> "Storage":
         return cls()
@@ -488,24 +472,20 @@ def _normalize_key(name: str) -> str:
 
 
 def _normalize_ticker_symbol(raw: str) -> str:
-    """Normalize a ticker symbol to uppercase without leading/trailing whitespace."""
     return str(raw).strip().upper()
 
 
 _TICKER_CANON_TRANSLATION = str.maketrans({".": "_", "-": "_", " ": "_"})
 
-
 def _canonicalize_ticker_symbol(raw: str) -> str:
-    """Return a canonical representation resilient to punctuation differences."""
     return _normalize_ticker_symbol(raw).translate(_TICKER_CANON_TRANSLATION)
 
 
 def _candidate_price_stems(ticker: str) -> list[str]:
-    """Possible filename stems for ``ticker`` in the ``prices`` folder."""
     normalized = _normalize_ticker_symbol(ticker)
     canonical = _canonicalize_ticker_symbol(normalized)
     variants: set[str] = {normalized, canonical}
-    punctuation_swaps = {
+    swaps = {
         normalized.replace(".", "_"),
         normalized.replace(".", "-"),
         normalized.replace("-", "_"),
@@ -515,7 +495,7 @@ def _candidate_price_stems(ticker: str) -> list[str]:
         canonical.replace("_", "."),
         canonical.replace("_", "-"),
     }
-    variants.update(filter(None, punctuation_swaps))
+    variants.update(filter(None, swaps))
     return sorted({v.strip().upper() for v in variants if v})
 
 
@@ -668,7 +648,6 @@ def load_prices_cached(
             except FileNotFoundError:
                 continue
         tidy = _tidy_prices(df_raw, ticker=ticker)
-        # Ensure index is datetime to avoid comparison failures
         tidy.index = pd.to_datetime(tidy.index, errors="coerce").tz_localize(None)
         if tidy.index.isna().any():
             bad = int(tidy.index.isna().sum())
@@ -712,10 +691,59 @@ def load_prices_cached(
         except Exception:
             out["Volume"] = vol
 
-    # Enforce raw OHLC semantics before handing data to callers.
     validate_prices_schema(out)
-
     return out.reset_index(drop=True)
+
+
+# -------- Manifest support (FAST PATH) --------------------------------
+
+@st.cache_data(hash_funcs={Storage: lambda _: 0}, show_spinner=False)
+def _load_price_manifest(storage: Storage) -> set[str] | None:
+    """
+    Try to load a cached list of available price files.
+    Supported:
+      - prices/_manifest.parquet  (with column 'Ticker')
+      - prices/_manifest.csv      (column 'Ticker' or first column)
+      - prices/_manifest.txt      (one ticker per line)
+    Returns uppercased ticker set, or None if not found.
+    """
+    candidates = [
+        "prices/_manifest.parquet",
+        "prices/_manifest.csv",
+        "prices/_manifest.txt",
+    ]
+    for path in candidates:
+        try:
+            if path.endswith(".parquet"):
+                df = storage.read_parquet_df(path)
+                col = "Ticker" if "Ticker" in df.columns else df.columns[0]
+                vals = df[col].dropna().astype(str).str.upper().str.strip()
+                tickers = set(v for v in vals.tolist() if v)
+                if tickers:
+                    log.info("price-filter: using manifest %s (%d tickers)", path, len(tickers))
+                    return tickers
+            elif path.endswith(".csv"):
+                raw = storage.read_bytes(path).decode("utf-8", errors="ignore")
+                df = pd.read_csv(io.StringIO(raw))
+                col = "Ticker" if "Ticker" in df.columns else df.columns[0]
+                vals = df[col].dropna().astype(str).str.upper().str.strip()
+                tickers = set(v for v in vals.tolist() if v)
+                if tickers:
+                    log.info("price-filter: using manifest %s (%d tickers)", path, len(tickers))
+                    return tickers
+            else:
+                raw = storage.read_bytes(path).decode("utf-8", errors="ignore")
+                vals = [line.strip().upper() for line in raw.splitlines()]
+                tickers = set(v for v in vals if v and not v.startswith("#"))
+                if tickers:
+                    log.info("price-filter: using manifest %s (%d tickers)", path, len(tickers))
+                    return tickers
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            log.warning("price-filter: manifest %s load failed: %s", path, exc)
+            continue
+    return None
 
 
 def _resolve_prices_prefix(storage: Storage) -> str:
@@ -735,12 +763,6 @@ def _resolve_prices_prefix(storage: Storage) -> str:
 
 
 def _resolve_layout(storage: Storage, prefix: str) -> str:
-    """
-    Resolve layout with auto-detection:
-    - If LAKE_LAYOUT is 'flat' or 'partitioned', use it.
-    - Else detect: if any '.parquet' exists directly under prefix -> 'flat',
-      otherwise assume 'partitioned'.
-    """
     val = (os.getenv("LAKE_LAYOUT", "auto") or "auto").strip().lower()
     if val in {"flat", "partitioned"}:
         return val
@@ -751,9 +773,8 @@ def _resolve_layout(storage: Storage, prefix: str) -> str:
     try:
         entries = storage.list_prefix(prefix)
     except Exception:
-        # Conservative default that matches most setups (flat files)
         return "flat"
-    for e in entries[:200]:  # cheap sample
+    for e in entries[:200]:
         name = Path(str(e)).name
         if os.path.splitext(name)[1].lower() == ".parquet":
             return "flat"
@@ -773,7 +794,7 @@ def _display_key(path: str, layout: str) -> str:
 
 def _classify_probe_exception(exc: Exception) -> str:
     text = str(exc).lower()
-    if any(token in text for token in ["401", "403", "forbidden", "permission", "denied", "rls"]):
+    if any(t in text for t in ["401", "403", "forbidden", "permission", "denied", "rls"]):
         return "401"
     return "404"
 
@@ -781,11 +802,10 @@ def _classify_probe_exception(exc: Exception) -> str:
 def _probe_key(storage: Storage, key: str, layout: str) -> str:
     try:
         if layout == "flat":
-            # Use robust HTTP-based existence
             return "200" if storage.http_head_exists(key) else "404"
         entries = storage.list_prefix(key)
         return "200" if entries else "404"
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover
         return _classify_probe_exception(exc)
 
 
@@ -812,13 +832,22 @@ def filter_tickers_with_parquet(
     if not requested:
         return [], []
 
+    # ---- 0) Manifest fast path -----------------------------------------
+    manifest = _load_price_manifest(storage)
+    if manifest is not None:
+        present = [t for t in requested if _canonicalize_ticker_symbol(t) in manifest]
+        missing = [t for t in requested if _canonicalize_ticker_symbol(t) not in manifest]
+        log.info("price-filter: manifest resolved %d/%d tickers", len(present), len(requested))
+        return present, missing
+
+    # ---- 1) Listing-based path -----------------------------------------
     prefix = _resolve_prices_prefix(storage)
     layout = _resolve_layout(storage, prefix)
 
     available_canonical: set[str] = set()
 
     if layout == "flat":
-        # 1) Fast path: directory list
+        # 1a) Try directory list
         try:
             entries = storage.list_prefix(prefix)
         except Exception as exc:
@@ -842,20 +871,24 @@ def filter_tickers_with_parquet(
             if canonical:
                 available_canonical.add(canonical)
 
-        # 2) Robust verification pass: HTTP HEAD per ticker for suspected misses.
-        # Trigger when listing looks obviously short.
-        if len(requested) >= 100 and len(available_canonical) < max(1, len(requested) // 2):
+        # 1b) If the list looks short, do a LIMITED HEAD probe sweep
+        MAX_HEAD_PROBES = int(os.getenv("MAX_HEAD_PROBES", "60"))
+        suspicious = len(requested) >= 100 and len(available_canonical) < max(1, len(requested) // 2)
+        if suspicious and MAX_HEAD_PROBES > 0:
             log.warning(
                 "price-filter: suspicious listing (%s present from list, %s requested) — "
-                "probing per-ticker via HEAD",
+                "probing up to %s tickers via HEAD",
                 len(available_canonical),
                 len(requested),
+                MAX_HEAD_PROBES,
             )
+            probes = 0
             for t in requested:
+                if probes >= MAX_HEAD_PROBES:
+                    break
                 canon = canonical_by_ticker[t]
                 if canon in available_canonical:
                     continue
-                # Try all common stems; mark present on first HEAD success.
                 for stem in _candidate_price_stems(t):
                     key = _build_storage_key(prefix, stem, layout="flat")
                     try:
@@ -863,9 +896,11 @@ def filter_tickers_with_parquet(
                             available_canonical.add(_canonicalize_ticker_symbol(stem))
                             break
                     except Exception:
-                        continue
+                        pass
+                probes += 1
 
     else:
+        # Partitioned layout → verify existence by listing each stem path (cheap)
         probed_paths: set[str] = set()
         for ticker in requested:
             for stem in _candidate_price_stems(ticker):
@@ -888,7 +923,7 @@ def filter_tickers_with_parquet(
     present = [t for t in requested if canonical_by_ticker.get(t) in available_canonical]
     missing = [t for t in requested if canonical_by_ticker.get(t) not in available_canonical]
 
-    # Breadcrumbs when coverage is poor
+    # Breadcrumbs when coverage is poor (cheap probes for 3 keys)
     if len(requested) >= 100 and len(present) < max(1, len(requested) // 2):
         probes = []
         for t in missing[:3]:
