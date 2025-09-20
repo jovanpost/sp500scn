@@ -73,6 +73,10 @@ def _compute_metrics(
     atr_method: str,
     sr_lookback: int,
 ) -> Dict[str, Any] | None:
+    # NEW: make integer indexing safe no matter the incoming index
+    if not isinstance(df.index, pd.RangeIndex):
+        df = df.reset_index(drop=True)
+
     D = pd.to_datetime(D)
     if D not in df["date"].values:
         idx = df["date"].searchsorted(D)
@@ -83,24 +87,66 @@ def _compute_metrics(
     idx = df.index[df["date"] == D]
     if len(idx) == 0:
         return None
-    i = idx[0]
+    i = int(idx[0])
     if i == 0:
         return None
     dm1 = i - 1
 
+    # CHANGED: use iloc (position) everywhere we index by integer
     close_up_pct = (
-        (df.loc[dm1, "close"] / df.loc[dm1 - 1, "close"] - 1.0) * 100
-        if dm1 > 0
-        else np.nan
+        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - 1] - 1.0) * 100
+        if dm1 > 0 else np.nan
     )
 
     w0 = max(0, dm1 - vol_lookback + 1)
-    lookback_vol = df.loc[w0:dm1, "volume"].mean()
+    lookback_vol = df["volume"].iloc[w0:dm1 + 1].mean()
     vol_multiple = (
-        df.loc[dm1, "volume"] / lookback_vol
-        if lookback_vol and not np.isnan(lookback_vol)
-        else np.nan
+        df["volume"].iloc[dm1] / lookback_vol
+        if lookback_vol and not np.isnan(lookback_vol) else np.nan
     )
+
+    gap_open_pct = (df["open"].iloc[i] / df["close"].iloc[dm1] - 1.0) * 100
+
+    atr_series = compute_atr(df[["high", "low", "close"]], window=atr_window, method=atr_method)
+    atr_val = float(atr_series.iloc[dm1]) if dm1 < len(atr_series) else np.nan
+    atr_pct = atr_val / df["close"].iloc[dm1] * 100 if df["close"].iloc[dm1] else np.nan
+
+    ret = (
+        (df["close"].iloc[dm1] / df["close"].iloc[dm1 - atr_window] - 1.0) * 100
+        if dm1 >= atr_window else np.nan
+    )
+
+    sr_start = max(0, dm1 - sr_lookback + 1) if sr_lookback and sr_lookback > 0 else 0
+    sr_slice = df.iloc[sr_start:dm1 + 1]
+    support = float(sr_slice["low"].min()) if not sr_slice.empty else float("nan")
+    resistance = float(sr_slice["high"].max()) if not sr_slice.empty else float("nan")
+
+    entry = float(df["open"].iloc[i])
+    sr_ratio = np.nan
+    tp_halfway_pct = np.nan
+    if support > 0 and resistance > entry:
+        up = resistance - entry
+        down = entry - support
+        sr_ratio = up / down if down > 0 else np.nan
+        tp_halfway_pct = (entry + up / 2) / entry - 1.0
+
+    return {
+        "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
+        "vol_multiple": float(vol_multiple) if not np.isnan(vol_multiple) else np.nan,
+        "gap_open_pct": float(gap_open_pct),
+        "atr21": float(atr_val) if not np.isnan(atr_val) else np.nan,
+        "atr21_pct": float(atr_pct) if not np.isnan(atr_pct) else np.nan,
+        "ret21_pct": float(ret) if not np.isnan(ret) else np.nan,
+        "support": support,
+        "resistance": resistance,
+        "sr_support": support,
+        "sr_resistance": resistance,
+        "sr_window_len": int(sr_slice.shape[0]) if not sr_slice.empty else 0,
+        "sr_ratio": sr_ratio,
+        "tp_halfway_pct": float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan,
+        "entry_open": entry,
+        "atr_method": atr_method,
+    }
 
     gap_open_pct = (df.loc[i, "open"] / df.loc[dm1, "close"] - 1.0) * 100
 
