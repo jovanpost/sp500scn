@@ -6,6 +6,13 @@ Price history is loaded from Supabase Storage parquet files under
 `lake/prices/{TICKER}.parquet`. Legacy database table reads and `yfinance`
 imports have been removed in favor of this storage-based approach.
 
+Storage paths are normalised automatically: the configured bucket name or
+leading slashes are stripped from the object key before Supabase requests are
+issued. Environment variables such as `LAKE_PRICES_PREFIX` may therefore be
+specified as `prices`, `/prices`, or even `lake/prices` without breaking remote
+fetches. The loader logs the resolved bucket, prefix, and key whenever a request
+fails to assist with troubleshooting.
+
 ## Outcome Evaluation
 
 Use the `scripts/evaluate_outcomes.py` utility to update `data/history/outcomes.csv` with trade results.

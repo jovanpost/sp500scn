@@ -9,7 +9,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -64,6 +64,52 @@ PRICE_COLUMNS = [
     "Dividends",
     "Stock Splits",
 ]
+
+
+def _coerce_path(value: Any) -> str:
+    if isinstance(value, os.PathLike):  # type: ignore[arg-type]
+        return os.fspath(value)  # type: ignore[arg-type]
+    return str(value or "")
+
+
+def _split_clean_parts(raw: str) -> list[str]:
+    if not raw:
+        return []
+    normalized = raw.replace("\\", "/")
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        piece = part.strip()
+        if not piece or piece in {".", ".."}:
+            continue
+        parts.append(piece)
+    return parts
+
+
+def _parts_match(parts: Sequence[str], prefix: Sequence[str]) -> bool:
+    if len(parts) < len(prefix):
+        return False
+    if not prefix:
+        return True
+    return [p.lower() for p in parts[: len(prefix)]] == [p.lower() for p in prefix]
+
+
+def _normalize_storage_key(
+    raw: Any,
+    *,
+    bucket: str | None = None,
+) -> str:
+    """Return a clean storage key with bucket prefixes stripped."""
+
+    text = _coerce_path(raw).strip()
+    if not text:
+        return ""
+
+    parts = _split_clean_parts(text)
+    bucket_parts = _split_clean_parts(str(bucket or ""))
+    if bucket_parts and _parts_match(parts, bucket_parts):
+        parts = parts[len(bucket_parts) :]
+
+    return "/".join(parts)
 
 
 def supabase_available() -> tuple[bool, str]:
@@ -267,9 +313,16 @@ class Storage:
             root = (Path.cwd() / root).resolve()
         return root
 
+    def _bucket_name(self) -> str:
+        return str(self.bucket).strip("/") if isinstance(self.bucket, str) else ""
+
+    def _normalize_key(self, path: Any) -> str:
+        return _normalize_storage_key(path, bucket=self._bucket_name())
+
     def _norm(self, path: str) -> Path:
-        rel = path.strip("/")
-        return self._resolved_root() / rel
+        rel = self._normalize_key(path)
+        base = self._resolved_root()
+        return base / rel if rel else base
 
     def _get_bucket_api(self):  # type: ignore[no-untyped-def]
         if self.supabase_client is None:
@@ -277,13 +330,23 @@ class Storage:
         return self.supabase_client.storage.from_(self.bucket)
 
     def read_bytes(self, path: str) -> bytes:
-        norm = path.strip("/")
+        norm = self._normalize_key(path)
         if self.mode == "local":
             full = self._norm(norm)
             return full.read_bytes()
 
         api = self._get_bucket_api()
-        result = api.download(norm)
+        try:
+            result = api.download(norm)
+        except Exception as exc:
+            log.error(
+                "Supabase download failed (bucket=%s, key=%s, raw=%s)",
+                self._bucket_name() or self.bucket,
+                norm,
+                path,
+                exc_info=True,
+            )
+            raise
         data = getattr(result, "data", result)
         if isinstance(data, bytes):
             return data
@@ -296,15 +359,15 @@ class Storage:
         raise TypeError(f"Unsupported download response: {type(result)!r}")
 
     def read_parquet_df(self, path: str) -> pd.DataFrame:
-        norm = path.strip("/")
+        norm = self._normalize_key(path)
         if self.mode == "local":
             full = self._norm(norm)
             return pd.read_parquet(full)
-        data = self.read_bytes(norm)
+        data = self.read_bytes(path)
         return pd.read_parquet(io.BytesIO(data))
 
     def write_bytes(self, path: str, payload: bytes, *, content_type: str | None = None) -> None:
-        norm = path.strip("/")
+        norm = self._normalize_key(path)
         if self.mode == "local":
             dest = self._norm(norm)
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -315,11 +378,21 @@ class Storage:
         options = {}
         if content_type:
             options = {"content_type": content_type}
-        api.upload(norm, payload, file_options=options or None)
+        try:
+            api.upload(norm, payload, file_options=options or None)
+        except Exception as exc:
+            log.error(
+                "Supabase upload failed (bucket=%s, key=%s, raw=%s)",
+                self._bucket_name() or self.bucket,
+                norm,
+                path,
+                exc_info=True,
+            )
+            raise
 
     # ---------------- Listing helpers ----------------
     def list_prefix(self, prefix: str) -> List[str]:
-        norm = prefix.strip("/")
+        norm = self._normalize_key(prefix)
         if self.mode == "supabase":
             if self.supabase_client is not None:
                 api = self._get_bucket_api()
@@ -349,6 +422,15 @@ class Storage:
                         response = api.list(norm) if norm else api.list()
                     except TypeError:
                         response = api.list(path=norm) if norm else api.list()
+                except Exception as exc:
+                    log.error(
+                        "Supabase list failed (bucket=%s, prefix=%s, raw=%s)",
+                        self._bucket_name() or self.bucket,
+                        norm,
+                        prefix,
+                        exc_info=True,
+                    )
+                    raise
 
                 items = getattr(response, "data", response)
                 if isinstance(items, dict):
@@ -398,7 +480,7 @@ class Storage:
     def exists(self, path: str) -> bool:
         if not path or path.endswith("/"):
             return False
-        norm = path.strip("/")
+        norm = self._normalize_key(path)
         if not norm:
             return False
         if "/" in norm:
@@ -413,11 +495,11 @@ class Storage:
     def _public_object_url(self, path: str) -> str:
         base = (self.supabase_url or "").rstrip("/")
         bkt = str(self.bucket).strip("/")
-        p = path.lstrip("/")
+        p = self._normalize_key(path)
         return f"{base}/storage/v1/object/public/{bkt}/{p}"
 
     def http_head_exists(self, path: str) -> bool:
-        norm = path.strip("/")
+        norm = self._normalize_key(path)
         if self.mode == "local":
             return (self._norm(norm)).exists()
         # Public URL HEAD
@@ -635,18 +717,74 @@ def load_prices_cached(
     start_ts = _naive(start)
     end_ts = _naive(end)
 
+    prefix = _resolve_prices_prefix(_storage)
+    layout = _resolve_layout(_storage, prefix)
+    display_prefix = prefix or "<root>"
+
     frames: list[pd.DataFrame] = []
     for ticker in tickers:
-        path = f"prices/{ticker}.parquet"
-        try:
-            df_raw = _storage.read_parquet_df(path)
-        except FileNotFoundError:
-            continue
-        except Exception:
+        layouts_to_try = [layout]
+        if layout == "partitioned":
+            layouts_to_try = ["partitioned", "flat"]
+
+        df_raw: pd.DataFrame | None = None
+        errors: list[tuple[str, str, Exception | None]] = []
+
+        for layout_attempt in layouts_to_try:
+            key = _build_storage_key(prefix, ticker, layout_attempt)
+            normalized_attempt = _storage._normalize_key(key)
             try:
-                df_raw = pd.read_parquet(io.BytesIO(_storage.read_bytes(path)))
+                if layout_attempt == "flat":
+                    candidate = _storage.read_parquet_df(key)
+                else:
+                    candidate = _load_partitioned_price(_storage, key)
             except FileNotFoundError:
+                errors.append((layout_attempt, normalized_attempt, None))
                 continue
+            except Exception as exc:
+                log.error(
+                    "load_prices_cached: failed to load (bucket=%s, prefix=%s, key=%s, layout_attempt=%s, detected_layout=%s): %s",
+                    _storage._bucket_name() or _storage.bucket,
+                    display_prefix,
+                    normalized_attempt,
+                    layout_attempt,
+                    layout,
+                    exc,
+                    exc_info=True,
+                )
+                if layout_attempt == "flat":
+                    try:
+                        candidate = pd.read_parquet(io.BytesIO(_storage.read_bytes(key)))
+                    except FileNotFoundError:
+                        errors.append((layout_attempt, normalized_attempt, None))
+                        continue
+                    except Exception as exc2:
+                        errors.append((layout_attempt, normalized_attempt, exc2))
+                        continue
+                else:
+                    errors.append((layout_attempt, normalized_attempt, exc))
+                    continue
+            df_raw = candidate
+            break
+
+        if df_raw is None:
+            if errors:
+                last_layout, last_key, _ = errors[-1]
+            else:
+                last_layout = layouts_to_try[-1]
+                last_key = _storage._normalize_key(
+                    _build_storage_key(prefix, ticker, last_layout)
+                )
+            log.warning(
+                "load_prices_cached: missing price data (bucket=%s, prefix=%s, key=%s, layout_attempt=%s, detected_layout=%s)",
+                _storage._bucket_name() or _storage.bucket,
+                display_prefix,
+                last_key,
+                last_layout,
+                layout,
+            )
+            continue
+
         tidy = _tidy_prices(df_raw, ticker=ticker)
         tidy.index = pd.to_datetime(tidy.index, errors="coerce").tz_localize(None)
         if tidy.index.isna().any():
@@ -748,17 +886,8 @@ def _load_price_manifest(storage: Storage) -> set[str] | None:
 
 def _resolve_prices_prefix(storage: Storage) -> str:
     raw_prefix = os.getenv("LAKE_PRICES_PREFIX", "lake/prices")
-    prefix = str(raw_prefix or "").strip().strip("/")
-
-    bucket_value = getattr(storage, "bucket", "") or ""
-    if isinstance(bucket_value, str):
-        bucket = bucket_value.strip().strip("/")
-    else:
-        bucket = ""
-    if bucket and prefix == bucket:
-        return ""
-    if bucket and prefix.startswith(f"{bucket}/"):
-        prefix = prefix[len(bucket) + 1 :]
+    bucket = storage._bucket_name() if hasattr(storage, "_bucket_name") else ""
+    prefix = _normalize_storage_key(raw_prefix, bucket=bucket)
     return prefix.strip("/")
 
 
@@ -790,6 +919,47 @@ def _build_storage_key(prefix: str, stem: str, layout: str) -> str:
 
 def _display_key(path: str, layout: str) -> str:
     return f"{path}/" if layout == "partitioned" else path
+
+
+def _gather_partition_objects(storage: Storage, base_key: str) -> list[str]:
+    queue = [base_key.rstrip("/")]
+    seen: set[str] = set()
+    parquet_paths: set[str] = set()
+
+    while queue:
+        current = queue.pop()
+        if not current or current in seen:
+            continue
+        seen.add(current)
+        try:
+            entries = storage.list_prefix(current)
+        except Exception as exc:  # pragma: no cover - handled by caller
+            raise
+        for entry in entries:
+            normalized = entry.rstrip("/")
+            if not normalized:
+                continue
+            if normalized.lower().endswith(".parquet"):
+                parquet_paths.add(normalized)
+            elif normalized not in seen and normalized != current:
+                queue.append(normalized)
+
+    return sorted(parquet_paths)
+
+
+def _load_partitioned_price(storage: Storage, base_key: str) -> pd.DataFrame:
+    parts = _gather_partition_objects(storage, base_key)
+    if not parts:
+        raise FileNotFoundError(base_key)
+    frames: list[pd.DataFrame] = []
+    for path in parts:
+        df = storage.read_parquet_df(path)
+        if not isinstance(df, pd.DataFrame):  # pragma: no cover - safety
+            continue
+        frames.append(df)
+    if not frames:
+        raise FileNotFoundError(base_key)
+    return pd.concat(frames, axis=0, ignore_index=False)
 
 
 def _classify_probe_exception(exc: Exception) -> str:
@@ -843,6 +1013,8 @@ def filter_tickers_with_parquet(
     # ---- 1) Listing-based path -----------------------------------------
     prefix = _resolve_prices_prefix(storage)
     layout = _resolve_layout(storage, prefix)
+    display_prefix = prefix or "<root>"
+    bucket_name = storage._bucket_name() if hasattr(storage, "_bucket_name") else storage.bucket
 
     available_canonical: set[str] = set()
 
@@ -851,7 +1023,6 @@ def filter_tickers_with_parquet(
         try:
             entries = storage.list_prefix(prefix)
         except Exception as exc:
-            display_prefix = prefix or "<root>"
             raise ConfigurationError(
                 f"Unable to list price objects under prefix '{display_prefix}': {exc}"
             ) from exc
@@ -876,8 +1047,11 @@ def filter_tickers_with_parquet(
         suspicious = len(requested) >= 100 and len(available_canonical) < max(1, len(requested) // 2)
         if suspicious and MAX_HEAD_PROBES > 0:
             log.warning(
-                "price-filter: suspicious listing (%s present from list, %s requested) — "
+                "price-filter: suspicious listing (bucket=%s prefix=%s layout=%s %s present/%s requested) — "
                 "probing up to %s tickers via HEAD",
+                bucket_name,
+                display_prefix,
+                layout,
                 len(available_canonical),
                 len(requested),
                 MAX_HEAD_PROBES,
@@ -932,11 +1106,19 @@ def filter_tickers_with_parquet(
             status = _probe_key(storage, key, layout)
             probes.append((_display_key(key, layout), status))
         for k, s in probes:
-            log.warning("price-filter: probe %s -> %s", k, s)
+            log.warning(
+                "price-filter: probe %s -> %s (bucket=%s prefix=%s layout=%s)",
+                k,
+                s,
+                bucket_name,
+                display_prefix,
+                layout,
+            )
 
     log.debug(
-        "filter_tickers_with_parquet: prefix=%s layout=%s requested=%s present=%s missing=%s",
-        prefix or "<root>",
+        "filter_tickers_with_parquet: bucket=%s prefix=%s layout=%s requested=%s present=%s missing=%s",
+        bucket_name,
+        display_prefix,
         layout,
         len(requested),
         len(present),
