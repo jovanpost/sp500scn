@@ -217,7 +217,7 @@ def page() -> None:
             if tp_mode == "sr_fraction":
                 tp_sr_fraction = float(
                     st.number_input(
-                        "S/R fraction (0–1]",
+                        "Fraction (0–1]",
                         min_value=0.05,
                         max_value=1.0,
                         value=float(st.session_state.get("bt_tp_sr_fraction", 0.50)),
