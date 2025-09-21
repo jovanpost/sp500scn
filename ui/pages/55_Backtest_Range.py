@@ -201,6 +201,53 @@ def page() -> None:
                 format_func=lambda opt: "Percent target only" if opt == "pct_tp_only" else "Legacy S/R TP+stop",
                 key="bt_exit_model",
             )
+            tp_mode = st.radio(
+                "Take-profit mode",
+                options=("sr_fraction", "atr_multiple"),
+                index=0,
+                format_func=lambda opt: "S/R fraction" if opt == "sr_fraction" else "ATR multiple",
+                key="bt_tp_mode",
+            )
+            if "bt_tp_sr_fraction" not in st.session_state:
+                st.session_state["bt_tp_sr_fraction"] = 0.50
+            if "bt_tp_atr_multiple" not in st.session_state:
+                st.session_state["bt_tp_atr_multiple"] = 0.50
+            if "bt_tp_atr_preset" not in st.session_state:
+                st.session_state["bt_tp_atr_preset"] = 0.50
+            if tp_mode == "sr_fraction":
+                tp_sr_fraction = float(
+                    st.number_input(
+                        "S/R fraction (0–1]",
+                        min_value=0.05,
+                        max_value=1.0,
+                        value=float(st.session_state.get("bt_tp_sr_fraction", 0.50)),
+                        step=0.05,
+                        key="bt_tp_sr_fraction",
+                    )
+                )
+                tp_atr_multiple = float(st.session_state.get("bt_tp_atr_multiple", 0.50))
+            else:
+                atr_presets = (0.25, 0.5, 0.75, 1.0)
+                preset = st.radio(
+                    "ATR multiple presets",
+                    options=atr_presets,
+                    index=atr_presets.index(0.5),
+                    horizontal=True,
+                    key="bt_tp_atr_preset",
+                )
+                if st.session_state.get("_bt_tp_atr_last_preset") != preset:
+                    st.session_state["_bt_tp_atr_last_preset"] = preset
+                    st.session_state["bt_tp_atr_multiple"] = float(preset)
+                tp_atr_multiple = float(
+                    st.number_input(
+                        "ATR multiple k",
+                        min_value=0.05,
+                        value=float(st.session_state.get("bt_tp_atr_multiple", preset)),
+                        step=0.05,
+                        key="bt_tp_atr_multiple",
+                    )
+                )
+                tp_sr_fraction = float(st.session_state.get("bt_tp_sr_fraction", 0.50))
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
@@ -227,6 +274,9 @@ def page() -> None:
                 "precedent_window": precedent_window,
                 "min_precedent_hits": min_precedent_hits,
                 "exit_model": exit_model,
+                "tp_mode": tp_mode,
+                "tp_sr_fraction": tp_sr_fraction,
+                "tp_atr_multiple": tp_atr_multiple,
             }
             dbg.set_params(
                 start=str(start_date),
@@ -246,6 +296,9 @@ def page() -> None:
                 precedent_window=precedent_window,
                 min_precedent_hits=min_precedent_hits,
                 exit_model=exit_model,
+                tp_mode=tp_mode,
+                tp_sr_fraction=tp_sr_fraction,
+                tp_atr_multiple=tp_atr_multiple,
             )
 
             prior_needed_bdays = int(
@@ -758,6 +811,9 @@ def page() -> None:
             "tp_frac_used",
             "tp_pct_used",
             "tp_pct_used_2dp",
+            "tp_mode",
+            "tp_sr_fraction",
+            "tp_atr_multiple",
             "tp_halfway_pct",
             "precedent_hits",
             "precedent_ok",
@@ -802,7 +858,7 @@ def page() -> None:
             "close_up_pct_2dp", "gap_open_pct_2dp", "tp_pct_used_2dp", "mae_pct_2dp", "mfe_pct_2dp",
         ]
         ratio_cols = [
-            "sr_ratio", "vol_multiple",
+            "sr_ratio", "vol_multiple", "tp_sr_fraction", "tp_atr_multiple",
             # also round display variants if present
             "sr_ratio_2dp", "vol_multiple_2dp",
         ]

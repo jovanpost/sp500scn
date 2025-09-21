@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import datetime as dt
-from typing import TypedDict, Tuple, List, Dict, Any, Callable
+from typing import TypedDict, Tuple, List, Dict, Any, Callable, Literal
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,9 @@ class ScanParams(TypedDict, total=False):
     precedent_window: int
     min_precedent_hits: int
     exit_model: str
+    tp_mode: Literal["sr_fraction", "atr_multiple"]
+    tp_sr_fraction: float
+    tp_atr_multiple: float
 
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
@@ -143,12 +146,10 @@ def _compute_metrics(
 
     entry = float(df["open"].iloc[i])
     sr_ratio = np.nan
-    tp_halfway_pct = np.nan
     if support > 0 and resistance > entry:
         up = resistance - entry
         down = entry - support
         sr_ratio = (up / down) if down > 0 else np.nan
-        tp_halfway_pct = (entry + up / 2) / entry - 1.0
 
     return {
         "close_up_pct": float(close_up_pct) if not np.isnan(close_up_pct) else np.nan,
@@ -163,7 +164,6 @@ def _compute_metrics(
         "sr_resistance": resistance,
         "sr_window_len": int(sr_slice.shape[0]) if not sr_slice.empty else 0,
         "sr_ratio": sr_ratio,
-        "tp_halfway_pct": float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else np.nan,
         "entry_open": entry,
         "atr_method": atr_method,
     }
@@ -199,6 +199,18 @@ def scan_day(
     prec_window = int(params.get("precedent_window", 21))
     min_prec_hits = int(params.get("min_precedent_hits", 1))
     exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only").strip().lower()
+    tp_mode = str(params.get("tp_mode", "sr_fraction") or "sr_fraction").strip().lower()
+    if tp_mode not in ("sr_fraction", "atr_multiple"):
+        tp_mode = "sr_fraction"
+
+    def _coerce_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    tp_sr_fraction = _coerce_float(params.get("tp_sr_fraction", 0.50), 0.50)
+    tp_atr_multiple = _coerce_float(params.get("tp_atr_multiple", 0.50), 0.50)
 
     cand_rows: List[Dict[str, Any]] = []
     out_rows: List[Dict[str, Any]] = []
@@ -274,14 +286,97 @@ def scan_day(
             row["sr_resistance"] = m.get("sr_resistance")
             row["sr_ok"] = int(sr_ok)
 
-            # Determine target fraction from row
-            tp_frac = tp_fraction_from_row(
-                row.get("entry_open"),
-                row.get("tp_price_abs_target"),
-                row.get("tp_halfway_pct"),
-                row.get("tp_price_pct_target"),
+            sr_fraction_effective = float("nan")
+            if not np.isnan(tp_sr_fraction) and tp_sr_fraction > 0:
+                sr_fraction_effective = min(float(tp_sr_fraction), 1.0)
+            atr_multiple_effective = float("nan")
+            if not np.isnan(tp_atr_multiple) and tp_atr_multiple > 0:
+                atr_multiple_effective = float(tp_atr_multiple)
+
+            row["tp_mode"] = tp_mode
+            row["tp_sr_fraction"] = (
+                float(sr_fraction_effective)
+                if tp_mode == "sr_fraction" and not np.isnan(sr_fraction_effective)
+                else float("nan")
             )
-            tp_frac_valid = (tp_frac is not None and not pd.isna(tp_frac) and float(tp_frac) > 0)
+            row["tp_atr_multiple"] = (
+                float(atr_multiple_effective)
+                if tp_mode == "atr_multiple" and not np.isnan(atr_multiple_effective)
+                else float("nan")
+            )
+
+            entry_open_val = row.get("entry_open")
+            resistance_val = row.get("resistance")
+            atr_val_dm1 = row.get("atr21")
+
+            tp_price_pct_target = float("nan")
+            tp_price_abs_target = float("nan")
+            tp_halfway_pct = float("nan")
+
+            entry_valid = (
+                entry_open_val is not None
+                and not pd.isna(entry_open_val)
+                and float(entry_open_val) > 0
+            )
+
+            if entry_valid:
+                entry_float = float(entry_open_val)
+                if tp_mode == "sr_fraction":
+                    if not np.isnan(sr_fraction_effective) and sr_fraction_effective > 0:
+                        try:
+                            resistance_float = float(resistance_val)
+                        except (TypeError, ValueError):
+                            resistance_float = float("nan")
+                        if not np.isnan(resistance_float) and resistance_float > entry_float:
+                            up = resistance_float - entry_float
+                            tp_candidate = (sr_fraction_effective * up) / entry_float
+                            if tp_candidate > 0:
+                                tp_halfway_pct = tp_candidate
+                                tp_price_pct_target = tp_candidate * 100.0
+                                tp_price_abs_target = entry_float * (1.0 + tp_candidate)
+                else:  # ATR multiple mode
+                    if not np.isnan(atr_multiple_effective) and atr_multiple_effective > 0:
+                        try:
+                            atr_float = float(atr_val_dm1)
+                        except (TypeError, ValueError):
+                            atr_float = float("nan")
+                        if not np.isnan(atr_float):
+                            tp_candidate = (atr_multiple_effective * atr_float) / entry_float
+                            if tp_candidate > 0:
+                                tp_price_pct_target = tp_candidate * 100.0
+                                tp_price_abs_target = entry_float * (1.0 + tp_candidate)
+
+            row["tp_halfway_pct"] = (
+                float(tp_halfway_pct) if not np.isnan(tp_halfway_pct) else float("nan")
+            )
+            row["tp_price_pct_target"] = (
+                float(tp_price_pct_target)
+                if not np.isnan(tp_price_pct_target)
+                else float("nan")
+            )
+            row["tp_price_abs_target"] = (
+                float(tp_price_abs_target)
+                if not np.isnan(tp_price_abs_target)
+                else float("nan")
+            )
+
+            tp_frac = float("nan")
+            tp_pct_val = row.get("tp_price_pct_target")
+            if tp_pct_val is not None and not pd.isna(tp_pct_val):
+                tp_frac = float(tp_pct_val) / 100.0
+            else:
+                tp_frac = tp_fraction_from_row(
+                    row.get("entry_open"),
+                    row.get("tp_price_abs_target"),
+                    row.get("tp_halfway_pct"),
+                    row.get("tp_price_pct_target"),
+                )
+
+            tp_frac_valid = (
+                tp_frac is not None
+                and not pd.isna(tp_frac)
+                and float(tp_frac) > 0
+            )
             row["tp_frac_used"] = float(tp_frac) if tp_frac_valid else float("nan")
             row["tp_pct_used"] = float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
 
@@ -352,7 +447,14 @@ def scan_day(
 
             # ---- Persist ATR numbers for transparency ----
             atr_value_dm1 = float(m.get("atr21")) if m.get("atr21") is not None else float("nan")
-            tp_required_dollars = float(row["entry_open"]) * float(tp_frac) if tp_frac_valid else float("nan")
+            entry_for_target = row.get("entry_open")
+            tp_required_dollars = (
+                float(entry_for_target) * float(tp_frac)
+                if tp_frac_valid
+                and entry_for_target is not None
+                and not pd.isna(entry_for_target)
+                else float("nan")
+            )
             atr_budget_dollars = atr_value_dm1 * int(atr_window) if not pd.isna(atr_value_dm1) else float("nan")
 
             row["atr_window"] = int(atr_window)
@@ -378,7 +480,10 @@ def scan_day(
                 if exit_model == "pct_tp_only":
                     if not tp_frac_valid:
                         continue
-                    entry_open = float(row["entry_open"])
+                    entry_open_val = row.get("entry_open")
+                    if entry_open_val is None or pd.isna(entry_open_val):
+                        continue
+                    entry_open = float(entry_open_val)
                     price_cols = [c for c in ("open", "high", "low", "close") if c in df_idx.columns]
                     if not price_cols:
                         continue
@@ -400,12 +505,17 @@ def scan_day(
                     }
                     out_rows.append(out_row)
                 else:
-                    tp_price = row["entry_open"] * (1 + row["tp_halfway_pct"])
-                    stop_price = row["support"]
+                    if not tp_frac_valid:
+                        continue
+                    entry_val = row.get("entry_open")
+                    if entry_val is None or pd.isna(entry_val):
+                        continue
+                    tp_price = float(entry_val) * (1.0 + float(tp_frac))
+                    stop_price = row.get("support")
                     out = replay_trade(
                         df[["date", "open", "high", "low", "close"]],
                         pd.to_datetime(D),
-                        row["entry_open"],
+                        float(entry_val),
                         tp_price,
                         stop_price,
                         horizon_days=horizon,

@@ -120,6 +120,7 @@ def atr_feasible(
     """
     if df is None or df.empty or pd.isna(required_pct):
         return False
+    df = df.reset_index(drop=True)
     if asof_idx + 1 >= len(df):
         return False
     entry_price = float(df["open"].iloc[asof_idx + 1])

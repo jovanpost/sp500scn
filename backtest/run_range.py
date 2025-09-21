@@ -110,7 +110,7 @@ def run_range(
             "atr21_pct",
             "ret21_pct",
         ]
-        ratio_cols = ["sr_ratio", "vol_multiple"]
+        ratio_cols = ["sr_ratio", "vol_multiple", "tp_sr_fraction", "tp_atr_multiple"]
 
         for c in price_cols:
             if c in trades_df.columns:
@@ -174,6 +174,9 @@ def run_range(
         "tp_frac_used",
         "tp_pct_used",
         "tp_pct_used_2dp",
+        "tp_mode",
+        "tp_sr_fraction",
+        "tp_atr_multiple",
         "tp_halfway_pct",
         "precedent_hits",
         "precedent_ok",
