@@ -1,3 +1,5 @@
+import copy
+import inspect
 import io
 import datetime as dt
 from typing import Dict
@@ -8,7 +10,10 @@ import streamlit as st
 
 from data_lake.storage import ConfigurationError, Storage, load_prices_cached
 
+import backtest.run_range as run_range_module
+import engine.options_spread as options_spread_module
 import engine.signal_scan as sigscan
+from backtest.run_range import compute_spread_summary
 from engine.signal_scan import ScanParams, members_on_date
 from ui.components.progress import status_block
 from ui.components.debug import debug_panel, _get_dbg
@@ -21,10 +26,126 @@ from ui.price_filter import (
     handle_filter_exception,
 )
 
+TRADE_TABLE_BASE_COLUMNS = [
+    "date",
+    "ticker",
+    "entry_open",
+    "entry_open_2dp",
+    "tp_price",
+    "tp_price_2dp",
+    "tp_price_abs_target",
+    "tp_price_abs_target_2dp",
+    "tp_price_pct_target",
+    "exit_model",
+    "exit_date",
+    "tp_touch_date",
+    "hit",
+    "exit_reason",
+    "exit_price",
+    "exit_price_2dp",
+    "exit_bar_high",
+    "exit_bar_high_2dp",
+    "exit_bar_low",
+    "exit_bar_low_2dp",
+    "days_to_exit",
+    "mae_pct",
+    "mae_pct_2dp",
+    "mae_date",
+    "mfe_pct",
+    "mfe_pct_2dp",
+    "mfe_date",
+    "close_up_pct",
+    "close_up_pct_2dp",
+    "vol_multiple",
+    "vol_multiple_2dp",
+    "gap_open_pct",
+    "gap_open_pct_2dp",
+    "support",
+    "support_2dp",
+    "resistance",
+    "resistance_2dp",
+    "sr_support",
+    "sr_support_2dp",
+    "sr_resistance",
+    "sr_resistance_2dp",
+    "sr_ratio",
+    "sr_ratio_2dp",
+    "sr_window_used",
+    "sr_ok",
+    "tp_frac_used",
+    "tp_pct_used",
+    "tp_pct_used_2dp",
+    "tp_mode",
+    "tp_sr_fraction",
+    "tp_atr_multiple",
+    "tp_halfway_pct",
+    "precedent_hits",
+    "precedent_ok",
+    "precedent_hit_start_dates",
+    "precedent_details_hits",
+    "precedent_max_hit_date",
+    "atr_ok",
+    "atr_window",
+    "atr_method",
+    "atr_value_dm1",
+    "atr_value_dm1_2dp",
+    "atr_dminus1",
+    "atr_dminus1_2dp",
+    "atr_budget_dollars",
+    "atr_budget_dollars_2dp",
+    "tp_required_dollars",
+    "tp_required_dollars_2dp",
+    "reasons",
+]
+
+OPTION_SPREAD_COLUMNS = [
+    "opt_structure",
+    "K1",
+    "K2",
+    "width_frac",
+    "width_pct",
+    "T_entry_days",
+    "sigma_entry",
+    "debit_entry",
+    "contracts",
+    "cash_outlay",
+    "fees_entry",
+    "S_exit",
+    "T_exit_days",
+    "sigma_exit",
+    "debit_exit",
+    "revenue",
+    "fees_exit",
+    "pnl_dollars",
+    "win",
+]
+
+ORDERED_COLUMNS: list[str] = list(
+    dict.fromkeys(TRADE_TABLE_BASE_COLUMNS + OPTION_SPREAD_COLUMNS)
+)
+
 
 def page() -> None:
     st.header("📅 Backtest (range)")
     storage = Storage()
+
+    runtime_info = {
+        "backtest.run_range": inspect.getfile(run_range_module),
+        "engine.signal_scan": inspect.getfile(sigscan),
+        "engine.options_spread": inspect.getfile(options_spread_module),
+    }
+
+    with st.expander("Runtime (imports)", expanded=False):
+        st.json(runtime_info)
+
+    if any("site-packages" in path for path in runtime_info.values()):
+        st.info(
+            "App is importing modules from site-packages. To ensure repo code is used, "
+            "uninstall the packaged build (`pip uninstall <pkg>`) and reinstall in editable mode "
+            "with `pip install -e .`."
+        )
+
+    st.session_state.setdefault("bt_missing_option_cols", [])
 
     diag_fn = getattr(storage, "diagnostics", None)
     if callable(diag_fn):
@@ -248,36 +369,153 @@ def page() -> None:
                     )
                 )
                 tp_sr_fraction = float(st.session_state.get("bt_tp_sr_fraction", 0.50))
+
+        with st.expander("Options spread (vertical debit)", expanded=False):
+            opt_enabled = st.checkbox(
+                "Enable options simulation",
+                value=True,
+                key="bt_opts_enabled",
+            )
+            opt_cols = st.columns(3)
+            with opt_cols[0]:
+                opt_budget = st.number_input(
+                    "Budget per trade ($)",
+                    min_value=50.0,
+                    value=1000.0,
+                    step=50.0,
+                    key="bt_opts_budget",
+                )
+                opt_expiry_days = st.number_input(
+                    "Expiry (days)",
+                    min_value=5,
+                    value=30,
+                    step=1,
+                    key="bt_opts_expiry",
+                )
+                opt_width_pct = st.number_input(
+                    "Spread width (% of spot)",
+                    min_value=1.0,
+                    value=5.0,
+                    step=0.5,
+                    key="bt_opts_width_pct",
+                )
+            with opt_cols[1]:
+                opt_vol_lookback_days = st.number_input(
+                    "Vol lookback (days)",
+                    min_value=5,
+                    value=21,
+                    step=1,
+                    key="bt_opts_vol_lookback",
+                )
+                opt_vol_method = st.selectbox(
+                    "Vol method",
+                    options=("parkinson", "close", "atr"),
+                    index=0,
+                    key="bt_opts_vol_method",
+                )
+                opt_vol_multiplier = st.number_input(
+                    "Vol multiplier",
+                    min_value=0.1,
+                    value=1.0,
+                    step=0.1,
+                    key="bt_opts_vol_multiplier",
+                )
+            with opt_cols[2]:
+                opt_use_exit_vol_recalc = st.checkbox(
+                    "Recalc vol at exit",
+                    value=False,
+                    key="bt_opts_use_exit_recalc",
+                )
+                opt_risk_free_rate = st.number_input(
+                    "Risk-free rate",
+                    value=0.05,
+                    step=0.01,
+                    format="%.4f",
+                    key="bt_opts_rfr",
+                )
+                opt_dividend_yield = st.number_input(
+                    "Dividend yield",
+                    value=0.0,
+                    step=0.01,
+                    format="%.4f",
+                    key="bt_opts_dividend",
+                )
+            opt_fees_per_contract = st.number_input(
+                "Fees per contract ($)",
+                min_value=0.0,
+                value=0.65,
+                step=0.05,
+                key="bt_opts_fees",
+            )
+            opt_max_otm_shift_pct = st.number_input(
+                "Max OTM shift (%)",
+                min_value=0.0,
+                value=20.0,
+                step=1.0,
+                key="bt_opts_max_otm",
+            )
+            opt_strike_tick = st.number_input(
+                "Strike tick",
+                min_value=0.01,
+                value=1.0,
+                step=0.01,
+                key="bt_opts_strike_tick",
+            )
+
+        options_spread = {
+            "enabled": bool(opt_enabled),
+            "budget_per_trade": float(opt_budget),
+            "expiry_days": int(opt_expiry_days),
+            "width_frac": float(opt_width_pct) / 100.0,
+            "width_pct": float(opt_width_pct),
+            "vol_lookback_days": int(opt_vol_lookback_days),
+            "vol_method": opt_vol_method,
+            "vol_multiplier": float(opt_vol_multiplier),
+            "use_exit_vol_recalc": bool(opt_use_exit_vol_recalc),
+            "risk_free_rate": float(opt_risk_free_rate),
+            "dividend_yield": float(opt_dividend_yield),
+            "max_otm_shift_pct": float(opt_max_otm_shift_pct),
+            "fees_per_contract": float(opt_fees_per_contract),
+            "strike_tick": float(opt_strike_tick),
+        }
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
         )
         run = form_submit_wrapper("Run backtest")
 
+    form_params: ScanParams = {
+        "min_close_up_pct": min_close_up_pct,
+        "min_vol_multiple": min_vol_multiple,
+        "min_gap_open_pct": min_gap_open_pct,
+        "atr_window": atr_window,
+        "atr_method": atr_method,
+        "lookback_days": vol_lookback,
+        "horizon_days": horizon,
+        "sr_min_ratio": sr_min_ratio,
+        "sr_lookback": sr_lookback,
+        "use_precedent": use_precedent,
+        "use_atr_feasible": use_atr_feasible,
+        "precedent_lookback": precedent_lookback,
+        "precedent_window": precedent_window,
+        "min_precedent_hits": min_precedent_hits,
+        "exit_model": exit_model,
+        "tp_mode": tp_mode,
+        "tp_sr_fraction": tp_sr_fraction,
+        "tp_atr_multiple": tp_atr_multiple,
+        "options_spread": options_spread,
+    }
+
+    st.session_state["bt_form_params"] = copy.deepcopy(form_params)
+    st.session_state["bt_options_spread"] = options_spread
+
     if run:
         st.session_state["bt_running"] = True
         status, prog, log = status_block("Backtest running…", key_prefix="bt")
 
+        st.session_state["bt_missing_option_cols"] = []
+
         try:
-            params: ScanParams = {
-                "min_close_up_pct": min_close_up_pct,
-                "min_vol_multiple": min_vol_multiple,
-                "min_gap_open_pct": min_gap_open_pct,
-                "atr_window": atr_window,
-                "atr_method": atr_method,
-                "lookback_days": vol_lookback,
-                "horizon_days": horizon,
-                "sr_min_ratio": sr_min_ratio,
-                "sr_lookback": sr_lookback,
-                "use_precedent": use_precedent,
-                "use_atr_feasible": use_atr_feasible,
-                "precedent_lookback": precedent_lookback,
-                "precedent_window": precedent_window,
-                "min_precedent_hits": min_precedent_hits,
-                "exit_model": exit_model,
-                "tp_mode": tp_mode,
-                "tp_sr_fraction": tp_sr_fraction,
-                "tp_atr_multiple": tp_atr_multiple,
-            }
+            run_params: ScanParams = copy.deepcopy(form_params)
             dbg.set_params(
                 start=str(start_date),
                 end=str(end_date),
@@ -299,6 +537,9 @@ def page() -> None:
                 tp_mode=tp_mode,
                 tp_sr_fraction=tp_sr_fraction,
                 tp_atr_multiple=tp_atr_multiple,
+                options_spread_enabled=bool(options_spread.get("enabled")),
+                options_budget=float(options_spread.get("budget_per_trade", 0.0)),
+                options_width_pct=float(options_spread.get("width_pct", 0.0)),
             )
 
             prior_needed_bdays = int(
@@ -691,7 +932,7 @@ def page() -> None:
                             continue
 
                         cands, out, _fails, _stats = sigscan.scan_day(
-                            storage, current_day, params
+                            storage, current_day, run_params
                         )
                         cand_count = int(len(cands))
                         if cand_count:
@@ -710,6 +951,14 @@ def page() -> None:
                     trades_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
                     trades_df = trades_df.reset_index(drop=True)
 
+                    if trades_df.empty:
+                        missing_option_cols = []
+                    else:
+                        missing_option_cols = [
+                            c for c in OPTION_SPREAD_COLUMNS if c not in trades_df.columns
+                        ]
+                    trades_df = trades_df.reindex(columns=ORDERED_COLUMNS)
+
                     hits = int(trades_df["hit"].sum()) if not trades_df.empty else 0
                     summary = {
                         "total_days": int(total_days),
@@ -722,14 +971,18 @@ def page() -> None:
                         "avg_MFE_pct": float(trades_df["mfe_pct"].mean()) if not trades_df.empty else float("nan"),
                     }
 
+                    summary.update(compute_spread_summary(trades_df))
+
                 dbg.event(
                     "bt_stats",
                     days=len(date_list),
                     total_trades=int(summary.get("trades", 0)),
                 )
 
+                st.session_state["bt_missing_option_cols"] = missing_option_cols
                 st.session_state["bt_trades"] = trades_df
                 st.session_state["bt_summary"] = summary
+                st.session_state["bt_last_run_params"] = copy.deepcopy(run_params)
 
                 if save_outcomes and not trades_df.empty:
                     run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -757,110 +1010,149 @@ def page() -> None:
     summary = st.session_state.get("bt_summary")
     save_path = st.session_state.get("bt_save_path")
 
+    options_state = st.session_state.get("bt_options_spread", options_spread)
+    missing_option_cols_state = st.session_state.get("bt_missing_option_cols", [])
+
+    if trades_df is not None:
+        if missing_option_cols_state:
+            err_payload = {
+                "message": "Options columns missing from trades_df (UI/export would be incomplete).",
+                "missing_columns": missing_option_cols_state,
+            }
+            err_payload.update(runtime_info)
+            st.error(err_payload)
+        else:
+            contracts_series = pd.to_numeric(trades_df.get("contracts"), errors="coerce").fillna(0)
+            executed_contracts = int((contracts_series > 0).sum())
+            if executed_contracts == 0 and options_state.get("enabled", True):
+                warn_container = st.container()
+                warn_container.warning(
+                    "Options spreads were enabled but no contracts > 0 were executable. "
+                    "Consider adjusting budget, fees, or spread width and rerun."
+                )
+                warn_container.write(
+                    {
+                        "enabled": options_state.get("enabled"),
+                        "budget_per_trade": options_state.get("budget_per_trade"),
+                        "fees_per_contract": options_state.get("fees_per_contract"),
+                        "width_pct": options_state.get("width_pct"),
+                        "contracts_gt_zero": executed_contracts,
+                    }
+                )
+                debit_series = pd.to_numeric(
+                    trades_df.get("debit_entry"), errors="coerce"
+                ).dropna()
+                if not debit_series.empty:
+                    unique_vals = int(debit_series.nunique())
+                    if unique_vals > 1:
+                        bin_count = min(10, unique_vals)
+                        bucketed = pd.cut(debit_series, bins=bin_count)
+                        counts = bucketed.value_counts().sort_index()
+                    else:
+                        counts = debit_series.value_counts().sort_index()
+                    chart_df = counts.to_frame(name="count")
+                    chart_df.index = chart_df.index.astype(str)
+                    warn_container.bar_chart(chart_df, use_container_width=True)
+                else:
+                    warn_container.caption("No debit_entry data available for histogram.")
+
     if summary is not None:
         summary_df = pd.DataFrame([summary])
         show_df("Summary", summary_df, "bt_summary")
 
-    if trades_df is not None:
-        cols = [
-            "date",
-            "ticker",
-            "entry_open",
-            "entry_open_2dp",
-            "tp_price",
-            "tp_price_2dp",
-            "tp_price_abs_target",
-            "tp_price_abs_target_2dp",
-            "tp_price_pct_target",
-            "exit_model",
-            "exit_date",
-            "tp_touch_date",
-            "hit",
-            "exit_reason",
-            "exit_price",
-            "exit_price_2dp",
-            "exit_bar_high",
-            "exit_bar_high_2dp",
-            "exit_bar_low",
-            "exit_bar_low_2dp",
-            "days_to_exit",
-            "mae_pct",
-            "mae_pct_2dp",
-            "mae_date",
-            "mfe_pct",
-            "mfe_pct_2dp",
-            "mfe_date",
-            "close_up_pct",
-            "close_up_pct_2dp",
-            "vol_multiple",
-            "vol_multiple_2dp",
-            "gap_open_pct",
-            "gap_open_pct_2dp",
-            "support",
-            "support_2dp",
-            "resistance",
-            "resistance_2dp",
-            "sr_support",
-            "sr_support_2dp",
-            "sr_resistance",
-            "sr_resistance_2dp",
-            "sr_ratio",
-            "sr_ratio_2dp",
-            "sr_window_used",
-            "sr_ok",
-            "tp_frac_used",
-            "tp_pct_used",
-            "tp_pct_used_2dp",
-            "tp_mode",
-            "tp_sr_fraction",
-            "tp_atr_multiple",
-            "tp_halfway_pct",
-            "precedent_hits",
-            "precedent_ok",
-            "precedent_hit_start_dates",
-            "precedent_details_hits",
-            "precedent_max_hit_date",
-            "atr_ok",
-            "atr_window",
-            "atr_method",
-            "atr_value_dm1",
-            "atr_value_dm1_2dp",
-            "atr_dminus1",
-            "atr_dminus1_2dp",
-            "atr_budget_dollars",
-            "atr_budget_dollars_2dp",
-            "tp_required_dollars",
-            "tp_required_dollars_2dp",
-            "reasons",
-        ]
+        with st.expander("Options Dollar Summary", expanded=False):
+            summary_fields = [
+                "trades_executed_spread",
+                "invested_dollars",
+                "gross_revenue_dollars",
+                "end_value_dollars",
+                "net_pnl_spread",
+                "avg_cost_per_trade",
+                "dollar_summary_str",
+            ]
 
-        # Filter to present columns and create a working copy for UI/CSV (minimal change)
-        cols_present = [c for c in cols if c in trades_df.columns]
+            def _fmt_summary_value(value: object) -> object:
+                if isinstance(value, (int, float)) and not pd.isna(value):
+                    return f"{value:,.2f}"
+                return value
+
+            st.json({field: _fmt_summary_value(summary.get(field)) for field in summary_fields})
+
+    if trades_df is not None:
+        cols_present = [c for c in ORDERED_COLUMNS if c in trades_df.columns]
         df_show = trades_df[cols_present].copy()
 
         # --- Minimal 2-dp rounding for UI table and its downloadable CSV ---
         price_cols = [
-            "entry_open", "tp_price", "tp_price_abs_target", "exit_price",
-            "exit_bar_high", "exit_bar_low",
-            "support", "resistance", "sr_support", "sr_resistance",
-            "atr_value_dm1", "atr_dminus1", "atr_budget_dollars", "tp_required_dollars",
+            "entry_open",
+            "tp_price",
+            "tp_price_abs_target",
+            "exit_price",
+            "exit_bar_high",
+            "exit_bar_low",
+            "support",
+            "resistance",
+            "sr_support",
+            "sr_resistance",
+            "atr_value_dm1",
+            "atr_dminus1",
+            "atr_budget_dollars",
+            "tp_required_dollars",
+            "K1",
+            "K2",
+            "debit_entry",
+            "cash_outlay",
+            "fees_entry",
+            "S_exit",
+            "debit_exit",
+            "revenue",
+            "fees_exit",
+            "pnl_dollars",
             # also round any *_2dp columns if they exist in the view
-            "entry_open_2dp", "tp_price_2dp", "tp_price_abs_target_2dp", "exit_price_2dp",
-            "exit_bar_high_2dp", "exit_bar_low_2dp",
-            "support_2dp", "resistance_2dp", "sr_support_2dp", "sr_resistance_2dp",
-            "atr_value_dm1_2dp", "atr_dminus1_2dp", "atr_budget_dollars_2dp", "tp_required_dollars_2dp",
+            "entry_open_2dp",
+            "tp_price_2dp",
+            "tp_price_abs_target_2dp",
+            "exit_price_2dp",
+            "exit_bar_high_2dp",
+            "exit_bar_low_2dp",
+            "support_2dp",
+            "resistance_2dp",
+            "sr_support_2dp",
+            "sr_resistance_2dp",
+            "atr_value_dm1_2dp",
+            "atr_dminus1_2dp",
+            "atr_budget_dollars_2dp",
+            "tp_required_dollars_2dp",
         ]
         pct_cols = [
-            "close_up_pct", "gap_open_pct", "tp_pct_used", "mae_pct", "mfe_pct", "tp_price_pct_target",
-            # keep if present from metrics:
-            "atr21_pct", "ret21_pct",
+            "close_up_pct",
+            "gap_open_pct",
+            "tp_pct_used",
+            "mae_pct",
+            "mfe_pct",
+            "tp_price_pct_target",
+            "atr21_pct",
+            "ret21_pct",
+            "width_pct",
             # also round any *_2dp columns if they exist in the view
-            "close_up_pct_2dp", "gap_open_pct_2dp", "tp_pct_used_2dp", "mae_pct_2dp", "mfe_pct_2dp",
+            "close_up_pct_2dp",
+            "gap_open_pct_2dp",
+            "tp_pct_used_2dp",
+            "mae_pct_2dp",
+            "mfe_pct_2dp",
+            "width_pct_2dp",
         ]
         ratio_cols = [
-            "sr_ratio", "vol_multiple", "tp_sr_fraction", "tp_atr_multiple",
+            "sr_ratio",
+            "vol_multiple",
+            "tp_sr_fraction",
+            "tp_atr_multiple",
+            "width_frac",
+            "sigma_entry",
+            "sigma_exit",
             # also round display variants if present
-            "sr_ratio_2dp", "vol_multiple_2dp",
+            "sr_ratio_2dp",
+            "vol_multiple_2dp",
         ]
 
         def _round2(frame: pd.DataFrame, col_list: list[str]) -> None:
@@ -877,6 +1169,48 @@ def page() -> None:
 
     if save_path:
         st.success(f"Saved to lake at {save_path}")
+
+    with st.expander("Dev tools", expanded=False):
+        st.caption("Run a tiny backtest to verify options columns and executions.")
+        if st.button("Run tiny sanity backtest", key="bt_dev_sanity"):
+            base_params = st.session_state.get("bt_last_run_params") or st.session_state.get(
+                "bt_form_params", form_params
+            )
+            if base_params is None:
+                base_params = {}
+            sanity_params = copy.deepcopy(base_params)
+            sanity_params["options_spread"] = copy.deepcopy(options_state)
+            try:
+                tiny_trades, tiny_summary = run_range_module.run_range(
+                    storage,
+                    "2020-03-20",
+                    "2020-03-25",
+                    sanity_params,
+                )
+            except Exception as exc:
+                st.error(f"Sanity backtest failed: {exc}")
+            else:
+                missing_cols = [
+                    c for c in OPTION_SPREAD_COLUMNS if c not in tiny_trades.columns
+                ]
+                if not tiny_trades.empty and "contracts" in tiny_trades.columns:
+                    contracts_series = pd.to_numeric(
+                        tiny_trades["contracts"], errors="coerce"
+                    ).fillna(0)
+                    executed_cnt = int((contracts_series > 0).sum())
+                else:
+                    executed_cnt = 0
+                st.write(
+                    {
+                        "rows": int(len(tiny_trades)),
+                        "options_columns_present": not missing_cols,
+                        "missing_columns": missing_cols,
+                        "contracts_gt_zero": executed_cnt,
+                        "trades_executed_spread": tiny_summary.get(
+                            "trades_executed_spread", 0
+                        ),
+                    }
+                )
 
     debug_panel("backtest")
 
