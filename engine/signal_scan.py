@@ -14,6 +14,7 @@ import streamlit as st
 from .features import atr as compute_atr
 from .replay import replay_trade, simulate_pct_target_only
 from .filters import atr_feasible
+from .options_spread import OptionsSpreadConfig, compute_vertical_spread_trade
 from .utils_precedent import compute_precedent_hit_details, tp_fraction_from_row
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class ScanParams(TypedDict, total=False):
     tp_mode: Literal["sr_fraction", "atr_multiple"]
     tp_sr_fraction: float
     tp_atr_multiple: float
+    options_spread: dict
 
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
@@ -202,6 +204,8 @@ def scan_day(
     tp_mode = str(params.get("tp_mode", "sr_fraction") or "sr_fraction").strip().lower()
     if tp_mode not in ("sr_fraction", "atr_multiple"):
         tp_mode = "sr_fraction"
+
+    options_cfg = OptionsSpreadConfig.from_params(params.get("options_spread"))
 
     def _coerce_float(value: Any, default: float) -> float:
         try:
@@ -503,6 +507,37 @@ def scan_day(
                         "tp_price": res.get("tp_price_abs_target"),
                         **res,
                     }
+
+                    atr_for_vol = row.get("atr_dminus1")
+                    if atr_for_vol is None:
+                        atr_for_vol = row.get("atr_value_dm1")
+
+                    entry_open_price = row.get("entry_open")
+                    exit_price_val = res.get("exit_price")
+                    tp_abs_target = out_row.get("tp_price_abs_target")
+                    direction = "up"
+                    if (
+                        entry_open_price is not None
+                        and not pd.isna(entry_open_price)
+                        and tp_abs_target is not None
+                        and not pd.isna(tp_abs_target)
+                        and float(tp_abs_target) < float(entry_open_price)
+                    ):
+                        direction = "down"
+
+                    options_row = compute_vertical_spread_trade(
+                        prices=df_idx,
+                        entry_ts=pd.Timestamp(D_ts),
+                        exit_ts=res.get("exit_date"),
+                        entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
+                        exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
+                        direction=direction,
+                        config=options_cfg,
+                        atr_value=atr_for_vol,
+                        exit_reason=res.get("exit_reason"),
+                    )
+
+                    out_row.update(options_row)
                     out_rows.append(out_row)
                 else:
                     if not tp_frac_valid:
@@ -521,6 +556,47 @@ def scan_day(
                         horizon_days=horizon,
                     )
                     out_row = {**row, "exit_model": exit_model, "tp_price": tp_price, **out}
+
+                    atr_for_vol = row.get("atr_dminus1")
+                    if atr_for_vol is None:
+                        atr_for_vol = row.get("atr_value_dm1")
+
+                    try:
+                        prices_for_options = (
+                            df[["date", "open", "high", "low", "close"]]
+                            .copy()
+                            .assign(date=lambda s: pd.to_datetime(s["date"]).dt.tz_localize(None))
+                            .set_index("date")
+                            .sort_index()
+                        )
+                    except Exception:
+                        prices_for_options = df_idx
+
+                    entry_open_price = row.get("entry_open")
+                    exit_price_val = out.get("exit_price")
+                    direction = "up"
+                    if (
+                        entry_open_price is not None
+                        and not pd.isna(entry_open_price)
+                        and tp_price is not None
+                        and not pd.isna(tp_price)
+                        and float(tp_price) < float(entry_open_price)
+                    ):
+                        direction = "down"
+
+                    options_row = compute_vertical_spread_trade(
+                        prices=prices_for_options[[c for c in ("open", "high", "low", "close") if c in prices_for_options.columns]],
+                        entry_ts=pd.Timestamp(D_ts),
+                        exit_ts=out.get("exit_date"),
+                        entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
+                        exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
+                        direction=direction,
+                        config=options_cfg,
+                        atr_value=atr_for_vol,
+                        exit_reason=out.get("exit_reason"),
+                    )
+
+                    out_row.update(options_row)
                     out_rows.append(out_row)
         except Exception as e:
             # Hard-guard: skip any pathological ticker instead of aborting whole run

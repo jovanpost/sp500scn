@@ -136,6 +136,65 @@ def test_scan_day_sr_fraction_modes(monkeypatch):
     assert out_row_quarter["tp_price_abs_target"] == pytest.approx(entry * (1.0 + expected_quarter))
 
 
+def test_scan_day_sr_branch_includes_options(monkeypatch):
+    dates = pd.bdate_range("2021-02-01", periods=40)
+    df_prices = pd.DataFrame(
+        {
+            "date": dates,
+            "open": np.full(len(dates), 100.0),
+            "high": np.full(len(dates), 105.0),
+            "low": np.full(len(dates), 95.0),
+            "close": np.full(len(dates), 100.0),
+            "volume": np.linspace(1_000_000, 1_200_000, len(dates)),
+        }
+    )
+
+    df_prices.loc[len(dates) - 3, "low"] = 90.0
+    df_prices.loc[len(dates) - 2, "high"] = 150.0
+    df_prices.loc[len(dates) - 2, "low"] = 92.0
+    df_prices.loc[len(dates) - 1, "open"] = 120.0
+    df_prices.loc[len(dates) - 1, "high"] = 150.0
+    df_prices.loc[len(dates) - 1, "low"] = 118.0
+    df_prices.loc[len(dates) - 1, "close"] = 140.0
+
+    _patch_io(monkeypatch, df_prices, ticker="SRX")
+    storage = DummyStorage()
+
+    params = {
+        "min_close_up_pct": 0.0,
+        "min_vol_multiple": 0.0,
+        "min_gap_open_pct": -10.0,
+        "atr_window": 5,
+        "atr_method": "wilder",
+        "lookback_days": 5,
+        "horizon_days": 5,
+        "sr_min_ratio": 0.5,
+        "sr_lookback": 5,
+        "use_precedent": False,
+        "use_atr_feasible": False,
+        "exit_model": "sr_atr",
+        "tp_mode": "sr_fraction",
+        "tp_sr_fraction": 0.5,
+        "options_spread": {
+            "enabled": True,
+            "budget_per_trade": 1000.0,
+            "fees_per_contract": 0.65,
+        },
+    }
+
+    D = dates[-1]
+    cand_df, out_df, fail_count, _ = sigscan.scan_day(storage, D, params)
+
+    assert fail_count == 0
+    assert len(out_df) == 1
+
+    row = out_df.iloc[0]
+    assert row.get("contracts", 0) >= 1
+    assert not pd.isna(row.get("cash_outlay"))
+    assert not pd.isna(row.get("debit_exit"))
+    assert not pd.isna(row.get("pnl_dollars"))
+
+
 def test_scan_day_atr_multiple_mode(monkeypatch):
     dates = pd.bdate_range("2021-06-01", periods=6)
     df_prices = pd.DataFrame(
