@@ -191,14 +191,14 @@ def _render_debug_panel(
         else:
             st.write("No events logged.")
 
-        with st.expander("meta / params / env / errors"):
-            st.write("meta")
+        tabs = st.tabs(["meta", "params", "env", "errors"])
+        with tabs[0]:
             st.json(meta)
-            st.write("params")
+        with tabs[1]:
             st.json(params)
-            st.write("env")
+        with tabs[2]:
             st.json(env)
-            st.write("errors")
+        with tabs[3]:
             st.json(debug.errors)
 
 
