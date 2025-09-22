@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import logging
 import math
+import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, Literal, TypedDict
 
@@ -223,7 +224,11 @@ def _sr_ratio_ok(entry_price: float, support: float, resistance: float, min_rati
     return ratio >= min_ratio
 
 
-def _passes_filters(row: pd.Series, params: StocksOnlyScanParams) -> bool:
+def _filter_rejection_reasons(
+    row: pd.Series, params: StocksOnlyScanParams
+) -> list[str]:
+    reasons: list[str] = []
+
     min_yup = float(params.get("min_yup_pct", 0.0) or 0.0)
     min_gap = float(params.get("min_gap_pct", 0.0) or 0.0)
     min_vol = float(params.get("min_volume_multiple", 1.0) or 0.0)
@@ -232,13 +237,26 @@ def _passes_filters(row: pd.Series, params: StocksOnlyScanParams) -> bool:
     gap = float(row.get("open_gap_pct", float("nan")))
     vol_mult = float(row.get("volume_multiple", float("nan")))
 
-    if not math.isfinite(yup) or yup < min_yup:
-        return False
-    if not math.isfinite(gap) or gap < min_gap:
-        return False
-    if not math.isfinite(vol_mult) or vol_mult < min_vol:
-        return False
-    return True
+    if not math.isfinite(yup):
+        reasons.append("yup_missing")
+    elif yup < min_yup:
+        reasons.append("yup_below_min")
+
+    if not math.isfinite(gap):
+        reasons.append("gap_missing")
+    elif gap < min_gap:
+        reasons.append("gap_below_min")
+
+    if not math.isfinite(vol_mult):
+        reasons.append("volume_missing")
+    elif vol_mult < min_vol:
+        reasons.append("volume_below_min")
+
+    return reasons
+
+
+def _passes_filters(row: pd.Series, params: StocksOnlyScanParams) -> bool:
+    return not _filter_rejection_reasons(row, params)
 
 
 def _simulate_exit(
@@ -279,6 +297,7 @@ def run_scan(
     prices_by_ticker: dict[str, pd.DataFrame] | None = None,
     membership: pd.DataFrame | None = None,
     progress: Callable[[int, int, str], None] | None = None,
+    debug: object | None = None,
 ) -> tuple[pd.DataFrame, ScanSummary]:
     start_ts = _normalize_timestamp(params.get("start"))
     end_ts = _normalize_timestamp(params.get("end"))
@@ -295,6 +314,14 @@ def run_scan(
     sl_mult = float(params.get("sl_atr_multiple", 1.0) or 1.0)
     use_sp_filter = bool(params.get("use_sp_filter", True))
 
+    def _dbg_call(method: str, *args, **kwargs):
+        if debug is None:
+            return None
+        fn = getattr(debug, method, None)
+        if callable(fn):
+            return fn(*args, **kwargs)
+        return None
+
     storage = storage or Storage()
     members = membership
     if members is None:
@@ -310,9 +337,17 @@ def run_scan(
     tickers_to_load: Iterable[str]
 
     if prices_by_ticker is not None:
-        tickers_to_load = prices_by_ticker.keys()
+        tickers_to_load = list(prices_by_ticker.keys())
         for t, frame in prices_by_ticker.items():
             price_map[str(t).upper()] = _prepare_panel(frame, params, ticker=str(t).upper())
+        rows_loaded = sum(len(df) for df in price_map.values()) if price_map else 0
+        _dbg_call(
+            "log_event",
+            "prices_loaded",
+            requested=len(tickers_to_load),
+            loaded=len(price_map),
+            rows=rows_loaded,
+        )
     else:
         members_for_range = members.copy() if members is not None else pd.DataFrame()
         if not members_for_range.empty:
@@ -329,6 +364,20 @@ def run_scan(
             tickers_to_load = sorted(filtered["ticker"].astype(str).str.upper().unique())
         else:
             tickers_to_load = []
+
+        requested_unique = (
+            len(sorted(members_for_range["ticker"].astype(str).str.upper().unique()))
+            if not members_for_range.empty
+            else 0
+        )
+        available_count = len(list(tickers_to_load))
+        _dbg_call(
+            "log_event",
+            "ticker_filter",
+            requested=requested_unique,
+            available=available_count,
+            missing=max(0, requested_unique - available_count),
+        )
 
         if not tickers_to_load:
             empty = pd.DataFrame(
@@ -367,6 +416,13 @@ def run_scan(
             start=str(fetch_start.date()),
             end=str(fetch_end.date()),
         )
+        _dbg_call(
+            "log_event",
+            "preload_prices:start",
+            tickers=len(list(tickers_to_load)),
+            start=str(fetch_start.date()),
+            end=str(fetch_end.date()),
+        )
         prices_df = load_prices_cached(
             storage,
             cache_salt=cache_salt,
@@ -375,6 +431,12 @@ def run_scan(
             end=fetch_end,
         )
         _log_event(
+            "preload_prices:done",
+            rows=int(len(prices_df)),
+            tickers=len(list(tickers_to_load)),
+        )
+        _dbg_call(
+            "log_event",
             "preload_prices:done",
             rows=int(len(prices_df)),
             tickers=len(list(tickers_to_load)),
@@ -390,11 +452,36 @@ def run_scan(
                     requested_start=str(start_ts.date()),
                     requested_end=str(end_ts.date()),
                 )
+                _dbg_call(
+                    "log_event",
+                    "coverage",
+                    available_start=str(pd.Timestamp(available_start).date()),
+                    available_end=str(pd.Timestamp(available_end).date()),
+                    requested_start=str(start_ts.date()),
+                    requested_end=str(end_ts.date()),
+                )
         for ticker, frame in prices_df.groupby("Ticker"):
             price_map[str(ticker).upper()] = _prepare_panel(frame, params, ticker=str(ticker).upper())
 
+        _dbg_call(
+            "log_event",
+            "prices_loaded",
+            requested=len(list(tickers_to_load)),
+            loaded=len(price_map),
+            rows=int(len(prices_df)),
+        )
+
     tickers_sorted = sorted(price_map.keys())
+    _dbg_call("set_tickers", tickers_sorted)
     _log_event(
+        "scan:start",
+        start=str(start_ts.date()),
+        end=str(end_ts.date()),
+        horizon=horizon,
+        tickers=len(tickers_sorted),
+    )
+    _dbg_call(
+        "log_event",
         "scan:start",
         start=str(start_ts.date()),
         end=str(end_ts.date()),
@@ -406,6 +493,13 @@ def run_scan(
     candidate_count = 0
 
     bdays = pd.bdate_range(start_ts, end_ts)
+    scan_timer_start = time.perf_counter()
+    _dbg_call(
+        "log_event",
+        "run_backtest:start",
+        tickers=len(tickers_sorted),
+        days=len(bdays),
+    )
     for idx, ticker in enumerate(tickers_sorted, 1):
         panel = price_map[ticker]
         bars = panel[["date", "open", "high", "low", "close"]].copy()
@@ -416,24 +510,64 @@ def run_scan(
             if use_sp_filter and not _is_member(membership_index, ticker, day):
                 continue
             if day not in panel.index:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["missing_price"],
+                )
                 continue
             row = panel.loc[day]
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[-1]
             entry_price = float(row.get("open", float("nan")))
             if not math.isfinite(entry_price) or entry_price <= 0:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["invalid_entry_price"],
+                )
                 continue
             support = float(row.get("support", float("nan")))
             resistance = float(row.get("resistance", float("nan")))
             if not _sr_ratio_ok(entry_price, support, resistance, sr_min_ratio):
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["sr_ratio"],
+                )
                 continue
-            if not _passes_filters(row, params):
+
+            filter_reasons = _filter_rejection_reasons(row, params)
+            if filter_reasons:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=filter_reasons,
+                )
                 continue
 
             candidate_count += 1
 
             shares = _compute_shares(entry_price, cash_cap)
+            _dbg_call(
+                "record_candidate",
+                ticker=ticker,
+                date=str(day.date()),
+                entry_price=float(entry_price),
+                shares=int(shares),
+                exit_model=exit_model,
+            )
             if shares < 1:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["shares_under_cap"],
+                )
                 continue
 
             if exit_model == "sr":
@@ -442,13 +576,31 @@ def run_scan(
             else:
                 atr_val = float(row.get("atr_value", float("nan")))
                 if not math.isfinite(atr_val) or atr_val <= 0:
+                    _dbg_call(
+                        "record_rejection",
+                        ticker=ticker,
+                        date=str(day.date()),
+                        reasons=["atr_unavailable"],
+                    )
                     continue
                 tp_price = entry_price + tp_mult * atr_val
                 sl_price = entry_price - sl_mult * atr_val
 
             if not math.isfinite(tp_price) or not math.isfinite(sl_price):
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["invalid_tp_sl"],
+                )
                 continue
             if sl_price >= entry_price or tp_price <= entry_price:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["invalid_tp_sl"],
+                )
                 continue
 
             _log_event(
@@ -460,9 +612,24 @@ def run_scan(
                 sl=float(sl_price),
                 shares=int(shares),
             )
+            _dbg_call(
+                "record_trade_open",
+                ticker=ticker,
+                date=str(day.date()),
+                entry_price=float(entry_price),
+                tp=float(tp_price),
+                sl=float(sl_price),
+                shares=int(shares),
+            )
 
             exit_info = _simulate_exit(bars, day, entry_price, tp_price, sl_price, horizon)
             if exit_info is None:
+                _dbg_call(
+                    "record_rejection",
+                    ticker=ticker,
+                    date=str(day.date()),
+                    reasons=["backtest_failed"],
+                )
                 continue
 
             exit_reason = str(exit_info["exit_reason"])
@@ -498,6 +665,14 @@ def run_scan(
                 exit_price=float(exit_price),
                 pnl=float(pnl),
             )
+            _dbg_call(
+                "record_trade_exit",
+                ticker=ticker,
+                exit_date=str(exit_date.date()),
+                exit_reason=exit_reason,
+                exit_price=float(exit_price),
+                pnl=float(pnl),
+            )
 
     ledger = pd.DataFrame(ledger_rows)
     if not ledger.empty:
@@ -521,6 +696,13 @@ def run_scan(
         win_rate=win_rate,
     )
 
+    _dbg_call(
+        "log_event",
+        "run_backtest:done",
+        ms=int((time.perf_counter() - scan_timer_start) * 1000),
+        trades=trades,
+        candidates=candidate_count,
+    )
     _log_event(
         "bt_stats",
         trades=trades,
@@ -529,7 +711,28 @@ def run_scan(
         total_pnl=total_pnl,
         win_rate=win_rate,
     )
+    _dbg_call(
+        "log_event",
+        "bt_stats",
+        trades=trades,
+        wins=wins,
+        total_capital=total_capital,
+        total_pnl=total_pnl,
+        win_rate=win_rate,
+    )
     _log_event("scan:done", trades=trades, candidates=candidate_count)
+    _dbg_call(
+        "log_event",
+        "scan:done",
+        trades=trades,
+        candidates=candidate_count,
+    )
+    _dbg_call(
+        "set_counts",
+        tickers=len(tickers_sorted),
+        candidates=candidate_count,
+        trades=trades,
+    )
 
     return ledger, summary
 
