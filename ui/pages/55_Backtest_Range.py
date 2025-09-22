@@ -125,6 +125,15 @@ ORDERED_COLUMNS: list[str] = list(
     dict.fromkeys(TRADE_TABLE_BASE_COLUMNS + OPTION_SPREAD_COLUMNS)
 )
 
+DIAGNOSTIC_COUNTERS = (
+    "prefilter_sr_reject",
+    "prefilter_close_vol_gap_reject",
+    "prefilter_include_block_prec",
+    "prefilter_include_block_atr",
+    "failed_rr_missing",
+    "failed_rr_below",
+)
+
 
 def page() -> None:
     st.header("📅 Backtest (range)")
@@ -288,6 +297,15 @@ def page() -> None:
                 "Require ATR×N feasibility (at D-1)",
                 value=True,
                 key="bt_req_atr",
+            )
+            debug_include_all = st.checkbox(
+                "Bypass pre-gates (diagnostic)",
+                value=False,
+                help=(
+                    "Include tickers even if ATR/Precedent pre-filters would block them. "
+                    "For debugging only."
+                ),
+                key="bt_debug_include_all",
             )
             precedent_lookback = int(
                 st.number_input(
@@ -536,6 +554,7 @@ def page() -> None:
         "tp_sr_fraction": tp_sr_fraction,
         "tp_atr_multiple": tp_atr_multiple,
         "options_spread": options_spread,
+        "debug_include_all": bool(debug_include_all),
     }
 
     st.session_state["bt_form_params"] = copy.deepcopy(form_params)
@@ -546,9 +565,11 @@ def page() -> None:
         status, prog, log = status_block("Backtest running…", key_prefix="bt")
 
         st.session_state["bt_missing_option_cols"] = []
+        st.session_state["bt_stats"] = None
 
         try:
             run_params: ScanParams = copy.deepcopy(form_params)
+            diag_totals = {key: 0 for key in DIAGNOSTIC_COUNTERS}
             dbg.set_params(
                 start=str(start_date),
                 end=str(end_date),
@@ -573,6 +594,7 @@ def page() -> None:
                 options_spread_enabled=bool(options_spread.get("enabled")),
                 options_budget=float(options_spread.get("budget_per_trade", 0.0)),
                 options_width_pct=float(options_spread.get("width_pct", 0.0)),
+                debug_include_all=bool(debug_include_all),
             )
 
             prior_needed_bdays = int(
@@ -967,6 +989,11 @@ def page() -> None:
                         cands, out, _fails, _stats = sigscan.scan_day(
                             storage, current_day, run_params
                         )
+                        if isinstance(_stats, dict):
+                            for key in DIAGNOSTIC_COUNTERS:
+                                value = _stats.get(key)
+                                if isinstance(value, (int, float)):
+                                    diag_totals[key] += int(value)
                         cand_count = int(len(cands))
                         if cand_count:
                             days_with_candidates += 1
@@ -1016,6 +1043,9 @@ def page() -> None:
                 st.session_state["bt_trades"] = trades_df
                 st.session_state["bt_summary"] = summary
                 st.session_state["bt_last_run_params"] = copy.deepcopy(run_params)
+                st.session_state["bt_stats"] = {
+                    key: int(diag_totals.get(key, 0)) for key in DIAGNOSTIC_COUNTERS
+                }
 
                 if save_outcomes and not trades_df.empty:
                     run_id = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -1136,6 +1166,13 @@ def page() -> None:
                 return value
 
             st.json({field: _fmt_summary_value(summary.get(field)) for field in summary_fields})
+
+        stats_state = st.session_state.get("bt_stats")
+        if isinstance(stats_state, dict):
+            with st.expander("Scan diagnostics", expanded=False):
+                st.json({
+                    key: int(stats_state.get(key, 0)) for key in DIAGNOSTIC_COUNTERS
+                })
 
     if trades_df is not None:
         cols_present = [c for c in ORDERED_COLUMNS if c in trades_df.columns]

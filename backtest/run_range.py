@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable, Tuple
 
@@ -128,6 +129,16 @@ def run_range(
     params: ScanParams,
     progress_cb: Callable[[int, int, pd.Timestamp, int, int], None] | None = None,
 ) -> Tuple[pd.DataFrame, dict]:
+    params = dict(params)
+    if "debug_include_all" not in params:
+        env_value = os.getenv("BACKTEST_DEBUG_INCLUDE_ALL", "0")
+        params["debug_include_all"] = str(env_value).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     days = trading_days(storage, start, end)
     all_trades = []
     total_days = len(days)
