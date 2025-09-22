@@ -171,6 +171,30 @@ def test_build_vertical_spread_affordability_shift():
     assert spread.cash_outlay <= cfg.budget_per_trade + 1e-6
 
 
+def test_build_vertical_spread_single_call_chain_handles_gracefully():
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+        spread_mode="adjacent",
+        tp_anchor_mode=True,
+        min_width_ticks=1,
+    )
+
+    spread, meta = build_vertical_spread(
+        spot=100.0,
+        direction="up",
+        sigma=0.2,
+        config=cfg,
+        tp_abs_target=110.0,
+        option_chain=[105.0],
+    )
+
+    assert spread is None
+    assert meta.get("opt_reason") == "insufficient_budget"
+
+
 def test_exit_vertical_spread_intrinsic_cap():
     cfg = OptionsSpreadConfig(
         budget_per_trade=1000.0,
