@@ -51,6 +51,7 @@ class ScanParams(TypedDict, total=False):
     tp_sr_fraction: float
     tp_atr_multiple: float
     options_spread: dict
+    options_spread_enabled: bool
     min_rr_required: float
     rule_defaults: dict
     entry_model_default: str
@@ -220,7 +221,9 @@ def scan_day(
     if tp_mode not in ("sr_fraction", "atr_multiple"):
         tp_mode = "sr_fraction"
 
+    options_enabled = bool(params.get("options_spread_enabled", False))
     options_cfg = OptionsSpreadConfig.from_params(params.get("options_spread"))
+    options_cfg.enabled = bool(options_enabled)
 
     min_rr_raw = params.get("min_rr_required", 2.0)
     try:
@@ -297,6 +300,12 @@ def scan_day(
         "prefilter_include_block_atr": 0,
     }
     stats.setdefault("events", [])
+    stats["events"].append(
+        {
+            "event": "options_flag",
+            "options_spread_enabled": bool(options_enabled),
+        }
+    )
     prec_hit_values: List[int] = []
     prec_fail_count = 0
 
@@ -677,18 +686,27 @@ def scan_day(
                 ):
                     direction = "down"
 
-                options_row = compute_vertical_spread_trade(
-                    prices=df_idx,
-                    entry_ts=pd.Timestamp(D_ts),
-                    exit_ts=res.get("exit_date"),
-                    entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
-                    exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
-                    direction=direction,
-                    config=options_cfg,
-                    atr_value=atr_for_vol,
-                    exit_reason=res.get("exit_reason"),
-                    tp_abs_target=tp_abs_target,
-                )
+                # before building options-only inputs, check the flag
+                if options_enabled:
+                    options_row = compute_vertical_spread_trade(
+                        prices=df_idx,
+                        entry_ts=pd.Timestamp(D_ts),
+                        exit_ts=res.get("exit_date"),
+                        entry_price=float(entry_open_price)
+                        if entry_open_price is not None
+                        else float("nan"),
+                        exit_price=float(exit_price_val)
+                        if exit_price_val is not None
+                        else float("nan"),
+                        direction=direction,
+                        config=options_cfg,
+                        atr_value=atr_for_vol,
+                        exit_reason=res.get("exit_reason"),
+                        tp_abs_target=tp_abs_target,
+                    )
+                else:
+                    options_row = options_cfg.empty_result()
+                    options_row["opt_reason"] = "options_flag_off"
 
                 out_row.update(options_row)
                 out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
@@ -722,17 +740,6 @@ def scan_day(
                 if atr_for_vol is None:
                     atr_for_vol = row.get("atr_value_dm1")
 
-                try:
-                    prices_for_options = (
-                        df[["date", "open", "high", "low", "close"]]
-                        .copy()
-                        .assign(date=lambda s: pd.to_datetime(s["date"]).dt.tz_localize(None))
-                        .set_index("date")
-                        .sort_index()
-                    )
-                except Exception:
-                    prices_for_options = df_idx
-
                 entry_open_price = row.get("entry_open")
                 exit_price_val = out.get("exit_price")
                 direction = "up"
@@ -745,18 +752,42 @@ def scan_day(
                 ):
                     direction = "down"
 
-                options_row = compute_vertical_spread_trade(
-                    prices=prices_for_options[[c for c in ("open", "high", "low", "close") if c in prices_for_options.columns]],
-                    entry_ts=pd.Timestamp(D_ts),
-                    exit_ts=out.get("exit_date"),
-                    entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
-                    exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
-                    direction=direction,
-                    config=options_cfg,
-                    atr_value=atr_for_vol,
-                    exit_reason=out.get("exit_reason"),
-                    tp_abs_target=tp_price,
-                )
+                # before building options-only inputs, check the flag
+                if options_enabled:
+                    try:
+                        prices_for_options = (
+                            df[["date", "open", "high", "low", "close"]]
+                            .copy()
+                            .assign(
+                                date=lambda s: pd.to_datetime(s["date"]).dt.tz_localize(None)
+                            )
+                            .set_index("date")
+                            .sort_index()
+                        )
+                    except Exception:
+                        prices_for_options = df_idx
+
+                    options_row = compute_vertical_spread_trade(
+                        prices=prices_for_options[
+                            [c for c in ("open", "high", "low", "close") if c in prices_for_options.columns]
+                        ],
+                        entry_ts=pd.Timestamp(D_ts),
+                        exit_ts=out.get("exit_date"),
+                        entry_price=float(entry_open_price)
+                        if entry_open_price is not None
+                        else float("nan"),
+                        exit_price=float(exit_price_val)
+                        if exit_price_val is not None
+                        else float("nan"),
+                        direction=direction,
+                        config=options_cfg,
+                        atr_value=atr_for_vol,
+                        exit_reason=out.get("exit_reason"),
+                        tp_abs_target=tp_price,
+                    )
+                else:
+                    options_row = options_cfg.empty_result()
+                    options_row["opt_reason"] = "options_flag_off"
 
                 out_row.update(options_row)
                 out_row["passes_all_rules"] = row.get("passes_all_rules", 0)

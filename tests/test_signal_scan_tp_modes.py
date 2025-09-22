@@ -221,6 +221,7 @@ def test_scan_day_sr_branch_includes_options(monkeypatch):
             "budget_per_trade": 1000.0,
             "fees_per_contract": 0.65,
         },
+        "options_spread_enabled": True,
         "rule_defaults": {
             "rsi_1h": 40.0,
             "rsi_d": 50.0,
