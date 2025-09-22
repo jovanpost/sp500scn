@@ -157,12 +157,15 @@ def test_build_vertical_spread_affordability_shift():
         risk_free_rate=0.0,
         dividend_yield=0.0,
         tp_anchor_mode=False,
+        spread_mode="adjacent",
+        strike_tick=5.0,
     )
 
     spread, meta = build_vertical_spread(spot=100.0, direction="up", sigma=0.8, config=cfg)
     assert spread is not None
     assert meta.get("opt_reason") == ""
-    assert spread.lower_strike > 100.0  # shifted OTM to fit budget
+    assert spread.lower_strike >= 100.0  # adjacent strikes anchored near ATM
+    assert meta["chain_tick"] == pytest.approx(5.0, rel=1e-9)
     assert spread.upper_strike - spread.lower_strike == pytest.approx(5.0, rel=1e-6)
     assert spread.width_frac == pytest.approx((spread.upper_strike - spread.lower_strike) / 100.0, rel=1e-6)
     assert spread.cash_outlay <= cfg.budget_per_trade + 1e-6
@@ -174,6 +177,7 @@ def test_exit_vertical_spread_intrinsic_cap():
         fees_per_contract=0.0,
         risk_free_rate=0.0,
         dividend_yield=0.0,
+        spread_mode="adjacent",
     )
     spread, _ = build_vertical_spread(
         spot=100.0, direction="up", sigma=0.2, config=cfg, tp_abs_target=110.0
@@ -200,6 +204,7 @@ def test_exit_vertical_spread_otm_loss():
         fees_per_contract=0.0,
         risk_free_rate=0.0,
         dividend_yield=0.0,
+        spread_mode="adjacent",
     )
     spread, _ = build_vertical_spread(
         spot=100.0, direction="up", sigma=0.25, config=cfg, tp_abs_target=110.0
@@ -217,6 +222,120 @@ def test_exit_vertical_spread_otm_loss():
     assert outcome.debit_exit == pytest.approx(0.0, abs=1e-9)
     assert outcome.revenue == pytest.approx(0.0, abs=1e-9)
     assert outcome.pnl == pytest.approx(-spread.cash_outlay, rel=1e-9)
+
+
+def test_build_vertical_spread_adjacent_call_chain():
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+        spread_mode="adjacent",
+        tp_anchor_mode=True,
+        min_width_ticks=1,
+    )
+
+    chain = [104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0]
+    spread, meta = build_vertical_spread(
+        spot=105.0,
+        direction="up",
+        sigma=0.25,
+        config=cfg,
+        tp_abs_target=110.0,
+        option_chain=chain,
+    )
+
+    assert spread is not None
+    assert meta.get("opt_reason") == ""
+    assert spread.upper_strike <= 110.0 + 1e-6
+    assert meta["chain_tick"] == pytest.approx(1.0, rel=1e-9)
+    assert spread.upper_strike - spread.lower_strike == pytest.approx(meta["chain_tick"], rel=1e-6)
+    strikes_between = [k for k in chain if spread.lower_strike < k < spread.upper_strike]
+    assert not strikes_between
+    assert spread.contracts >= 1
+
+
+def test_build_vertical_spread_adjacent_put_chain():
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+        spread_mode="adjacent",
+        tp_anchor_mode=True,
+        min_width_ticks=1,
+    )
+
+    chain = [80.0, 85.0, 90.0, 92.5, 95.0, 97.5, 100.0]
+    spread, meta = build_vertical_spread(
+        spot=100.0,
+        direction="down",
+        sigma=0.30,
+        config=cfg,
+        tp_abs_target=92.5,
+        option_chain=chain,
+    )
+
+    assert spread is not None
+    assert meta.get("opt_reason") == ""
+    assert spread.lower_strike >= 92.5 - 1e-6
+    assert spread.upper_strike - spread.lower_strike == pytest.approx(meta["chain_tick"], rel=1e-6)
+    strikes_between = [k for k in chain if spread.lower_strike < k < spread.upper_strike]
+    assert not strikes_between
+
+
+def test_build_vertical_spread_adjacent_mixed_chain():
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+        spread_mode="adjacent",
+        tp_anchor_mode=True,
+        min_width_ticks=1,
+    )
+
+    mixed_chain = [95.0, 96.0, 97.0, 98.0, 100.0, 105.0]
+    spread, meta = build_vertical_spread(
+        spot=100.0,
+        direction="up",
+        sigma=0.20,
+        config=cfg,
+        tp_abs_target=98.0,
+        option_chain=mixed_chain,
+    )
+
+    assert spread is not None
+    assert meta.get("opt_reason") == ""
+    assert meta["chain_tick"] == pytest.approx(1.0, rel=1e-9)
+    assert spread.upper_strike <= 98.0 + 1e-6
+    assert spread.upper_strike - spread.lower_strike == pytest.approx(meta["chain_tick"], rel=1e-6)
+
+
+def test_percent_mode_snap_warns_on_gap(caplog):
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+        spread_mode="percent",
+        tp_anchor_mode=False,
+        width_frac=0.10,
+    )
+
+    wide_chain = [90.0, 95.0, 100.0, 105.0, 110.0]
+    with caplog.at_level("WARNING"):
+        spread, meta = build_vertical_spread(
+            spot=100.0,
+            direction="up",
+            sigma=0.25,
+            config=cfg,
+            option_chain=wide_chain,
+        )
+
+    assert spread is not None
+    assert any("non-adjacent" in msg for msg in caplog.messages)
+    assert spread.upper_strike - spread.lower_strike >= meta["chain_tick"]
 
 
 def test_compute_vertical_spread_trade_matches_bs_exit():

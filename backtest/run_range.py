@@ -291,6 +291,8 @@ def run_range(
         "tp_required_dollars",
         "tp_required_dollars_2dp",
         "reasons",
+        "passes_all_rules",
+        "rule_fail_reasons",
         "opt_structure",
         "K1",
         "K2",
