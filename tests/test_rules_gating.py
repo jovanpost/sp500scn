@@ -23,7 +23,6 @@ def test_passes_all_rules_detects_failure():
         "atr_ok": 1,
         "sr_ok": 1,
         "precedent_ok": 1,
-        "rr_ratio": 3.0,
         "rsi_1h": 40.0,
         "rsi_d": 55.0,
         "earnings_days": 12.0,
@@ -42,6 +41,42 @@ def test_passes_all_rules_detects_failure():
     assert "rsi_1h_high" in reasons_fail
     assert "earnings_window_fail" in reasons_fail
     assert "vwap_hold_fail" in reasons_fail
+
+
+def test_passes_all_rules_handles_missing_rr():
+    base_row = {
+        "atr_ok": 1,
+        "sr_ok": 1,
+        "precedent_ok": 1,
+        "rsi_1h": 45.0,
+        "rsi_d": 55.0,
+        "earnings_days": 15.0,
+        "vwap_hold": 1,
+        "setup_valid": 1,
+        "entry_open": 100.0,
+        "support": None,
+        "tp_price_abs_target": None,
+    }
+
+    allow_cfg = RuleConfig(min_rr_required=2.0, allow_missing_rr=True)
+    ok_allow, reasons_allow = passes_all_rules(base_row, allow_cfg)
+    assert ok_allow is True
+    assert "rr_fail" not in reasons_allow
+
+    block_cfg = RuleConfig(min_rr_required=2.0, allow_missing_rr=False)
+    ok_block, reasons_block = passes_all_rules(base_row, block_cfg)
+    assert ok_block is False
+    assert "rr_fail" in reasons_block
+
+    rr_row = dict(base_row)
+    rr_row["rr_ratio"] = 1.2
+    rr_row["support"] = 90.0
+    rr_row["tp_price_abs_target"] = 108.0
+
+    rr_cfg = RuleConfig(min_rr_required=2.0, allow_missing_rr=True)
+    ok_low_rr, reasons_low_rr = passes_all_rules(rr_row, rr_cfg)
+    assert ok_low_rr is False
+    assert reasons_low_rr == ["rr_fail"]
 
 
 def test_scan_day_respects_rule_gate(monkeypatch):
@@ -140,7 +175,6 @@ def test_scan_day_respects_rule_gate(monkeypatch):
             "earnings_days": 10.0,
             "vwap_hold": 1,
             "setup_valid": 1,
-            "rr_ratio": 3.0,
         },
         "entry_model_default": "sr_breakout",
     }
@@ -277,3 +311,113 @@ def test_scan_day_injects_rule_and_entry_defaults(monkeypatch):
     assert stats["failed_gate"] == 1
     assert stats["skipped_no_entry_model"] == 0
     assert (out_df["rule_fail_reasons"] == "").all()
+
+
+def test_scan_day_allows_missing_rr_with_atr_mode(monkeypatch):
+    dates = pd.bdate_range("2022-01-03", periods=6)
+    df_prices = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [100, 101, 102, 103, 104, 105],
+            "high": [101, 102, 103, 104, 105, 106],
+            "low": [99, 100, 101, 102, 103, 104],
+            "close": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+            "volume": [1_000_000] * 6,
+        }
+    )
+
+    membership = pd.DataFrame(
+        {
+            "ticker": ["ATR"],
+            "start_date": [dates.min()],
+            "end_date": [pd.NaT],
+        }
+    )
+
+    monkeypatch.setattr(
+        sigscan,
+        "_load_members",
+        lambda storage, cache_salt=None: membership.copy(),
+    )
+    monkeypatch.setattr(sigscan, "_load_prices", lambda _storage, _ticker: df_prices.copy())
+
+    def _fake_compute_metrics(df, D_ts, vol_lookback, atr_window, atr_method, sr_lookback):
+        return {
+            "close_up_pct": 5.0,
+            "vol_multiple": 2.0,
+            "gap_open_pct": 0.5,
+            "atr21": 2.5,
+            "support": 100.0,
+            "resistance": 120.0,
+            "sr_ratio": 3.0,
+            "sr_support": 100.0,
+            "sr_resistance": 120.0,
+            "sr_window_len": int(sr_lookback),
+            "entry_open": 100.0,
+            "atr_method": atr_method,
+        }
+
+    monkeypatch.setattr(sigscan, "_compute_metrics", _fake_compute_metrics)
+    monkeypatch.setattr(sigscan, "atr_feasible", lambda *args, **kwargs: True)
+
+    def _fake_simulate_pct_target_only(prices, entry_ts, entry_price, tp_pct_percent, horizon):
+        del prices, horizon
+        exit_price = entry_price * (1.0 + tp_pct_percent / 100.0)
+        exit_date = entry_ts + pd.Timedelta(days=1)
+        return {
+            "exit_date": exit_date,
+            "exit_price": exit_price,
+            "exit_reason": "tp_hit",
+            "tp_price_abs_target": exit_price,
+        }
+
+    monkeypatch.setattr(sigscan, "simulate_pct_target_only", _fake_simulate_pct_target_only)
+
+    monkeypatch.setattr(
+        sigscan,
+        "compute_vertical_spread_trade",
+        lambda **kwargs: {
+            "opt_structure": "CALL_VERTICAL_DEBIT",
+            "K1": kwargs.get("entry_price", 100.0) - 1.0,
+            "K2": kwargs.get("entry_price", 100.0),
+            "width_frac": 0.01,
+            "debit_entry": 1.0,
+            "contracts": 1,
+            "cash_outlay": 100.0,
+            "fees_entry": 1.3,
+            "chain_tick": 1.0,
+            "opt_reason": "",
+        },
+    )
+
+    params = {
+        "min_close_up_pct": 0.0,
+        "min_vol_multiple": 0.0,
+        "min_gap_open_pct": -10.0,
+        "atr_window": 3,
+        "atr_method": "wilder",
+        "lookback_days": 3,
+        "horizon_days": 5,
+        "sr_min_ratio": 0.0,
+        "sr_lookback": 3,
+        "use_precedent": False,
+        "use_atr_feasible": False,
+        "exit_model": "pct_tp_only",
+        "tp_mode": "atr_multiple",
+        "tp_atr_multiple": 1.0,
+        "entry_model_default": "sr_breakout",
+    }
+
+    storage = DummyStorage()
+    D = dates[-1]
+
+    cand_df, out_df, fail_count, stats = sigscan.scan_day(storage, D, params)
+
+    assert fail_count == 0
+    assert stats["candidates"] > 0
+    assert stats["passed_gate"] > 0
+    assert stats["failed_rr_missing"] == 0
+    assert stats["failed_rr_below"] == 0
+    assert (cand_df["rr_ratio"].isna()).all()
+    assert "rr_fail" not in cand_df.iloc[0]["rule_fail_reasons"]
+    assert out_df.iloc[0]["passes_all_rules"] == 1

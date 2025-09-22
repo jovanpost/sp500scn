@@ -16,7 +16,7 @@ from .features import atr as compute_atr
 from .replay import replay_trade, simulate_pct_target_only
 from .filters import atr_feasible
 from .options_spread import OptionsSpreadConfig, compute_vertical_spread_trade
-from .rules import RuleConfig, passes_all_rules
+from .rules import RuleConfig, passes_all_rules, _infer_rr_ratio
 from .utils_precedent import compute_precedent_hit_details, tp_fraction_from_row
 
 log = logging.getLogger(__name__)
@@ -28,7 +28,6 @@ DEFAULT_RULE_DEFAULTS: Dict[str, Any] = {
     "earnings_days": 10.0,
     "vwap_hold": 1,
     "setup_valid": 1,
-    "rr_ratio": 3.0,
 }
 
 
@@ -229,7 +228,26 @@ def scan_day(
         min_rr_required = 2.0
     if not math.isfinite(min_rr_required) or min_rr_required < 2.0:
         min_rr_required = 2.0
-    rule_cfg = RuleConfig(min_rr_required=min_rr_required)
+    allow_missing_rr_raw = params.get("allow_missing_rr")
+
+    def _coerce_bool(value: Any, default: bool = True) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            value_str = value.strip().lower()
+            if value_str in {"1", "true", "yes", "y", "on"}:
+                return True
+            if value_str in {"0", "false", "no", "n", "off"}:
+                return False
+            return default
+        return bool(value)
+
+    allow_missing_rr = _coerce_bool(allow_missing_rr_raw, True)
+
+    rule_cfg = RuleConfig(
+        min_rr_required=min_rr_required,
+        allow_missing_rr=allow_missing_rr,
+    )
 
     rule_defaults_raw = params.get("rule_defaults")
     if not isinstance(rule_defaults_raw, dict):
@@ -267,6 +285,8 @@ def scan_day(
         "passed_gate": 0,
         "skipped_no_entry_model": 0,
         "failed_gate": 0,
+        "failed_rr_missing": 0,
+        "failed_rr_below": 0,
     }
     stats.setdefault("events", [])
     prec_hit_values: List[int] = []
@@ -562,6 +582,15 @@ def scan_day(
                 row["passes_all_rules"] = int(bool(passes_rules))
                 row["rule_fail_reasons"] = ",".join(fail_reasons)
                 cand_rows.append(row)
+
+                if "rr_fail" in fail_reasons:
+                    rr_value = _infer_rr_ratio(row)
+                    if rr_value is None:
+                        if len(fail_reasons) == 1:
+                            stats["failed_rr_missing"] += 1
+                    else:
+                        if rr_value < rule_cfg.min_rr_required:
+                            stats["failed_rr_below"] += 1
 
                 if not passes_rules:
                     stats["failed_gate"] += 1

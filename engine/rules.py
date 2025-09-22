@@ -8,6 +8,7 @@ from typing import Mapping, Tuple, List, Any
 @dataclass
 class RuleConfig:
     min_rr_required: float = 2.0
+    allow_missing_rr: bool = True
 
     def __post_init__(self) -> None:
         try:
@@ -17,6 +18,8 @@ class RuleConfig:
         if not math.isfinite(value) or value < 2.0:
             value = 2.0
         self.min_rr_required = value
+
+        self.allow_missing_rr = bool(self.allow_missing_rr)
 
 
 def _to_float(value: Any) -> float | None:
@@ -68,7 +71,10 @@ def passes_all_rules(row: Mapping[str, Any], cfg: RuleConfig) -> Tuple[bool, Lis
         reasons.append("precedent_fail")
 
     rr_value = _infer_rr_ratio(row)
-    if rr_value is None or rr_value < cfg.min_rr_required:
+    if rr_value is None:
+        if not cfg.allow_missing_rr:
+            reasons.append("rr_fail")
+    elif rr_value < cfg.min_rr_required:
         reasons.append("rr_fail")
 
     rsi_1h = _to_float(row.get("rsi_1h"))
