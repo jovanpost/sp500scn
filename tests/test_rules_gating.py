@@ -177,6 +177,7 @@ def test_scan_day_respects_rule_gate(monkeypatch):
             "setup_valid": 1,
         },
         "entry_model_default": "sr_breakout",
+        "options_spread_enabled": True,
     }
 
     storage = DummyStorage()
@@ -294,6 +295,7 @@ def test_scan_day_injects_rule_and_entry_defaults(monkeypatch):
         "use_atr_feasible": False,
         "exit_model": "pct_tp_only",
         "min_rr_required": 0.5,
+        "options_spread_enabled": True,
     }
 
     storage = DummyStorage()
@@ -406,6 +408,7 @@ def test_scan_day_allows_missing_rr_with_atr_mode(monkeypatch):
         "tp_mode": "atr_multiple",
         "tp_atr_multiple": 1.0,
         "entry_model_default": "sr_breakout",
+        "options_spread_enabled": True,
     }
 
     storage = DummyStorage()

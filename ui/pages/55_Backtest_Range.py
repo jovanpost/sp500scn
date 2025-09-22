@@ -390,10 +390,11 @@ def page() -> None:
                 tp_sr_fraction = float(st.session_state.get("bt_tp_sr_fraction", 0.50))
 
         with st.expander("Options spread (vertical debit)", expanded=False):
-            opt_enabled = st.checkbox(
+            options_enabled = st.checkbox(
                 "Enable options simulation",
-                value=True,
-                key="bt_opts_enabled",
+                value=False,
+                key="options_spread_enabled",
+                help="When off, backtest runs underlying-only (no options).",
             )
             opt_cols = st.columns(3)
             with opt_cols[0]:
@@ -510,7 +511,7 @@ def page() -> None:
             )
 
         options_spread = {
-            "enabled": bool(opt_enabled),
+            "enabled": bool(options_enabled),
             "budget_per_trade": float(opt_budget),
             "expiry_days": int(opt_expiry_days),
             "width_frac": float(opt_width_pct) / 100.0,
@@ -554,6 +555,7 @@ def page() -> None:
         "tp_sr_fraction": tp_sr_fraction,
         "tp_atr_multiple": tp_atr_multiple,
         "options_spread": options_spread,
+        "options_spread_enabled": bool(options_enabled),
         "debug_include_all": bool(debug_include_all),
     }
 
@@ -591,10 +593,15 @@ def page() -> None:
                 tp_mode=tp_mode,
                 tp_sr_fraction=tp_sr_fraction,
                 tp_atr_multiple=tp_atr_multiple,
-                options_spread_enabled=bool(options_spread.get("enabled")),
+                options_spread_enabled=bool(options_enabled),
                 options_budget=float(options_spread.get("budget_per_trade", 0.0)),
                 options_width_pct=float(options_spread.get("width_pct", 0.0)),
                 debug_include_all=bool(debug_include_all),
+            )
+
+            dbg.event(
+                "options_flag",
+                options_spread_enabled=bool(options_enabled),
             )
 
             prior_needed_bdays = int(
@@ -1276,6 +1283,9 @@ def page() -> None:
                 base_params = {}
             sanity_params = copy.deepcopy(base_params)
             sanity_params["options_spread"] = copy.deepcopy(options_state)
+            sanity_params["options_spread_enabled"] = bool(
+                (options_state or {}).get("enabled", options_enabled)
+            )
             try:
                 tiny_trades, tiny_summary = run_range_module.run_range(
                     storage,
