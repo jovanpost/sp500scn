@@ -16,9 +16,10 @@ initialize_price_filter()
 render_header()
 
 # Create tabs once with unique variable names
-tab_gap, tab_backtest, tab_history, tab_lake, tab_debug = st.tabs(
+tab_gap, tab_stock, tab_backtest, tab_history, tab_lake, tab_debug = st.tabs(
     [
         "⚡ Gap Scanner",
+        "📊 Stock Scanner (Shares Only)",
         "📅 Backtest (range)",
         "📈 History & Outcomes",
         "💧 Data Lake (Phase 1)",
@@ -29,6 +30,16 @@ tab_gap, tab_backtest, tab_history, tab_lake, tab_debug = st.tabs(
 with tab_gap:
     spec = importlib.util.spec_from_file_location(
         "ui.pages.yday_vol_signal_open", Path("ui/pages/45_YdayVolSignal_Open.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    mod.page()
+
+with tab_stock:
+    spec = importlib.util.spec_from_file_location(
+        "ui.pages.stock_scanner_shares_only",
+        Path("ui/pages/65_Stock_Scanner_SharesOnly.py"),
     )
     mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
