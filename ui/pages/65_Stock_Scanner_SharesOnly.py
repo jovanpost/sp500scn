@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import platform
+import sys
+import traceback
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Callable
 
 import pandas as pd
@@ -14,6 +20,186 @@ from engine.stocks_only_scanner import (
     run_scan,
 )
 from ui.components.progress import status_block
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class ScanDebugCollector:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+        self.errors: list[dict[str, object]] = []
+        self.rejections: Counter[str] = Counter()
+        self.tickers: list[str] = []
+        self.candidates = 0
+        self.trades = 0
+        self.tickers_scanned = 0
+
+    def log_event(self, name: str, **data: object) -> None:
+        payload = {k: v for k, v in data.items()}
+        self.events.append({"t": _utcnow_iso(), "name": name, "data": payload})
+
+    def record_rejection(
+        self,
+        *,
+        ticker: str,
+        date: str,
+        reasons: list[str],
+        details: dict | None = None,
+    ) -> None:
+        unique = sorted({str(reason) for reason in reasons if reason})
+        if unique:
+            self.rejections.update(unique)
+        payload: dict[str, object] = {"ticker": ticker, "date": date, "reasons": unique}
+        if details:
+            payload["details"] = details
+        self.log_event("reject", **payload)
+
+    def record_candidate(
+        self,
+        *,
+        ticker: str,
+        date: str,
+        entry_price: float,
+        shares: int,
+        exit_model: str,
+        tp_price: float | None = None,
+        sl_price: float | None = None,
+    ) -> None:
+        self.candidates += 1
+        payload: dict[str, object] = {
+            "ticker": ticker,
+            "date": date,
+            "entry_price": float(entry_price),
+            "shares": int(shares),
+            "exit_model": exit_model,
+        }
+        if tp_price is not None:
+            payload["tp_price"] = float(tp_price)
+        if sl_price is not None:
+            payload["sl_price"] = float(sl_price)
+        self.log_event("candidate", **payload)
+
+    def record_trade_open(
+        self,
+        *,
+        ticker: str,
+        date: str,
+        entry_price: float,
+        tp: float,
+        sl: float,
+        shares: int,
+    ) -> None:
+        self.log_event(
+            "trade_open",
+            ticker=ticker,
+            date=date,
+            entry_price=float(entry_price),
+            tp=float(tp),
+            sl=float(sl),
+            shares=int(shares),
+        )
+
+    def record_trade_exit(
+        self,
+        *,
+        ticker: str,
+        exit_date: str,
+        exit_reason: str,
+        exit_price: float,
+        pnl: float,
+    ) -> None:
+        self.trades += 1
+        self.log_event(
+            "trade_exit",
+            ticker=ticker,
+            exit_date=exit_date,
+            exit_reason=exit_reason,
+            exit_price=float(exit_price),
+            pnl=float(pnl),
+        )
+
+    def set_tickers(self, tickers: list[str]) -> None:
+        self.tickers = list(tickers)
+
+    def set_counts(self, *, tickers: int, candidates: int, trades: int) -> None:
+        self.tickers_scanned = int(tickers)
+        self.candidates = int(candidates)
+        self.trades = int(trades)
+
+    def record_error(self, where: str, exc: BaseException) -> None:
+        self.errors.append(
+            {
+                "t": _utcnow_iso(),
+                "where": where,
+                "message": str(exc),
+                "traceback": "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+            }
+        )
+
+
+def _render_debug_panel(
+    meta: dict[str, object],
+    params: dict[str, object],
+    env: dict[str, object],
+    debug: ScanDebugCollector,
+    metrics: dict[str, int],
+) -> None:
+    with st.expander("🐞 Debug panel", expanded=False):
+        st.caption("Everything below is for diagnostics. Safe to share (secrets redacted).")
+
+        tickers_scanned = metrics.get("tickers") or debug.tickers_scanned or len(debug.tickers)
+        candidates = metrics.get("candidates") or debug.candidates
+        trades = metrics.get("trades") or debug.trades
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tickers scanned", int(tickers_scanned))
+        c2.metric("Candidates", int(candidates))
+        c3.metric("Trades taken", int(trades))
+
+        st.subheader("Why candidates were dropped")
+        rej_df = pd.DataFrame(
+            [{"reason": reason, "count": count} for reason, count in debug.rejections.items()]
+        )
+        if not rej_df.empty:
+            denom = max(1, int(tickers_scanned))
+            rej_df["% of scans"] = (rej_df["count"] / denom) * 100.0
+            st.dataframe(rej_df, use_container_width=True, height=220)
+        else:
+            st.write("No rejections recorded.")
+
+        st.subheader("Event log")
+        ev_df = pd.DataFrame(debug.events)
+        if not ev_df.empty:
+            ev_display = ev_df.copy()
+            ev_display["data"] = ev_display["data"].apply(
+                lambda val: json.dumps(val, default=str)
+                if isinstance(val, (dict, list, tuple))
+                else str(val)
+            )
+            st.dataframe(ev_display.tail(500), use_container_width=True, height=260)
+            csv_bytes = ev_display.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download full debug CSV",
+                csv_bytes,
+                file_name="stock_scanner_debug.csv",
+                mime="text/csv",
+            )
+        else:
+            st.write("No events logged.")
+
+        with st.expander("meta / params / env / errors"):
+            st.write("meta")
+            st.json(meta)
+            st.write("params")
+            st.json(params)
+            st.write("env")
+            st.json(env)
+            st.write("errors")
+            st.json(debug.errors)
 
 
 def _default_dates() -> tuple[dt.date, dt.date]:
@@ -220,6 +406,40 @@ def page() -> None:
         "cash_per_trade": DEFAULT_CASH_CAP,
     }
 
+    debug = ScanDebugCollector()
+    meta = {
+        "session_started": _utcnow_iso(),
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "platform": platform.platform(),
+        "streamlit": st.__version__,
+    }
+    params_info = {
+        "start": str(start_ts.date()),
+        "end": str(end_ts.date()),
+        "horizon": horizon,
+        "sr_lookback": sr_lookback,
+        "sr_min_ratio": sr_min_ratio,
+        "yesterday_up_min": min_yup_pct,
+        "open_gap_min": min_gap_pct,
+        "vol_multiple_min": min_volume_multiple,
+        "vol_lookback": volume_lookback,
+        "exit_model": exit_model,
+        "tp_atr_multiple": tp_atr_multiple,
+        "sl_atr_multiple": sl_atr_multiple,
+        "atr_window": atr_window,
+        "atr_method": atr_method,
+        "cap_per_trade": DEFAULT_CASH_CAP,
+        "use_sp_filter": use_sp_filter,
+    }
+    env_info = {
+        "storage_mode": getattr(storage, "mode", "unknown"),
+        "bucket": getattr(storage, "bucket", None),
+        "ticker_filter_source": "sp500_membership" if use_sp_filter else "none",
+    }
+    debug.log_event("scanner:params", params=params_info, env=env_info)
+
+    metrics_info = {"tickers": 0, "candidates": 0, "trades": 0}
+
     status, prog_widget, log_fn = status_block("Running stock scan…", key_prefix="stock_scan")
     status.update(label="Loading data…", state="running")
 
@@ -230,14 +450,25 @@ def page() -> None:
             params,
             storage=storage,
             progress=progress_cb,
+            debug=debug,
         )
     except Exception as exc:
         status.update(label="Scan failed ❌", state="error")
         st.error("Scan failed")
         st.exception(exc)
+        debug.record_error("run_scan", exc)
+        debug.log_event("scan:error", error=str(exc))
+        _render_debug_panel(meta, params_info, env_info, debug, metrics_info)
         return
 
     status.update(label="Scan complete ✅", state="complete")
 
+    metrics_info = {
+        "tickers": summary.tickers_scanned,
+        "candidates": summary.candidates,
+        "trades": summary.trades,
+    }
+
     _render_summary(summary)
     _render_ledger(ledger)
+    _render_debug_panel(meta, params_info, env_info, debug, metrics_info)
