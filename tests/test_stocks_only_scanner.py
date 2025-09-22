@@ -61,6 +61,25 @@ def test_compute_shares_obeys_cap(price: float, expected: int):
     assert sos._compute_shares(price, sos.DEFAULT_CASH_CAP) == expected
 
 
+def test_normalize_prices_handles_unnamed_index():
+    dates = pd.bdate_range("2022-01-03", periods=3)
+    df = pd.DataFrame(
+        {
+            "open": [10.0, 10.5, 11.0],
+            "high": [10.5, 11.0, 11.5],
+            "low": [9.5, 10.0, 10.5],
+            "close": [10.2, 10.7, 11.1],
+            "volume": [1_000_000, 1_050_000, 1_100_000],
+        },
+        index=dates,
+    )
+
+    normalized = sos._normalize_prices_df(df, ticker="AAA")
+
+    assert "date" in normalized.columns
+    assert list(normalized["date"]) == list(dates)
+
+
 def test_simulate_exit_prefers_tp(monkeypatch):
     dates = pd.bdate_range("2022-01-03", periods=3)
     bars = pd.DataFrame(
