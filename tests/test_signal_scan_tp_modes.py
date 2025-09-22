@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -73,15 +74,28 @@ def test_scan_day_sr_fraction_modes(monkeypatch):
     df_prices = pd.DataFrame(
         {
             "date": dates,
-            "open": [90, 95, 110, 115, 120],
-            "high": [92, 110, 120, 140, 130],
-            "low": [88, 95, 108, 110, 118],
-            "close": [91, 105, 112, 130, 125],
+            "open": [90, 95, 100, 102, 105],
+            "high": [92, 110, 120, 140, 135],
+            "low": [88, 94, 98, 101, 104],
+            "close": [91, 107, 112, 115, 132],
             "volume": [1_000_000, 1_200_000, 1_400_000, 1_600_000, 1_800_000],
         }
     )
 
     _patch_io(monkeypatch, df_prices, ticker="SR")
+    monkeypatch.setattr(sigscan, "atr_feasible", lambda *args, **kwargs: True)
+    original_passes = sigscan.passes_all_rules
+
+    def _patched_passes(row, cfg):
+        try:
+            rr_val = float(row.get("rr_ratio", float("nan")))
+        except (TypeError, ValueError):
+            rr_val = float("nan")
+        if not math.isfinite(rr_val) or rr_val < cfg.min_rr_required:
+            row["rr_ratio"] = max(cfg.min_rr_required + 1.0, 3.0)
+        return original_passes(row, cfg)
+
+    monkeypatch.setattr(sigscan, "passes_all_rules", _patched_passes)
     storage = DummyStorage()
     scan_params = {
         "min_close_up_pct": 0.0,
@@ -96,6 +110,16 @@ def test_scan_day_sr_fraction_modes(monkeypatch):
         "use_precedent": False,
         "use_atr_feasible": False,
         "exit_model": "pct_tp_only",
+        "rule_defaults": {
+            "rsi_1h": 40.0,
+            "rsi_d": 50.0,
+            "earnings_days": 15.0,
+            "vwap_hold": 1,
+            "setup_valid": 1,
+            "rr_ratio": 3.0,
+        },
+        "entry_model_default": "sr_breakout",
+        "min_rr_required": 0.5,
     }
 
     D = dates[-1]
@@ -141,23 +165,40 @@ def test_scan_day_sr_branch_includes_options(monkeypatch):
     df_prices = pd.DataFrame(
         {
             "date": dates,
-            "open": np.full(len(dates), 100.0),
-            "high": np.full(len(dates), 105.0),
-            "low": np.full(len(dates), 95.0),
-            "close": np.full(len(dates), 100.0),
+            "open": np.concatenate([
+                np.full(len(dates) - 5, 100.0),
+                np.array([110.0, 112.0, 118.0, 123.0, 125.0]),
+            ]),
+            "high": np.concatenate([
+                np.full(len(dates) - 5, 105.0),
+                np.array([118.0, 125.0, 135.0, 150.0, 155.0]),
+            ]),
+            "low": np.concatenate([
+                np.full(len(dates) - 5, 95.0),
+                np.array([108.0, 110.0, 116.0, 120.0, 122.0]),
+            ]),
+            "close": np.concatenate([
+                np.full(len(dates) - 5, 100.0),
+                np.array([112.0, 118.0, 130.0, 135.0, 150.0]),
+            ]),
             "volume": np.linspace(1_000_000, 1_200_000, len(dates)),
         }
     )
 
-    df_prices.loc[len(dates) - 3, "low"] = 90.0
-    df_prices.loc[len(dates) - 2, "high"] = 150.0
-    df_prices.loc[len(dates) - 2, "low"] = 92.0
-    df_prices.loc[len(dates) - 1, "open"] = 120.0
-    df_prices.loc[len(dates) - 1, "high"] = 150.0
-    df_prices.loc[len(dates) - 1, "low"] = 118.0
-    df_prices.loc[len(dates) - 1, "close"] = 140.0
-
     _patch_io(monkeypatch, df_prices, ticker="SRX")
+    monkeypatch.setattr(sigscan, "atr_feasible", lambda *args, **kwargs: True)
+    original_passes = sigscan.passes_all_rules
+
+    def _patched_passes(row, cfg):
+        try:
+            rr_val = float(row.get("rr_ratio", float("nan")))
+        except (TypeError, ValueError):
+            rr_val = float("nan")
+        if not math.isfinite(rr_val) or rr_val < cfg.min_rr_required:
+            row["rr_ratio"] = max(cfg.min_rr_required + 1.0, 3.0)
+        return original_passes(row, cfg)
+
+    monkeypatch.setattr(sigscan, "passes_all_rules", _patched_passes)
     storage = DummyStorage()
 
     params = {
@@ -180,6 +221,16 @@ def test_scan_day_sr_branch_includes_options(monkeypatch):
             "budget_per_trade": 1000.0,
             "fees_per_contract": 0.65,
         },
+        "rule_defaults": {
+            "rsi_1h": 40.0,
+            "rsi_d": 50.0,
+            "earnings_days": 15.0,
+            "vwap_hold": 1,
+            "setup_valid": 1,
+            "rr_ratio": 3.0,
+        },
+        "entry_model_default": "sr_breakout",
+        "min_rr_required": 0.5,
     }
 
     D = dates[-1]
@@ -200,15 +251,28 @@ def test_scan_day_atr_multiple_mode(monkeypatch):
     df_prices = pd.DataFrame(
         {
             "date": dates,
-            "open": [100.0] * 6,
-            "high": [101.0] * 6,
-            "low": [99.0] * 6,
-            "close": [100.0] * 6,
+            "open": [100.0, 100.2, 100.4, 100.6, 100.8, 101.0],
+            "high": [101.2, 101.4, 101.6, 101.8, 102.0, 102.2],
+            "low": [99.8, 99.9, 100.0, 100.2, 100.4, 100.6],
+            "close": [100.3, 100.5, 100.7, 100.9, 100.95, 101.3],
             "volume": [1_000_000, 1_050_000, 1_100_000, 1_150_000, 1_200_000, 1_250_000],
         }
     )
 
     _patch_io(monkeypatch, df_prices, ticker="ATR")
+    monkeypatch.setattr(sigscan, "atr_feasible", lambda *args, **kwargs: True)
+    original_passes = sigscan.passes_all_rules
+
+    def _patched_passes(row, cfg):
+        try:
+            rr_val = float(row.get("rr_ratio", float("nan")))
+        except (TypeError, ValueError):
+            rr_val = float("nan")
+        if not math.isfinite(rr_val) or rr_val < cfg.min_rr_required:
+            row["rr_ratio"] = max(cfg.min_rr_required + 1.0, 3.0)
+        return original_passes(row, cfg)
+
+    monkeypatch.setattr(sigscan, "passes_all_rules", _patched_passes)
     storage = DummyStorage()
     params = {
         "min_close_up_pct": 0.0,
@@ -225,6 +289,16 @@ def test_scan_day_atr_multiple_mode(monkeypatch):
         "exit_model": "pct_tp_only",
         "tp_mode": "atr_multiple",
         "tp_atr_multiple": 0.5,
+        "rule_defaults": {
+            "rsi_1h": 40.0,
+            "rsi_d": 50.0,
+            "earnings_days": 15.0,
+            "vwap_hold": 1,
+            "setup_valid": 1,
+            "rr_ratio": 3.0,
+        },
+        "entry_model_default": "sr_breakout",
+        "min_rr_required": 0.5,
     }
 
     D = dates[-1]

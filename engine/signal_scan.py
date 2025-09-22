@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import datetime as dt
 from typing import TypedDict, Tuple, List, Dict, Any, Callable, Literal
 
@@ -15,6 +16,7 @@ from .features import atr as compute_atr
 from .replay import replay_trade, simulate_pct_target_only
 from .filters import atr_feasible
 from .options_spread import OptionsSpreadConfig, compute_vertical_spread_trade
+from .rules import RuleConfig, passes_all_rules
 from .utils_precedent import compute_precedent_hit_details, tp_fraction_from_row
 
 log = logging.getLogger(__name__)
@@ -40,6 +42,9 @@ class ScanParams(TypedDict, total=False):
     tp_sr_fraction: float
     tp_atr_multiple: float
     options_spread: dict
+    min_rr_required: float
+    rule_defaults: dict
+    entry_model_default: str
 
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
@@ -206,6 +211,21 @@ def scan_day(
         tp_mode = "sr_fraction"
 
     options_cfg = OptionsSpreadConfig.from_params(params.get("options_spread"))
+
+    min_rr_raw = params.get("min_rr_required", 2.0)
+    try:
+        min_rr_required = float(min_rr_raw)
+    except (TypeError, ValueError):
+        min_rr_required = 2.0
+    if not math.isfinite(min_rr_required) or min_rr_required < 2.0:
+        min_rr_required = 2.0
+    rule_cfg = RuleConfig(min_rr_required=min_rr_required)
+
+    rule_defaults = params.get("rule_defaults")
+    if not isinstance(rule_defaults, dict):
+        rule_defaults = {}
+
+    entry_model_default = str(params.get("entry_model_default", "") or "").strip()
 
     def _coerce_float(value: Any, default: float) -> float:
         try:
@@ -384,6 +404,33 @@ def scan_day(
             row["tp_frac_used"] = float(tp_frac) if tp_frac_valid else float("nan")
             row["tp_pct_used"] = float(tp_frac) * 100.0 if tp_frac_valid else float("nan")
 
+            rr_ratio = float("nan")
+            support_val = row.get("support")
+            if entry_valid and support_val is not None and not pd.isna(support_val):
+                try:
+                    support_float = float(support_val)
+                except (TypeError, ValueError):
+                    support_float = float("nan")
+                if math.isfinite(support_float):
+                    risk = float(entry_open_val) - support_float
+                    if risk > 0:
+                        tp_target_val = row.get("tp_price_abs_target")
+                        if tp_target_val is None or pd.isna(tp_target_val):
+                            tp_target_val = tp_abs_target
+                        try:
+                            tp_float = float(tp_target_val)
+                        except (TypeError, ValueError):
+                            tp_float = float("nan")
+                        if math.isfinite(tp_float):
+                            reward = tp_float - float(entry_open_val)
+                            if reward <= 0:
+                                reward = float(entry_open_val) - tp_float
+                            if reward > 0:
+                                rr_candidate = reward / risk
+                                if math.isfinite(rr_candidate):
+                                    rr_ratio = rr_candidate
+            row["rr_ratio"] = float(rr_ratio) if math.isfinite(rr_ratio) else float("nan")
+
             # Precedent hits
             hits_count = 0
             hits_details: List[Dict[str, object]] = []
@@ -479,7 +526,26 @@ def scan_day(
 
             include = ((not use_precedent) or prec_ok_bool) and ((not use_atr_feasible) or atr_ok_bool)
             if include:
+                for key, value in rule_defaults.items():
+                    row.setdefault(key, value)
+
+                passes_rules, fail_reasons = passes_all_rules(row, rule_cfg)
+                row["passes_all_rules"] = int(bool(passes_rules))
+                row["rule_fail_reasons"] = ",".join(fail_reasons)
                 cand_rows.append(row)
+
+                if not passes_rules:
+                    continue
+
+                entry_model_value = row.get("entry_model") or entry_model_default
+                entry_model = str(entry_model_value or "").strip()
+                if not entry_model:
+                    extra = list(fail_reasons)
+                    extra.append("entry_model_missing")
+                    row["rule_fail_reasons"] = ",".join(extra)
+                    row["passes_all_rules"] = 0
+                    continue
+                row["entry_model"] = entry_model
 
                 if exit_model == "pct_tp_only":
                     if not tp_frac_valid:
@@ -504,6 +570,7 @@ def scan_day(
                     out_row = {
                         **row,
                         "exit_model": exit_model,
+                        "entry_model": entry_model,
                         "tp_price": res.get("tp_price_abs_target"),
                         **res,
                     }
@@ -539,6 +606,8 @@ def scan_day(
                     )
 
                     out_row.update(options_row)
+                    out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
+                    out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
                     out_rows.append(out_row)
                 else:
                     if not tp_frac_valid:
@@ -556,7 +625,13 @@ def scan_day(
                         stop_price,
                         horizon_days=horizon,
                     )
-                    out_row = {**row, "exit_model": exit_model, "tp_price": tp_price, **out}
+                    out_row = {
+                        **row,
+                        "exit_model": exit_model,
+                        "entry_model": entry_model,
+                        "tp_price": tp_price,
+                        **out,
+                    }
 
                     atr_for_vol = row.get("atr_dminus1")
                     if atr_for_vol is None:
@@ -599,6 +674,8 @@ def scan_day(
                     )
 
                     out_row.update(options_row)
+                    out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
+                    out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
                     out_rows.append(out_row)
         except Exception as e:
             # Hard-guard: skip any pathological ticker instead of aborting whole run
@@ -708,6 +785,9 @@ def scan_day(
         stats["precedent_hits_max"] = None
     stats["precedent_fail_count"] = int(prec_fail_count)
     stats["candidates"] = len(cand_df)
+
+    if out_rows and all(int(r.get("passes_all_rules", 0) or 0) == 1 for r in out_rows):
+        log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
 
     return cand_df, out_df, fail_count, stats
 
