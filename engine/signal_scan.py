@@ -198,34 +198,50 @@ def scan_day(
     Must produce same columns as the UI page.
     """
 
+    # ---------- Backward-compat mapping for legacy callers ----------
+    # Accept old keys and map them into the new canonical names.
+    p: Dict[str, Any] = dict(params or {})
+    if "lookback_days" not in p and "vol_lookback" in p:
+        p["lookback_days"] = p["vol_lookback"]
+    if "horizon_days" not in p and "horizon" in p:
+        p["horizon_days"] = p["horizon"]
+    if "min_vol_multiple" not in p and "min_volume_multiple" in p:
+        p["min_vol_multiple"] = p["min_volume_multiple"]
+    # Also allow options flag to be read from the nested config if not provided at top-level
+    _opts = p.get("options_spread") or {}
+    if "options_spread_enabled" not in p and isinstance(_opts, dict) and "enabled" in _opts:
+        p["options_spread_enabled"] = bool(_opts.get("enabled"))
+    # ----------------------------------------------------------------
+
     members = _load_members(storage, cache_salt=storage.cache_salt())
     active = members_on_date(members, D.date())["ticker"].dropna().unique().tolist()
     total = len(active)
 
-    vol_lookback = int(params.get("lookback_days", 63))
-    atr_window = int(params.get("atr_window", 14))
-    atr_method = str(params.get("atr_method", "wilder") or "wilder").strip().lower()
-    min_close = float(params.get("min_close_up_pct", 0.0))
-    min_vol = float(params.get("min_vol_multiple", params.get("min_volume_multiple", 0.0)))
-    min_gap = float(params.get("min_gap_open_pct", 0.0))
-    horizon = int(params.get("horizon_days", 30))
-    sr_min = float(params.get("sr_min_ratio", 2.0))
-    sr_lookback = int(params.get("sr_lookback", 21))
-    use_precedent = bool(params.get("use_precedent", True))
-    use_atr_feasible = bool(params.get("use_atr_feasible", True))
-    prec_lookback = int(params.get("precedent_lookback", 252))
-    prec_window = int(params.get("precedent_window", 21))
-    min_prec_hits = int(params.get("min_precedent_hits", 1))
-    exit_model = str(params.get("exit_model", "pct_tp_only") or "pct_tp_only").strip().lower()
-    tp_mode = str(params.get("tp_mode", "sr_fraction") or "sr_fraction").strip().lower()
+    vol_lookback = int(p.get("lookback_days", 63))
+    atr_window = int(p.get("atr_window", 14))
+    atr_method = str(p.get("atr_method", "wilder") or "wilder").strip().lower()
+    min_close = float(p.get("min_close_up_pct", 0.0))
+    min_vol = float(p.get("min_vol_multiple", p.get("min_volume_multiple", 0.0)))
+    min_gap = float(p.get("min_gap_open_pct", 0.0))
+    horizon = int(p.get("horizon_days", 30))
+    sr_min = float(p.get("sr_min_ratio", 2.0))
+    sr_lookback = int(p.get("sr_lookback", 21))
+    use_precedent = bool(p.get("use_precedent", True))
+    use_atr_feasible = bool(p.get("use_atr_feasible", True))
+    prec_lookback = int(p.get("precedent_lookback", 252))
+    prec_window = int(p.get("precedent_window", 21))
+    min_prec_hits = int(p.get("min_precedent_hits", 1))
+    exit_model = str(p.get("exit_model", "pct_tp_only") or "pct_tp_only").strip().lower()
+    tp_mode = str(p.get("tp_mode", "sr_fraction") or "sr_fraction").strip().lower()
     if tp_mode not in ("sr_fraction", "atr_multiple"):
         tp_mode = "sr_fraction"
 
-    options_enabled = bool(params.get("options_spread_enabled", False))
-    options_cfg = OptionsSpreadConfig.from_params(params.get("options_spread"))
+    # Options: allow top-level flag or nested config flag to control enablement
+    options_cfg = OptionsSpreadConfig.from_params(p.get("options_spread"))
+    options_enabled = bool(p.get("options_spread_enabled", options_cfg.enabled))
     options_cfg.enabled = bool(options_enabled)
 
-    min_rr_raw = params.get("min_rr_required", 2.0)
+    min_rr_raw = p.get("min_rr_required", 2.0)
     try:
         min_rr_required = float(min_rr_raw)
     except (TypeError, ValueError):
@@ -233,7 +249,7 @@ def scan_day(
     if not math.isfinite(min_rr_required) or min_rr_required < 2.0:
         min_rr_required = 2.0
 
-    allow_missing_rr_raw = params.get("allow_missing_rr")
+    allow_missing_rr_raw = p.get("allow_missing_rr")
 
     def _coerce_bool(value: Any, default: bool = True) -> bool:
         if value is None:
@@ -248,14 +264,14 @@ def scan_day(
         return bool(value)
 
     allow_missing_rr = _coerce_bool(allow_missing_rr_raw, True)
-    debug_include_all = bool(params.get("debug_include_all", False))
+    debug_include_all = bool(p.get("debug_include_all", False))
 
     rule_cfg = RuleConfig(
         min_rr_required=min_rr_required,
         allow_missing_rr=allow_missing_rr,
     )
 
-    rule_defaults_raw = params.get("rule_defaults")
+    rule_defaults_raw = p.get("rule_defaults")
     if not isinstance(rule_defaults_raw, dict):
         rule_defaults_raw = {}
 
@@ -267,7 +283,7 @@ def scan_day(
     else:
         rule_defaults.update(DEFAULT_RULE_DEFAULTS)
 
-    entry_model_default = str(params.get("entry_model_default", "") or "").strip()
+    entry_model_default = str(p.get("entry_model_default", "") or "").strip()
     if not entry_model_default:
         entry_model_default = "sr_breakout"
 
@@ -277,8 +293,8 @@ def scan_day(
         except (TypeError, ValueError):
             return float(default)
 
-    tp_sr_fraction = _coerce_float(params.get("tp_sr_fraction", 0.50), 0.50)
-    tp_atr_multiple = _coerce_float(params.get("tp_atr_multiple", 0.50), 0.50)
+    tp_sr_fraction = _coerce_float(p.get("tp_sr_fraction", 0.50), 0.50)
+    tp_atr_multiple = _coerce_float(p.get("tp_atr_multiple", 0.50), 0.50)
 
     cand_rows: List[Dict[str, Any]] = []
     out_rows: List[Dict[str, Any]] = []
@@ -874,7 +890,7 @@ def scan_day(
 
     if out_rows:
         checked_atr_rows = out_rows[:50]
-        expected_window = int(params.get("atr_window", 14))
+        expected_window = int(p.get("atr_window", 14))
         atr_present = sum(
             1
             for r in checked_atr_rows
@@ -913,6 +929,7 @@ def scan_day(
         log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
 
     return cand_df, out_df, fail_count, stats
+
 
 
 
