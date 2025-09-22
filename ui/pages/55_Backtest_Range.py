@@ -118,6 +118,7 @@ OPTION_SPREAD_COLUMNS = [
     "fees_exit",
     "pnl_dollars",
     "win",
+    "opt_reason",
 ]
 
 ORDERED_COLUMNS: list[str] = list(
@@ -462,6 +463,34 @@ def page() -> None:
                 key="bt_opts_strike_tick",
             )
 
+        opt_anchor_cols = st.columns(2)
+        with opt_anchor_cols[0]:
+            opt_tp_anchor_mode = st.checkbox(
+                "Anchor legs to TP target",
+                value=True,
+                key="bt_opts_tp_anchor_mode",
+            )
+            opt_tp_anchor_offset_ticks = st.number_input(
+                "TP anchor offset (ticks)",
+                min_value=1,
+                value=1,
+                step=1,
+                key="bt_opts_tp_anchor_offset",
+            )
+        with opt_anchor_cols[1]:
+            opt_min_width_ticks = st.number_input(
+                "Min width (ticks)",
+                min_value=1,
+                value=1,
+                step=1,
+                key="bt_opts_min_width_ticks",
+            )
+            opt_enforce_debit_le_width = st.checkbox(
+                "Reject debit > width",
+                value=True,
+                key="bt_opts_enforce_debit_width",
+            )
+
         options_spread = {
             "enabled": bool(opt_enabled),
             "budget_per_trade": float(opt_budget),
@@ -477,6 +506,10 @@ def page() -> None:
             "max_otm_shift_pct": float(opt_max_otm_shift_pct),
             "fees_per_contract": float(opt_fees_per_contract),
             "strike_tick": float(opt_strike_tick),
+            "tp_anchor_mode": bool(opt_tp_anchor_mode),
+            "tp_anchor_offset_ticks": int(opt_tp_anchor_offset_ticks),
+            "min_width_ticks": int(opt_min_width_ticks),
+            "enforce_debit_le_width": bool(opt_enforce_debit_le_width),
         }
         save_outcomes = st.checkbox(
             "Save outcomes to lake", value=False, key="bt_save_outcomes"
@@ -1022,8 +1055,23 @@ def page() -> None:
             err_payload.update(runtime_info)
             st.error(err_payload)
         else:
-            contracts_series = pd.to_numeric(trades_df.get("contracts"), errors="coerce").fillna(0)
-            executed_contracts = int((contracts_series > 0).sum())
+            contracts_series = pd.to_numeric(trades_df.get("contracts"), errors="coerce")
+            non_na_contracts = contracts_series.dropna() if contracts_series is not None else pd.Series(dtype=float)
+            if not non_na_contracts.empty:
+                fractional_mask = (non_na_contracts - non_na_contracts.round()).abs() > 1e-6
+            else:
+                fractional_mask = pd.Series(dtype=bool)
+
+            if hasattr(fractional_mask, "any") and fractional_mask.any():
+                st.error(
+                    {
+                        "message": "Fractional contracts found in options results.",
+                        "rows": int(fractional_mask.sum()),
+                    }
+                )
+
+            contracts_filled = contracts_series.fillna(0) if contracts_series is not None else pd.Series(dtype=float)
+            executed_contracts = int((contracts_filled > 0).sum())
             if executed_contracts == 0 and options_state.get("enabled", True):
                 warn_container = st.container()
                 warn_container.warning(
@@ -1036,12 +1084,23 @@ def page() -> None:
                         "budget_per_trade": options_state.get("budget_per_trade"),
                         "fees_per_contract": options_state.get("fees_per_contract"),
                         "width_pct": options_state.get("width_pct"),
+                        "strike_tick": options_state.get("strike_tick"),
                         "contracts_gt_zero": executed_contracts,
                     }
                 )
                 debit_series = pd.to_numeric(
                     trades_df.get("debit_entry"), errors="coerce"
                 ).dropna()
+                if not debit_series.empty:
+                    fees_per_contract = float(options_state.get("fees_per_contract", 0.0) or 0.0)
+                    min_entry_cost = float((debit_series * 100.0 + 2.0 * fees_per_contract).min())
+                    warn_container.write(
+                        {
+                            "min_debit_entry": float(debit_series.min()),
+                            "example_min_entry_cost": min_entry_cost,
+                            "fees_per_contract": fees_per_contract,
+                        }
+                    )
                 if not debit_series.empty:
                     unique_vals = int(debit_series.nunique())
                     if unique_vals > 1:

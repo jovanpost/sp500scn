@@ -11,11 +11,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backtest.run_range import compute_spread_summary
+import engine.options_spread as options_spread_module
 from engine.options_spread import (
     OptionsSpreadConfig,
     black_scholes_call,
     black_scholes_put,
     build_vertical_spread,
+    choose_vertical_call_legs,
+    compute_contracts_and_costs,
     compute_vertical_spread_trade,
     evaluate_vertical_spread,
     estimate_vol,
@@ -85,6 +88,45 @@ def test_black_scholes_zero_time_intrinsic():
     assert black_scholes_put(95.0, 100.0, 0.0, 0.2) == pytest.approx(5.0)
 
 
+def test_choose_vertical_call_legs_basic():
+    lower, upper, meta = choose_vertical_call_legs(
+        tp_abs_target=20.0, strike_tick=0.5, tp_anchor_offset_ticks=1, min_width_ticks=1
+    )
+
+    assert upper == pytest.approx(19.5)
+    assert lower == pytest.approx(19.0)
+    assert meta["k2_target"] == pytest.approx(19.5)
+
+
+def test_choose_vertical_call_legs_invalid_target():
+    lower, upper, meta = choose_vertical_call_legs(
+        tp_abs_target=-5.0, strike_tick=1.0, tp_anchor_offset_ticks=1, min_width_ticks=1
+    )
+
+    assert lower is None and upper is None
+    assert meta["opt_reason"] == "tp_target_invalid"
+
+
+def test_compute_contracts_and_costs_budget_math():
+    contracts, cash = compute_contracts_and_costs(
+        debit_entry=7.94, budget_per_trade=794.0, fees_per_contract=0.0
+    )
+    assert contracts == 1
+    assert cash == pytest.approx(794.0)
+
+    contracts_small, cash_small = compute_contracts_and_costs(
+        debit_entry=7.94, budget_per_trade=793.99, fees_per_contract=0.0
+    )
+    assert contracts_small == 0
+    assert cash_small == pytest.approx(0.0)
+
+    contracts_with_fees, cash_with_fees = compute_contracts_and_costs(
+        debit_entry=1.23, budget_per_trade=500.0, fees_per_contract=0.65
+    )
+    assert contracts_with_fees == 4
+    assert cash_with_fees == pytest.approx(497.2, rel=1e-6)
+
+
 def test_build_vertical_spread_affordable():
     cfg = OptionsSpreadConfig(
         budget_per_trade=1000.0,
@@ -93,11 +135,15 @@ def test_build_vertical_spread_affordable():
         dividend_yield=0.0,
     )
 
-    spread = build_vertical_spread(spot=100.0, direction="up", sigma=0.2, config=cfg)
+    spread, meta = build_vertical_spread(
+        spot=100.0, direction="up", sigma=0.2, config=cfg, tp_abs_target=110.0
+    )
     assert spread is not None
+    assert meta.get("opt_reason") == ""
+    assert meta.get("opt_structure") == "CALL_VERTICAL_DEBIT"
     assert spread.structure == "bull_call"
-    assert spread.lower_strike == pytest.approx(round(100.0))
-    assert spread.upper_strike > spread.lower_strike
+    assert spread.lower_strike == pytest.approx(108.0, rel=1e-6)
+    assert spread.upper_strike == pytest.approx(109.0, rel=1e-6)
     expected_width_frac = (spread.upper_strike - spread.lower_strike) / 100.0
     assert spread.width_frac == pytest.approx(expected_width_frac, rel=1e-6)
     assert spread.contracts >= 1
@@ -110,10 +156,12 @@ def test_build_vertical_spread_affordability_shift():
         fees_per_contract=0.0,
         risk_free_rate=0.0,
         dividend_yield=0.0,
+        tp_anchor_mode=False,
     )
 
-    spread = build_vertical_spread(spot=100.0, direction="up", sigma=0.8, config=cfg)
+    spread, meta = build_vertical_spread(spot=100.0, direction="up", sigma=0.8, config=cfg)
     assert spread is not None
+    assert meta.get("opt_reason") == ""
     assert spread.lower_strike > 100.0  # shifted OTM to fit budget
     assert spread.upper_strike - spread.lower_strike == pytest.approx(5.0, rel=1e-6)
     assert spread.width_frac == pytest.approx((spread.upper_strike - spread.lower_strike) / 100.0, rel=1e-6)
@@ -127,7 +175,9 @@ def test_exit_vertical_spread_intrinsic_cap():
         risk_free_rate=0.0,
         dividend_yield=0.0,
     )
-    spread = build_vertical_spread(spot=100.0, direction="up", sigma=0.2, config=cfg)
+    spread, _ = build_vertical_spread(
+        spot=100.0, direction="up", sigma=0.2, config=cfg, tp_abs_target=110.0
+    )
     assert spread is not None
 
     width = spread.upper_strike - spread.lower_strike
@@ -151,7 +201,9 @@ def test_exit_vertical_spread_otm_loss():
         risk_free_rate=0.0,
         dividend_yield=0.0,
     )
-    spread = build_vertical_spread(spot=100.0, direction="up", sigma=0.25, config=cfg)
+    spread, _ = build_vertical_spread(
+        spot=100.0, direction="up", sigma=0.25, config=cfg, tp_abs_target=110.0
+    )
     assert spread is not None
 
     outcome = evaluate_vertical_spread(
@@ -196,11 +248,14 @@ def test_compute_vertical_spread_trade_matches_bs_exit():
         config=cfg,
         atr_value=None,
         exit_reason="tp",
+        tp_abs_target=105.0,
     )
 
     assert result["contracts"] >= 1
     assert result["debit_entry"] > 0
     assert result["width_frac"] == pytest.approx((result["K2"] - result["K1"]) / 100.0, rel=1e-6)
+    assert result["opt_structure"] == "CALL_VERTICAL_DEBIT"
+    assert result["opt_reason"] == ""
 
     days_to_exit = int(result["T_exit_days"])
     if days_to_exit > 0:
@@ -219,6 +274,55 @@ def test_compute_vertical_spread_trade_matches_bs_exit():
 
     assert result["debit_exit"] == pytest.approx(expected_exit, abs=0.05)
     assert result["revenue"] == pytest.approx(result["debit_exit"] * result["contracts"] * 100.0, rel=1e-9)
+
+
+def test_build_vertical_spread_rejects_debit_gt_width(monkeypatch):
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=1000.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+    )
+
+    monkeypatch.setattr(options_spread_module, "price_vertical_spread", lambda *args, **kwargs: 1.5)
+    spread, meta = build_vertical_spread(
+        spot=100.0, direction="up", sigma=0.2, config=cfg, tp_abs_target=105.0
+    )
+
+    assert spread is None
+    assert meta.get("opt_reason") == "invalid_debit_gt_width"
+
+
+def test_compute_vertical_spread_trade_budget_skip():
+    dates = pd.bdate_range("2023-01-02", periods=40)
+    close = pd.Series([100.0] * len(dates), index=dates)
+    high = pd.Series([102.0] * len(dates), index=dates)
+    low = pd.Series([98.0] * len(dates), index=dates)
+    prices = pd.DataFrame({"close": close, "high": high, "low": low})
+
+    cfg = OptionsSpreadConfig(
+        budget_per_trade=10.0,
+        fees_per_contract=0.0,
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+    )
+
+    result = compute_vertical_spread_trade(
+        prices=prices,
+        entry_ts=dates[10],
+        exit_ts=dates[12],
+        entry_price=100.0,
+        exit_price=101.0,
+        direction="up",
+        config=cfg,
+        atr_value=None,
+        exit_reason="tp",
+        tp_abs_target=105.0,
+    )
+
+    assert result["contracts"] == 0
+    assert result["opt_reason"] == "insufficient_budget"
+    assert math.isnan(result["cash_outlay"]) or result["cash_outlay"] == 0.0 or result["cash_outlay"] == pytest.approx(0.0)
 
 
 def test_compute_spread_summary_includes_dollar_fields():

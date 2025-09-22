@@ -535,6 +535,7 @@ def scan_day(
                         config=options_cfg,
                         atr_value=atr_for_vol,
                         exit_reason=res.get("exit_reason"),
+                        tp_abs_target=tp_abs_target,
                     )
 
                     out_row.update(options_row)
@@ -594,6 +595,7 @@ def scan_day(
                         config=options_cfg,
                         atr_value=atr_for_vol,
                         exit_reason=out.get("exit_reason"),
+                        tp_abs_target=tp_price,
                     )
 
                     out_row.update(options_row)

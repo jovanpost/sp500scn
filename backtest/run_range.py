@@ -309,6 +309,7 @@ def run_range(
         "revenue",
         "fees_exit",
         "pnl_dollars",
+        "opt_reason",
         "win",
     ]
 

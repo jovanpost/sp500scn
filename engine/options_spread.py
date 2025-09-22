@@ -12,6 +12,84 @@ _ANNUALIZATION_FACTOR = math.sqrt(252.0)
 _EPSILON_TIME = 1.0 / 3650.0
 
 
+def floor_to_tick(value: float, tick: float) -> float:
+    """Floor a value to the nearest lower multiple of ``tick``."""
+
+    if tick <= 0 or not math.isfinite(value):
+        return float("nan")
+    floored = math.floor(value / tick) * tick
+    return round(floored, 6)
+
+
+def choose_vertical_call_legs(
+    tp_abs_target: float,
+    strike_tick: float,
+    tp_anchor_offset_ticks: int = 1,
+    min_width_ticks: int = 1,
+) -> tuple[float | None, float | None, dict]:
+    """Select strikes for a call debit spread anchored to the TP target."""
+
+    meta: dict[str, float] = {}
+    if strike_tick <= 0 or not math.isfinite(strike_tick):
+        return None, None, {"opt_reason": "invalid_strike_tick", **meta}
+
+    offset_ticks = max(int(tp_anchor_offset_ticks), 1)
+    width_ticks = max(int(min_width_ticks), 1)
+
+    if not math.isfinite(tp_abs_target) or tp_abs_target <= 0:
+        return None, None, {"opt_reason": "tp_target_invalid", **meta}
+
+    k2_target = tp_abs_target - offset_ticks * strike_tick
+    meta["k2_target"] = k2_target
+    K2 = floor_to_tick(k2_target, strike_tick)
+    if not math.isfinite(K2) or K2 <= 0:
+        return None, None, {"opt_reason": "invalid_leg_nonpositive", **meta}
+
+    K1 = round(K2 - width_ticks * strike_tick, 6)
+    if K1 <= 0:
+        return None, None, {"opt_reason": "invalid_leg_nonpositive", **meta}
+
+    if not (K2 < tp_abs_target):
+        return None, None, {"opt_reason": "k2_not_below_tp", **meta}
+    if not (K1 < K2):
+        return None, None, {"opt_reason": "k1_not_below_k2", **meta}
+
+    width_ratio = (K2 - K1) / strike_tick
+    if not math.isfinite(width_ratio) or abs(width_ratio - round(width_ratio)) > 1e-6:
+        return None, None, {"opt_reason": "width_not_tick_multiple", **meta}
+
+    return float(K1), float(K2), meta
+
+
+def compute_contracts_and_costs(
+    debit_entry: float,
+    budget_per_trade: float,
+    fees_per_contract: float,
+    *,
+    legs: int = 2,
+) -> tuple[int, float]:
+    """Return contracts purchasable and total cash outlay including entry fees."""
+
+    if debit_entry <= 0 or not math.isfinite(debit_entry):
+        return 0, 0.0
+
+    entry_fees_per_contract = max(legs, 0) * max(float(fees_per_contract), 0.0)
+    cost_per_contract_entry = debit_entry * 100.0 + entry_fees_per_contract
+    if cost_per_contract_entry <= 0:
+        return 0, 0.0
+
+    affordable = float(budget_per_trade)
+    if not math.isfinite(affordable) or affordable <= 0:
+        return 0, 0.0
+
+    contracts = int(affordable // cost_per_contract_entry)
+    if contracts <= 0:
+        return 0, 0.0
+
+    cash_outlay = contracts * debit_entry * 100.0 + contracts * entry_fees_per_contract
+    return contracts, float(cash_outlay)
+
+
 @dataclass
 class OptionsSpreadConfig:
     enabled: bool = True
@@ -29,6 +107,10 @@ class OptionsSpreadConfig:
     max_otm_shift_pct: float = 20.0
     fees_per_contract: float = 0.65
     strike_tick: float = 1.0
+    tp_anchor_mode: bool = True
+    tp_anchor_offset_ticks: int = 1
+    min_width_ticks: int = 1
+    enforce_debit_le_width: bool = True
 
     @classmethod
     def from_params(
@@ -86,16 +168,17 @@ class OptionsSpreadConfig:
             "sigma_entry": float("nan"),
             "debit_entry": float("nan"),
             "contracts": 0,
-            "cash_outlay": float("nan"),
-            "fees_entry": float("nan"),
+            "cash_outlay": 0.0,
+            "fees_entry": 0.0,
             "S_exit": float("nan"),
             "T_exit_days": float("nan"),
             "sigma_exit": float("nan"),
             "debit_exit": float("nan"),
-            "revenue": float("nan"),
-            "fees_exit": float("nan"),
-            "pnl_dollars": float("nan"),
+            "revenue": 0.0,
+            "fees_exit": 0.0,
+            "pnl_dollars": 0.0,
             "win": pd.NA,
+            "opt_reason": "",
         }
 
 
@@ -313,14 +396,82 @@ def build_vertical_spread(
     direction: str,
     sigma: float,
     config: OptionsSpreadConfig,
-) -> VerticalSpread | None:
+    tp_abs_target: float | None = None,
+) -> tuple[VerticalSpread | None, dict]:
+    meta: dict[str, object] = {}
     if not config.enabled or config.kind != "vertical_debit":
-        return None
+        meta["opt_reason"] = "options_disabled"
+        return None, meta
     if not math.isfinite(spot) or spot <= 0 or not math.isfinite(sigma) or sigma <= 0:
-        return None
+        meta["opt_reason"] = "invalid_underlying"
+        return None, meta
 
     tick = float(config.strike_tick or 1.0)
     structure = "bull_call" if direction.lower() != "down" else "bear_put"
+    meta["opt_structure"] = (
+        "CALL_VERTICAL_DEBIT" if structure == "bull_call" else "PUT_VERTICAL_DEBIT"
+    )
+
+    time_years = max(float(config.expiry_days) / 365.0, _EPSILON_TIME)
+    r = float(config.risk_free_rate)
+    q = float(config.dividend_yield)
+
+    if config.tp_anchor_mode and structure == "bull_call":
+        tp_value = float(tp_abs_target) if tp_abs_target is not None else float("nan")
+        lower, upper, anchor_meta = choose_vertical_call_legs(
+            tp_value,
+            strike_tick=tick,
+            tp_anchor_offset_ticks=int(config.tp_anchor_offset_ticks),
+            min_width_ticks=int(config.min_width_ticks),
+        )
+        meta.update(anchor_meta)
+        if lower is None or upper is None:
+            meta.setdefault("opt_reason", anchor_meta.get("opt_reason", "tp_anchor_failed"))
+            return None, meta
+
+        spread_width = float(upper - lower)
+        width_frac = spread_width / spot if spot else float("nan")
+        debit = price_vertical_spread(structure, spot, lower, upper, time_years, sigma, r, q)
+        meta.update(
+            {
+                "K1": float(lower),
+                "K2": float(upper),
+                "width_frac": float(width_frac),
+                "debit_entry": float(debit),
+            }
+        )
+
+        if not math.isfinite(debit) or debit <= 0:
+            meta["opt_reason"] = "pricing_failed"
+            return None, meta
+
+        width_dollars = spread_width * 100.0
+        if config.enforce_debit_le_width and (debit * 100.0 > width_dollars + 1e-6):
+            meta.update({"opt_reason": "invalid_debit_gt_width", "width_dollars": width_dollars})
+            return None, meta
+
+        contracts, cash_outlay = compute_contracts_and_costs(
+            debit, config.budget_per_trade, config.fees_per_contract, legs=2
+        )
+        if contracts <= 0:
+            meta["opt_reason"] = "insufficient_budget"
+            return None, meta
+
+        fees_entry = contracts * 2.0 * float(config.fees_per_contract)
+        spread = VerticalSpread(
+            structure=structure,
+            lower_strike=float(lower),
+            upper_strike=float(upper),
+            width_frac=float(width_frac),
+            expiry_days=int(config.expiry_days),
+            sigma_entry=float(sigma),
+            debit_entry=float(debit),
+            contracts=int(contracts),
+            cash_outlay=float(cash_outlay),
+            fees_entry=float(fees_entry),
+        )
+        meta["opt_reason"] = ""
+        return spread, meta
 
     atm = _round_to_tick(spot, tick)
     if structure == "bull_call":
@@ -348,35 +499,15 @@ def build_vertical_spread(
         if lower >= upper:
             lower = max(upper - tick, tick)
 
-    spread_width = max(upper - lower, tick)
-    if upper <= lower:
-        return None
+    base_lower = float(lower)
+    base_upper = float(upper)
+    last_meta: dict[str, object] = {}
 
-    time_years = max(float(config.expiry_days) / 365.0, _EPSILON_TIME)
-    debit = price_vertical_spread(
-        structure,
-        spot,
-        lower,
-        upper,
-        time_years,
-        sigma,
-        float(config.risk_free_rate),
-        float(config.dividend_yield),
-    )
-    if not math.isfinite(debit) or debit <= 0:
-        return None
+    attempts = [0.0]
+    attempts.extend(np.arange(1.0, float(config.max_otm_shift_pct) + 1.0, 1.0))
 
-    entry_fee_per_spread = 2.0 * float(config.fees_per_contract)
-    budget = float(config.budget_per_trade)
-    if budget <= entry_fee_per_spread:
-        return None
-
-    contracts = _max_contracts(budget, debit, entry_fee_per_spread)
-
-    if contracts < 1:
-        base_lower = lower
-        base_upper = upper
-        for pct in np.arange(1.0, float(config.max_otm_shift_pct) + 1.0, 1.0):
+    for pct in attempts:
+        if pct > 0:
             shift = pct / 100.0
             if structure == "bull_call":
                 lower = _round_to_tick(base_lower * (1.0 + shift), tick)
@@ -389,62 +520,57 @@ def build_vertical_spread(
                 if lower >= upper:
                     lower = max(upper - tick, tick)
 
-            debit = price_vertical_spread(
-                structure,
-                spot,
-                lower,
-                upper,
-                time_years,
-                sigma,
-                float(config.risk_free_rate),
-                float(config.dividend_yield),
-            )
-            if not math.isfinite(debit) or debit <= 0:
-                continue
-            contracts = _max_contracts(budget, debit, entry_fee_per_spread)
-            if contracts >= 1:
-                break
-        if contracts < 1:
-            return None
+        spread_width = float(upper - lower)
+        if spread_width <= 0:
+            continue
 
-    width_frac = (upper - lower) / spot if spot else float("nan")
-    cash_outlay, fees_entry = _cash_outlay(contracts, debit, entry_fee_per_spread)
+        width_frac = spread_width / spot if spot else float("nan")
+        debit = price_vertical_spread(structure, spot, lower, upper, time_years, sigma, r, q)
+        attempt_meta = {
+            "K1": float(lower),
+            "K2": float(upper),
+            "width_frac": float(width_frac),
+            "debit_entry": float(debit),
+        }
 
-    return VerticalSpread(
-        structure=structure,
-        lower_strike=float(lower),
-        upper_strike=float(upper),
-        width_frac=float(width_frac),
-        expiry_days=int(config.expiry_days),
-        sigma_entry=float(sigma),
-        debit_entry=float(debit),
-        contracts=int(contracts),
-        cash_outlay=float(cash_outlay),
-        fees_entry=float(fees_entry),
-    )
+        if not math.isfinite(debit) or debit <= 0:
+            last_meta = attempt_meta
+            continue
 
+        width_dollars = spread_width * 100.0
+        if config.enforce_debit_le_width and (debit * 100.0 > width_dollars + 1e-6):
+            attempt_meta.update({"opt_reason": "invalid_debit_gt_width", "width_dollars": width_dollars})
+            meta.update(attempt_meta)
+            return None, meta
 
-def _max_contracts(budget: float, debit: float, entry_fee_per_spread: float) -> int:
-    if debit <= 0:
-        return 0
-    cost_per_spread = debit * 100.0
-    if cost_per_spread <= 0:
-        return 0
-    max_contracts = math.floor((budget - entry_fee_per_spread) / cost_per_spread)
-    if max_contracts <= 0:
-        return 0
-    total_cost = max_contracts * cost_per_spread + max_contracts * entry_fee_per_spread
-    while max_contracts > 0 and total_cost - budget > 1e-6:
-        max_contracts -= 1
-        total_cost = max_contracts * cost_per_spread + max_contracts * entry_fee_per_spread
-    return int(max_contracts)
+        contracts, cash_outlay = compute_contracts_and_costs(
+            debit, config.budget_per_trade, config.fees_per_contract, legs=2
+        )
+        if contracts <= 0:
+            last_meta = attempt_meta
+            continue
 
+        fees_entry = contracts * 2.0 * float(config.fees_per_contract)
+        spread = VerticalSpread(
+            structure=structure,
+            lower_strike=float(lower),
+            upper_strike=float(upper),
+            width_frac=float(width_frac),
+            expiry_days=int(config.expiry_days),
+            sigma_entry=float(sigma),
+            debit_entry=float(debit),
+            contracts=int(contracts),
+            cash_outlay=float(cash_outlay),
+            fees_entry=float(fees_entry),
+        )
+        attempt_meta["opt_reason"] = ""
+        meta.update(attempt_meta)
+        return spread, meta
 
-def _cash_outlay(contracts: int, debit: float, entry_fee_per_spread: float) -> tuple[float, float]:
-    if contracts <= 0:
-        return 0.0, 0.0
-    fees = contracts * entry_fee_per_spread
-    return contracts * debit * 100.0 + fees, fees
+    failure_meta = {"opt_reason": "insufficient_budget"}
+    failure_meta.update(last_meta)
+    meta.update(failure_meta)
+    return None, meta
 
 
 def evaluate_vertical_spread(
@@ -500,9 +626,11 @@ def compute_vertical_spread_trade(
     config: OptionsSpreadConfig,
     atr_value: float | Iterable[float] | None = None,
     exit_reason: str | None = None,
+    tp_abs_target: float | None = None,
 ) -> dict:
     result = config.empty_result()
     if not config.enabled or config.kind != "vertical_debit":
+        result["opt_reason"] = "options_disabled"
         return result
 
     if (
@@ -513,9 +641,11 @@ def compute_vertical_spread_trade(
         or entry_price <= 0
         or exit_price <= 0
     ):
+        result["opt_reason"] = "invalid_price_data"
         return result
 
     if not isinstance(prices.index, pd.DatetimeIndex):
+        result["opt_reason"] = "invalid_price_index"
         return result
 
     entry_ts = pd.Timestamp(entry_ts).tz_localize(None)
@@ -527,6 +657,7 @@ def compute_vertical_spread_trade(
 
     hist = prices.loc[prices.index < entry_ts]
     if hist.empty:
+        result["opt_reason"] = "insufficient_history"
         return result
 
     lookback = max(int(config.vol_lookback_days), 1)
@@ -540,10 +671,38 @@ def compute_vertical_spread_trade(
         vol_multiplier=config.vol_multiplier,
     )
     if not math.isfinite(sigma_entry) or sigma_entry <= 0:
+        result["opt_reason"] = "vol_estimate_invalid"
         return result
 
-    spread = build_vertical_spread(entry_price, direction, sigma_entry, config)
+    spread, meta = build_vertical_spread(
+        entry_price,
+        direction,
+        sigma_entry,
+        config,
+        tp_abs_target=tp_abs_target,
+    )
+
+    opt_structure = meta.get("opt_structure")
+    if opt_structure:
+        result["opt_structure"] = str(opt_structure)
+
+    if meta:
+        for key in ("K1", "K2", "width_frac", "debit_entry"):
+            if key in meta and meta[key] is not None:
+                try:
+                    result[key] = float(meta[key])
+                except (TypeError, ValueError):
+                    continue
+        if "width_frac" in meta and meta.get("width_frac") is not None:
+            try:
+                result["width_pct"] = float(meta["width_frac"]) * 100.0
+            except (TypeError, ValueError):
+                pass
+
     if spread is None or spread.contracts <= 0:
+        result["opt_reason"] = str(meta.get("opt_reason", "spread_unavailable"))
+        result["sigma_entry"] = float(sigma_entry)
+        result["T_entry_days"] = float(config.expiry_days)
         return result
 
     expiry_ts = entry_ts + pd.Timedelta(days=int(config.expiry_days))
@@ -574,7 +733,6 @@ def compute_vertical_spread_trade(
 
     result.update(
         {
-            "opt_structure": spread.structure,
             "K1": float(spread.lower_strike),
             "K2": float(spread.upper_strike),
             "width_frac": float(spread.width_frac),
@@ -593,8 +751,14 @@ def compute_vertical_spread_trade(
             "fees_exit": float(outcome.fees_exit),
             "pnl_dollars": float(outcome.pnl),
             "win": bool(outcome.win),
+            "opt_reason": str(meta.get("opt_reason", "")),
         }
     )
+
+    if opt_structure:
+        result["opt_structure"] = str(opt_structure)
+    else:
+        result["opt_structure"] = spread.structure
 
     return result
 
