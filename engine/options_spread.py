@@ -117,8 +117,6 @@ def _iter_call_pairs(
     def _chain_iter() -> Iterable[tuple[float, float]]:
         if not chain:
             return []
-        if len(chain) < 2:
-            return []
         if anchor_mode and tp_abs_target is not None and math.isfinite(tp_abs_target):
             idx = bisect.bisect_right(chain, float(tp_abs_target)) - 1
             idx = max(1, min(idx, len(chain) - 1))
