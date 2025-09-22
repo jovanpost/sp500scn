@@ -22,6 +22,16 @@ from .utils_precedent import compute_precedent_hit_details, tp_fraction_from_row
 log = logging.getLogger(__name__)
 
 
+DEFAULT_RULE_DEFAULTS: Dict[str, Any] = {
+    "rsi_1h": 40.0,
+    "rsi_d": 50.0,
+    "earnings_days": 10.0,
+    "vwap_hold": 1,
+    "setup_valid": 1,
+    "rr_ratio": 3.0,
+}
+
+
 class ScanParams(TypedDict, total=False):
     min_close_up_pct: float
     min_vol_multiple: float
@@ -221,11 +231,21 @@ def scan_day(
         min_rr_required = 2.0
     rule_cfg = RuleConfig(min_rr_required=min_rr_required)
 
-    rule_defaults = params.get("rule_defaults")
-    if not isinstance(rule_defaults, dict):
-        rule_defaults = {}
+    rule_defaults_raw = params.get("rule_defaults")
+    if not isinstance(rule_defaults_raw, dict):
+        rule_defaults_raw = {}
+
+    rule_defaults: Dict[str, Any] = {}
+    if rule_defaults_raw:
+        rule_defaults.update(rule_defaults_raw)
+        for key, value in DEFAULT_RULE_DEFAULTS.items():
+            rule_defaults.setdefault(key, value)
+    else:
+        rule_defaults.update(DEFAULT_RULE_DEFAULTS)
 
     entry_model_default = str(params.get("entry_model_default", "") or "").strip()
+    if not entry_model_default:
+        entry_model_default = "sr_breakout"
 
     def _coerce_float(value: Any, default: float) -> float:
         try:
@@ -240,7 +260,14 @@ def scan_day(
     out_rows: List[Dict[str, Any]] = []
     fail_count = 0
 
-    stats = {"universe": len(active), "loaded": 0, "candidates": 0}
+    stats = {
+        "universe": len(active),
+        "loaded": 0,
+        "candidates": 0,
+        "passed_gate": 0,
+        "skipped_no_entry_model": 0,
+        "failed_gate": 0,
+    }
     stats.setdefault("events", [])
     prec_hit_values: List[int] = []
     prec_fail_count = 0
@@ -529,14 +556,18 @@ def scan_day(
                 for key, value in rule_defaults.items():
                     row.setdefault(key, value)
 
+                stats["candidates"] += 1
+
                 passes_rules, fail_reasons = passes_all_rules(row, rule_cfg)
                 row["passes_all_rules"] = int(bool(passes_rules))
                 row["rule_fail_reasons"] = ",".join(fail_reasons)
                 cand_rows.append(row)
 
                 if not passes_rules:
+                    stats["failed_gate"] += 1
                     continue
 
+                stats["passed_gate"] += 1
                 entry_model_value = row.get("entry_model") or entry_model_default
                 entry_model = str(entry_model_value or "").strip()
                 if not entry_model:
@@ -544,6 +575,7 @@ def scan_day(
                     extra.append("entry_model_missing")
                     row["rule_fail_reasons"] = ",".join(extra)
                     row["passes_all_rules"] = 0
+                    stats["skipped_no_entry_model"] += 1
                     continue
                 row["entry_model"] = entry_model
 
@@ -785,6 +817,13 @@ def scan_day(
         stats["precedent_hits_max"] = None
     stats["precedent_fail_count"] = int(prec_fail_count)
     stats["candidates"] = len(cand_df)
+
+    if stats["candidates"] > 0 and stats.get("passed_gate", 0) == 0:
+        log.warning(
+            "scan_day: %d candidates but none passed rule gate on %s",
+            stats["candidates"],
+            pd.Timestamp(D).date(),
+        )
 
     if out_rows and all(int(r.get("passes_all_rules", 0) or 0) == 1 for r in out_rows):
         log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
