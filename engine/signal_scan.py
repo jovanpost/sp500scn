@@ -54,6 +54,7 @@ class ScanParams(TypedDict, total=False):
     min_rr_required: float
     rule_defaults: dict
     entry_model_default: str
+    debug_include_all: bool  # optional instrumentation bypass
 
 
 @st.cache_data(show_spinner=False, hash_funcs={Storage: lambda _: 0})
@@ -228,6 +229,7 @@ def scan_day(
         min_rr_required = 2.0
     if not math.isfinite(min_rr_required) or min_rr_required < 2.0:
         min_rr_required = 2.0
+
     allow_missing_rr_raw = params.get("allow_missing_rr")
 
     def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -243,6 +245,7 @@ def scan_day(
         return bool(value)
 
     allow_missing_rr = _coerce_bool(allow_missing_rr_raw, True)
+    debug_include_all = bool(params.get("debug_include_all", False))
 
     rule_cfg = RuleConfig(
         min_rr_required=min_rr_required,
@@ -287,6 +290,11 @@ def scan_day(
         "failed_gate": 0,
         "failed_rr_missing": 0,
         "failed_rr_below": 0,
+        # NEW instrumentation counters
+        "prefilter_sr_reject": 0,
+        "prefilter_close_vol_gap_reject": 0,
+        "prefilter_include_block_prec": 0,
+        "prefilter_include_block_atr": 0,
     }
     stats.setdefault("events", [])
     prec_hit_values: List[int] = []
@@ -336,6 +344,7 @@ def scan_day(
             sr_ok = not np.isnan(sr_ratio_float) and sr_ratio_float >= sr_min
 
             if not sr_ok:
+                stats["prefilter_sr_reject"] += 1
                 stats["events"].append(
                     {
                         "event": "sr_reject",
@@ -345,10 +354,13 @@ def scan_day(
                         "sr_min": float(sr_min),
                     }
                 )
-                continue
+                if not debug_include_all:
+                    continue  # keep original behavior unless debugging
 
             if not (close_ok and vol_ok and gap_ok):
-                continue
+                stats["prefilter_close_vol_gap_reject"] += 1
+                if not debug_include_all:
+                    continue
 
             row: Dict[str, Any] = {"ticker": t, **m}
             row["date"] = pd.Timestamp(D_ts).tz_localize(None)
@@ -570,172 +582,179 @@ def scan_day(
             row["reasons"] = ",".join(reasons)
 
             include = ((not use_precedent) or prec_ok_bool) and ((not use_atr_feasible) or atr_ok_bool)
-            if include:
-                for key, value in rule_defaults.items():
-                    row.setdefault(key, value)
+            if not include and not debug_include_all:
+                if use_precedent and not prec_ok_bool:
+                    stats["prefilter_include_block_prec"] += 1
+                if use_atr_feasible and not atr_ok_bool:
+                    stats["prefilter_include_block_atr"] += 1
+                continue  # blocked before rule gate
 
-                stats["candidates"] += 1
+            # From here, we proceed because include==True OR debug_include_all==True
+            for key, value in rule_defaults.items():
+                row.setdefault(key, value)
 
-                passes_rules, fail_reasons = passes_all_rules(row, rule_cfg)
-                row["passes_all_rules"] = int(bool(passes_rules))
-                row["rule_fail_reasons"] = ",".join(fail_reasons)
-                cand_rows.append(row)
+            stats["candidates"] += 1
 
-                if "rr_fail" in fail_reasons:
-                    rr_value = _infer_rr_ratio(row)
-                    if rr_value is None:
-                        if len(fail_reasons) == 1:
-                            stats["failed_rr_missing"] += 1
-                    else:
-                        if rr_value < rule_cfg.min_rr_required:
-                            stats["failed_rr_below"] += 1
+            passes_rules, fail_reasons = passes_all_rules(row, rule_cfg)
+            row["passes_all_rules"] = int(bool(passes_rules))
+            row["rule_fail_reasons"] = ",".join(fail_reasons)
+            cand_rows.append(row)
 
-                if not passes_rules:
-                    stats["failed_gate"] += 1
-                    continue
-
-                stats["passed_gate"] += 1
-                entry_model_value = row.get("entry_model") or entry_model_default
-                entry_model = str(entry_model_value or "").strip()
-                if not entry_model:
-                    extra = list(fail_reasons)
-                    extra.append("entry_model_missing")
-                    row["rule_fail_reasons"] = ",".join(extra)
-                    row["passes_all_rules"] = 0
-                    stats["skipped_no_entry_model"] += 1
-                    continue
-                row["entry_model"] = entry_model
-
-                if exit_model == "pct_tp_only":
-                    if not tp_frac_valid:
-                        continue
-                    entry_open_val = row.get("entry_open")
-                    if entry_open_val is None or pd.isna(entry_open_val):
-                        continue
-                    entry_open = float(entry_open_val)
-                    price_cols = [c for c in ("open", "high", "low", "close") if c in df_idx.columns]
-                    if not price_cols:
-                        continue
-                    tp_pct_percent = float(tp_frac) * 100.0
-                    res = simulate_pct_target_only(
-                        df_idx[price_cols],
-                        pd.Timestamp(D_ts),
-                        entry_open,
-                        tp_pct_percent,
-                        horizon,
-                    )
-                    if res is None:
-                        continue
-                    out_row = {
-                        **row,
-                        "exit_model": exit_model,
-                        "entry_model": entry_model,
-                        "tp_price": res.get("tp_price_abs_target"),
-                        **res,
-                    }
-
-                    atr_for_vol = row.get("atr_dminus1")
-                    if atr_for_vol is None:
-                        atr_for_vol = row.get("atr_value_dm1")
-
-                    entry_open_price = row.get("entry_open")
-                    exit_price_val = res.get("exit_price")
-                    tp_abs_target = out_row.get("tp_price_abs_target")
-                    direction = "up"
-                    if (
-                        entry_open_price is not None
-                        and not pd.isna(entry_open_price)
-                        and tp_abs_target is not None
-                        and not pd.isna(tp_abs_target)
-                        and float(tp_abs_target) < float(entry_open_price)
-                    ):
-                        direction = "down"
-
-                    options_row = compute_vertical_spread_trade(
-                        prices=df_idx,
-                        entry_ts=pd.Timestamp(D_ts),
-                        exit_ts=res.get("exit_date"),
-                        entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
-                        exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
-                        direction=direction,
-                        config=options_cfg,
-                        atr_value=atr_for_vol,
-                        exit_reason=res.get("exit_reason"),
-                        tp_abs_target=tp_abs_target,
-                    )
-
-                    out_row.update(options_row)
-                    out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
-                    out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
-                    out_rows.append(out_row)
+            if "rr_fail" in fail_reasons:
+                rr_value = _infer_rr_ratio(row)
+                if rr_value is None:
+                    if len(fail_reasons) == 1:
+                        stats["failed_rr_missing"] += 1
                 else:
-                    if not tp_frac_valid:
-                        continue
-                    entry_val = row.get("entry_open")
-                    if entry_val is None or pd.isna(entry_val):
-                        continue
-                    tp_price = float(entry_val) * (1.0 + float(tp_frac))
-                    stop_price = row.get("support")
-                    out = replay_trade(
-                        df[["date", "open", "high", "low", "close"]],
-                        pd.to_datetime(D),
-                        float(entry_val),
-                        tp_price,
-                        stop_price,
-                        horizon_days=horizon,
+                    if rr_value < rule_cfg.min_rr_required:
+                        stats["failed_rr_below"] += 1
+
+            if not passes_rules:
+                stats["failed_gate"] += 1
+                continue
+
+            stats["passed_gate"] += 1
+            entry_model_value = row.get("entry_model") or entry_model_default
+            entry_model = str(entry_model_value or "").strip()
+            if not entry_model:
+                extra = list(fail_reasons)
+                extra.append("entry_model_missing")
+                row["rule_fail_reasons"] = ",".join(extra)
+                row["passes_all_rules"] = 0
+                stats["skipped_no_entry_model"] += 1
+                continue
+            row["entry_model"] = entry_model
+
+            if exit_model == "pct_tp_only":
+                if not tp_frac_valid:
+                    continue
+                entry_open_val = row.get("entry_open")
+                if entry_open_val is None or pd.isna(entry_open_val):
+                    continue
+                entry_open = float(entry_open_val)
+                price_cols = [c for c in ("open", "high", "low", "close") if c in df_idx.columns]
+                if not price_cols:
+                    continue
+                tp_pct_percent = float(tp_frac) * 100.0
+                res = simulate_pct_target_only(
+                    df_idx[price_cols],
+                    pd.Timestamp(D_ts),
+                    entry_open,
+                    tp_pct_percent,
+                    horizon,
+                )
+                if res is None:
+                    continue
+                out_row = {
+                    **row,
+                    "exit_model": exit_model,
+                    "entry_model": entry_model,
+                    "tp_price": res.get("tp_price_abs_target"),
+                    **res,
+                }
+
+                atr_for_vol = row.get("atr_dminus1")
+                if atr_for_vol is None:
+                    atr_for_vol = row.get("atr_value_dm1")
+
+                entry_open_price = row.get("entry_open")
+                exit_price_val = res.get("exit_price")
+                tp_abs_target = out_row.get("tp_price_abs_target")
+                direction = "up"
+                if (
+                    entry_open_price is not None
+                    and not pd.isna(entry_open_price)
+                    and tp_abs_target is not None
+                    and not pd.isna(tp_abs_target)
+                    and float(tp_abs_target) < float(entry_open_price)
+                ):
+                    direction = "down"
+
+                options_row = compute_vertical_spread_trade(
+                    prices=df_idx,
+                    entry_ts=pd.Timestamp(D_ts),
+                    exit_ts=res.get("exit_date"),
+                    entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
+                    exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
+                    direction=direction,
+                    config=options_cfg,
+                    atr_value=atr_for_vol,
+                    exit_reason=res.get("exit_reason"),
+                    tp_abs_target=tp_abs_target,
+                )
+
+                out_row.update(options_row)
+                out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
+                out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
+                out_rows.append(out_row)
+            else:
+                if not tp_frac_valid:
+                    continue
+                entry_val = row.get("entry_open")
+                if entry_val is None or pd.isna(entry_val):
+                    continue
+                tp_price = float(entry_val) * (1.0 + float(tp_frac))
+                stop_price = row.get("support")
+                out = replay_trade(
+                    df[["date", "open", "high", "low", "close"]],
+                    pd.to_datetime(D),
+                    float(entry_val),
+                    tp_price,
+                    stop_price,
+                    horizon_days=horizon,
+                )
+                out_row = {
+                    **row,
+                    "exit_model": exit_model,
+                    "entry_model": entry_model,
+                    "tp_price": tp_price,
+                    **out,
+                }
+
+                atr_for_vol = row.get("atr_dminus1")
+                if atr_for_vol is None:
+                    atr_for_vol = row.get("atr_value_dm1")
+
+                try:
+                    prices_for_options = (
+                        df[["date", "open", "high", "low", "close"]]
+                        .copy()
+                        .assign(date=lambda s: pd.to_datetime(s["date"]).dt.tz_localize(None))
+                        .set_index("date")
+                        .sort_index()
                     )
-                    out_row = {
-                        **row,
-                        "exit_model": exit_model,
-                        "entry_model": entry_model,
-                        "tp_price": tp_price,
-                        **out,
-                    }
+                except Exception:
+                    prices_for_options = df_idx
 
-                    atr_for_vol = row.get("atr_dminus1")
-                    if atr_for_vol is None:
-                        atr_for_vol = row.get("atr_value_dm1")
+                entry_open_price = row.get("entry_open")
+                exit_price_val = out.get("exit_price")
+                direction = "up"
+                if (
+                    entry_open_price is not None
+                    and not pd.isna(entry_open_price)
+                    and tp_price is not None
+                    and not pd.isna(tp_price)
+                    and float(tp_price) < float(entry_open_price)
+                ):
+                    direction = "down"
 
-                    try:
-                        prices_for_options = (
-                            df[["date", "open", "high", "low", "close"]]
-                            .copy()
-                            .assign(date=lambda s: pd.to_datetime(s["date"]).dt.tz_localize(None))
-                            .set_index("date")
-                            .sort_index()
-                        )
-                    except Exception:
-                        prices_for_options = df_idx
+                options_row = compute_vertical_spread_trade(
+                    prices=prices_for_options[[c for c in ("open", "high", "low", "close") if c in prices_for_options.columns]],
+                    entry_ts=pd.Timestamp(D_ts),
+                    exit_ts=out.get("exit_date"),
+                    entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
+                    exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
+                    direction=direction,
+                    config=options_cfg,
+                    atr_value=atr_for_vol,
+                    exit_reason=out.get("exit_reason"),
+                    tp_abs_target=tp_price,
+                )
 
-                    entry_open_price = row.get("entry_open")
-                    exit_price_val = out.get("exit_price")
-                    direction = "up"
-                    if (
-                        entry_open_price is not None
-                        and not pd.isna(entry_open_price)
-                        and tp_price is not None
-                        and not pd.isna(tp_price)
-                        and float(tp_price) < float(entry_open_price)
-                    ):
-                        direction = "down"
-
-                    options_row = compute_vertical_spread_trade(
-                        prices=prices_for_options[[c for c in ("open", "high", "low", "close") if c in prices_for_options.columns]],
-                        entry_ts=pd.Timestamp(D_ts),
-                        exit_ts=out.get("exit_date"),
-                        entry_price=float(entry_open_price) if entry_open_price is not None else float("nan"),
-                        exit_price=float(exit_price_val) if exit_price_val is not None else float("nan"),
-                        direction=direction,
-                        config=options_cfg,
-                        atr_value=atr_for_vol,
-                        exit_reason=out.get("exit_reason"),
-                        tp_abs_target=tp_price,
-                    )
-
-                    out_row.update(options_row)
-                    out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
-                    out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
-                    out_rows.append(out_row)
+                out_row.update(options_row)
+                out_row["passes_all_rules"] = row.get("passes_all_rules", 0)
+                out_row["rule_fail_reasons"] = row.get("rule_fail_reasons", "")
+                out_rows.append(out_row)
         except Exception as e:
             # Hard-guard: skip any pathological ticker instead of aborting whole run
             fail_count += 1
@@ -856,6 +875,7 @@ def scan_day(
         log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
 
     return cand_df, out_df, fail_count, stats
+
 
 
 
