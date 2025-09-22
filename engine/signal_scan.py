@@ -538,8 +538,11 @@ def scan_day(
 
             # ATR feasible check (positional)
             df_pos = df.reset_index(drop=True)
-            atr_ok_bool = (
-                bool(
+
+            # IMPORTANT: If tp_frac is missing/invalid, DO NOT block on ATR.
+            # Only enforce atr_feasible when we actually have a numeric tp_frac.
+            if tp_frac_valid:
+                atr_ok_bool = bool(
                     atr_feasible(
                         df_pos,
                         int(dm1),
@@ -548,10 +551,14 @@ def scan_day(
                         atr_method=atr_method,
                     )
                 )
-                if tp_frac_valid
-                else False
-            )
+            else:
+                atr_ok_bool = True  # treat missing tp as non-blocking for ATR
+
             row["atr_ok"] = int(atr_ok_bool)
+            if not atr_ok_bool:
+                stats.setdefault("atr_rejects", 0); stats["atr_rejects"] += 1
+            if not tp_frac_valid:
+                stats.setdefault("tp_frac_missing", 0); stats["tp_frac_missing"] += 1
 
             # ---- Persist ATR numbers for transparency ----
             atr_value_dm1 = float(m.get("atr21")) if m.get("atr21") is not None else float("nan")
@@ -875,6 +882,7 @@ def scan_day(
         log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
 
     return cand_df, out_df, fail_count, stats
+
 
 
 
