@@ -462,8 +462,6 @@ def scan_day(
                     risk = float(entry_open_val) - support_float
                     if risk > 0:
                         tp_target_val = row.get("tp_price_abs_target")
-                        if tp_target_val is None or pd.isna(tp_target_val):
-                            tp_target_val = tp_abs_target
                         try:
                             tp_float = float(tp_target_val)
                         except (TypeError, ValueError):
@@ -858,6 +856,7 @@ def scan_day(
         log.warning("scan_day: all exported rows passed rule gate on %s", pd.Timestamp(D).date())
 
     return cand_df, out_df, fail_count, stats
+
 
 
 
