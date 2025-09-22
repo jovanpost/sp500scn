@@ -130,9 +130,22 @@ def _is_member(
 def _normalize_prices_df(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     working = df.copy()
     if "date" not in working.columns:
+        index_name = working.index.name
         working = working.reset_index()
-        if "date" not in working.columns and "Date" in working.columns:
-            working = working.rename(columns={"Date": "date"})
+        if "date" not in working.columns:
+            rename_candidates = []
+            if "Date" in working.columns:
+                rename_candidates.append("Date")
+            if index_name and index_name in working.columns:
+                rename_candidates.append(index_name)
+            if "index" in working.columns:
+                rename_candidates.append("index")
+            if "level_0" in working.columns:
+                rename_candidates.append("level_0")
+            target = next(iter(rename_candidates), working.columns[0])
+            working = working.rename(columns={target: "date"})
+    if "date" not in working.columns and "Date" in working.columns:
+        working = working.rename(columns={"Date": "date"})
     working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.tz_localize(None)
     working = working.dropna(subset=["date"])
     rename_map = {c: c.lower() for c in working.columns}
