@@ -507,17 +507,16 @@ def run_scan(
             panel_by_day = panel_by_day_cache[ticker]
         else:
             by_day = panel.copy()
-            idx_values = pd.to_datetime(by_day.index, errors="coerce")
-            idx_values = idx_values.tz_localize(None)
-            scan_dates = idx_values.normalize()
-            by_day = by_day.assign(_scan_date=scan_dates)
-            by_day = by_day.dropna(subset=["_scan_date"])
-            by_day = (
-                by_day.groupby("_scan_date", as_index=True, sort=True)
-                .last()
-                .drop(columns=["_scan_date"])
+
+            idx = (
+                pd.to_datetime(by_day.index, errors="coerce")
+                .tz_localize(None)
+                .normalize()
             )
-            by_day.index.name = panel.index.name
+            by_day.index = idx
+
+            by_day = by_day[~by_day.index.duplicated(keep="last")]
+
             panel_by_day_cache[ticker] = by_day
             panel_by_day = by_day
 
