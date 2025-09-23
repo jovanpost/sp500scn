@@ -493,6 +493,7 @@ def run_scan(
     candidate_count = 0
 
     bdays = pd.bdate_range(start_ts, end_ts)
+    panel_by_day_cache: dict[str, pd.DataFrame] = {}
     scan_timer_start = time.perf_counter()
     _dbg_call(
         "log_event",
@@ -502,14 +503,36 @@ def run_scan(
     )
     for idx, ticker in enumerate(tickers_sorted, 1):
         panel = price_map[ticker]
+        if ticker in panel_by_day_cache:
+            panel_by_day = panel_by_day_cache[ticker]
+        else:
+            by_day = panel.copy()
+            idx_values = pd.to_datetime(by_day.index, errors="coerce")
+            idx_values = idx_values.tz_localize(None)
+            scan_dates = idx_values.normalize()
+            by_day = by_day.assign(_scan_date=scan_dates)
+            by_day = by_day.dropna(subset=["_scan_date"])
+            by_day = (
+                by_day.groupby("_scan_date", as_index=True, sort=True)
+                .last()
+                .drop(columns=["_scan_date"])
+            )
+            by_day.index.name = panel.index.name
+            panel_by_day_cache[ticker] = by_day
+            panel_by_day = by_day
+
+        if panel_by_day.empty:
+            continue
+
         bars = panel[["date", "open", "high", "low", "close"]].copy()
         if progress is not None:
             progress(idx, len(tickers_sorted), ticker)
 
         for day in bdays:
+            normalized_day = pd.Timestamp(day).tz_localize(None).normalize()
             if use_sp_filter and not _is_member(membership_index, ticker, day):
                 continue
-            if day not in panel.index:
+            if normalized_day not in panel_by_day.index:
                 _dbg_call(
                     "record_rejection",
                     ticker=ticker,
@@ -517,7 +540,7 @@ def run_scan(
                     reasons=["missing_price"],
                 )
                 continue
-            row = panel.loc[day]
+            row = panel_by_day.loc[normalized_day]
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[-1]
             entry_price = float(row.get("open", float("nan")))
