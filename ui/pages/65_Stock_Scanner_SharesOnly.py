@@ -213,16 +213,36 @@ def _format_currency(value: float) -> str:
 
 
 def _progress_callback(progress_widget, log_fn: Callable[[str], None]):
-    def _cb(current: int, total: int, ticker: str) -> None:
-        if total <= 0:
-            pct = 0.0
-        else:
-            pct = current / total
+    def _cb(current, total, ticker: str) -> None:
+        # Coerce to numeric defensively
+        def _as_int(x, default=0):
+            try:
+                # Prefer Python ints; handle numpy/pandas scalars
+                return int(x)
+            except Exception:
+                return default
+
+        cur_i = _as_int(current, 0)
+        tot_i = _as_int(total, 0)
+
+        pct = 0.0
+        if tot_i > 0:
+            try:
+                pct = float(cur_i) / float(tot_i)
+            except Exception:
+                pct = 0.0
+
+        # Clamp to [0, 1]
+        if not (0.0 <= pct <= 1.0):
+            pct = max(0.0, min(1.0, pct))
+
         try:
-            progress_widget.progress(pct, text=f"{current}/{total} • {ticker}")
+            progress_widget.progress(pct, text=f"{cur_i}/{tot_i} • {ticker}")
         except Exception:
+            # Older Streamlit versions might not accept text kwarg
             progress_widget.progress(pct)
-        log_fn(f"[{current}/{total}] {ticker}")
+
+        log_fn(f"[{cur_i}/{tot_i}] {ticker}")
 
     return _cb
 
