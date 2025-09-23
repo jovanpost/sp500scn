@@ -524,7 +524,12 @@ def run_scan(
         if panel_by_day.empty:
             continue
 
-        bars = panel[["date", "open", "high", "low", "close"]].copy()
+        bars = (
+            panel_by_day.drop(columns=["date"], errors="ignore")
+            .assign(date=pd.Index(panel_by_day.index))
+            [["date", "open", "high", "low", "close"]]
+            .copy()
+        )
         if progress is not None:
             progress(idx, len(tickers_sorted), ticker)
 
