@@ -1,75 +1,26 @@
+# app.py
 import os
-import importlib.util
-from pathlib import Path
 import streamlit as st
 
 from ui.layout import setup_page, render_header
 from ui.price_filter import initialize_price_filter
+from ui.nav import TABS
 
 os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 
-# Initialize page and global layout/CSS
+# Initialize page and layout/CSS
 setup_page()
 initialize_price_filter()
 
-# ---- Brand header ----
+# Brand/header
 render_header()
 
-# Create tabs once with unique variable names
-tab_gap, tab_stock, tab_backtest, tab_history, tab_lake, tab_debug = st.tabs(
-    [
-        "⚡ Gap Scanner",
-        "📊 Stock Scanner (Shares Only)",
-        "📅 Backtest (range)",
-        "📈 History & Outcomes",
-        "💧 Data Lake (Phase 1)",
-        "🐞 Debugger",
-    ]
-)
+# Build tabs exclusively from the registry (single source of truth)
+tab_containers = st.tabs([label for (label, _route, _render) in TABS])
 
-with tab_gap:
-    spec = importlib.util.spec_from_file_location(
-        "ui.pages.yday_vol_signal_open", Path("ui/pages/45_YdayVolSignal_Open.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    mod.page()
-
-with tab_stock:
-    spec = importlib.util.spec_from_file_location(
-        "ui.pages.stock_scanner_shares_only",
-        Path("ui/pages/65_Stock_Scanner_SharesOnly.py"),
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    mod.page()
-
-with tab_backtest:
-    spec = importlib.util.spec_from_file_location(
-        "ui.pages.backtest_range", Path("ui/pages/55_Backtest_Range.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    mod.page()
-
-with tab_history:
-    from ui.history import render_history_tab
-
-    render_history_tab()
-
-with tab_lake:
-    spec = importlib.util.spec_from_file_location(
-        "ui.pages.data_lake_phase1", Path("ui/pages/90_Data_Lake_Phase1.py")
-    )
-    mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(mod)
-    mod.render_data_lake_tab()
-
-with tab_debug:
-    from ui.debugger import render_debugger_tab
-
-    render_debugger_tab()
+for container, (label, _route, render_fn) in zip(tab_containers, TABS):
+    with container:
+        if callable(render_fn):
+            render_fn()
+        else:
+            st.warning(f"{label} is unavailable (import failed).")
