@@ -526,6 +526,8 @@ def run_scan(
         # Ensure the index is not named "date" to avoid ambiguity when creating the bars
         # dataframe that feeds into replay_trade.
         panel_by_day = panel_by_day.rename_axis(None)
+        if "date" in panel_by_day.columns:
+            panel_by_day = panel_by_day.drop(columns=["date"])
 
         bars = (
             panel_by_day
