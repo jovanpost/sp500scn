@@ -523,9 +523,13 @@ def run_scan(
         if panel_by_day.empty:
             continue
 
+        # Ensure the index is not named "date" to avoid ambiguity when creating the bars
+        # dataframe that feeds into replay_trade.
+        panel_by_day = panel_by_day.rename_axis(None)
+
         bars = (
-            panel_by_day.drop(columns=["date"], errors="ignore")
-            .assign(date=pd.Index(panel_by_day.index))
+            panel_by_day
+            .reset_index(names="date")
             [["date", "open", "high", "low", "close"]]
             .copy()
         )
