@@ -250,9 +250,6 @@ def analyze_spike_precursors(
         if enabled
     ]
 
-    if not enabled_families:
-        return _empty_result(len(universe_list))
-
     pad_days = lookback_days + max(
         atr_window,
         volume_filter_lookback if volume_filter_enabled else 0,
@@ -472,6 +469,16 @@ def analyze_spike_precursors(
             spike_mask &= (
                 panel["volume_multiple_spike"] >= volume_filter_threshold
             )
+
+        if debug and hasattr(debug, "log_event"):
+            try:
+                debug.log_event(
+                    "spike_mask_stats",
+                    ticker=ticker,
+                    candidates=int(spike_mask.sum()),
+                )
+            except Exception:
+                pass
 
         spike_dates = panel.index[spike_mask]
         if not len(spike_dates):
@@ -795,74 +802,80 @@ def analyze_spike_precursors(
         if col in spikes_df.columns:
             spikes_df[col] = spikes_df[col].fillna(False).astype(bool)
 
-    frequency_rows = []
     total_spikes = len(spikes_df)
 
-    for flag in sorted(bool_columns):
-        if flag not in spikes_df.columns:
-            continue
-        hits_df = spikes_df[spikes_df[flag]]
-        hit_count = int(hits_df.shape[0])
-        hit_rate = float(hit_count / total_spikes) if total_spikes else 0.0
-        lead_col = lead_columns.get(flag)
-        median_lead = (
-            float(hits_df[lead_col].median())
-            if lead_col and lead_col in hits_df.columns and not hits_df.empty
-            else float("nan")
-        )
-        frequency_rows.append(
-            {
-                "flag": flag,
-                "hit_count": hit_count,
-                "hit_rate": hit_rate,
-                "median_lead_days": median_lead,
-            }
-        )
+    if enabled_families:
+        frequency_rows = []
 
-    if frequency_rows:
-        frequency_table = pd.DataFrame(frequency_rows).sort_values(
-            ["hit_rate", "hit_count"], ascending=[False, False]
-        )
+        for flag in sorted(bool_columns):
+            if flag not in spikes_df.columns:
+                continue
+            hits_df = spikes_df[spikes_df[flag]]
+            hit_count = int(hits_df.shape[0])
+            hit_rate = float(hit_count / total_spikes) if total_spikes else 0.0
+            lead_col = lead_columns.get(flag)
+            median_lead = (
+                float(hits_df[lead_col].median())
+                if lead_col and lead_col in hits_df.columns and not hits_df.empty
+                else float("nan")
+            )
+            frequency_rows.append(
+                {
+                    "flag": flag,
+                    "hit_count": hit_count,
+                    "hit_rate": hit_rate,
+                    "median_lead_days": median_lead,
+                }
+            )
+
+        if frequency_rows:
+            frequency_table = pd.DataFrame(frequency_rows).sort_values(
+                ["hit_rate", "hit_count"], ascending=[False, False]
+            )
+        else:
+            frequency_table = pd.DataFrame(columns=FREQUENCY_COLUMNS)
+
+        lead_stats = {}
+        for flag, lead_col in lead_columns.items():
+            if lead_col in spikes_df.columns:
+                valid = spikes_df.loc[spikes_df[flag], lead_col].dropna()
+                if not valid.empty:
+                    lead_stats[flag] = {
+                        "min": float(valid.min()),
+                        "median": float(valid.median()),
+                        "mean": float(valid.mean()),
+                        "max": float(valid.max()),
+                    }
+
+        combos_df = pd.DataFrame(columns=COMBO_COLUMNS)
+        if total_spikes <= 5000 and len(bool_columns) >= 2:
+            records = []
+            flags_sorted = sorted([f for f in bool_columns if f in spikes_df.columns])
+            base_rates = {f: float(spikes_df[f].mean()) for f in flags_sorted}
+            for i, flag_a in enumerate(flags_sorted):
+                for flag_b in flags_sorted[i + 1 :]:
+                    pair_mask = spikes_df[flag_a] & spikes_df[flag_b]
+                    count = int(pair_mask.sum())
+                    if count == 0:
+                        continue
+                    rate = count / total_spikes if total_spikes else 0.0
+                    expected = base_rates.get(flag_a, 0.0) * base_rates.get(flag_b, 0.0)
+                    lift = rate / expected if expected > 0 else np.nan
+                    records.append(
+                        {
+                            "combo": f"{flag_a} + {flag_b}",
+                            "count": count,
+                            "lift": float(lift) if np.isfinite(lift) else np.nan,
+                        }
+                    )
+            if records:
+                combos_df = pd.DataFrame(records).sort_values(
+                    "count", ascending=False
+                ).head(10)
     else:
         frequency_table = pd.DataFrame(columns=FREQUENCY_COLUMNS)
-
-    lead_stats = {}
-    for flag, lead_col in lead_columns.items():
-        if lead_col in spikes_df.columns:
-            valid = spikes_df.loc[spikes_df[flag], lead_col].dropna()
-            if not valid.empty:
-                lead_stats[flag] = {
-                    "min": float(valid.min()),
-                    "median": float(valid.median()),
-                    "mean": float(valid.mean()),
-                    "max": float(valid.max()),
-                }
-
-    combos_df = pd.DataFrame(columns=COMBO_COLUMNS)
-    if total_spikes <= 5000 and len(bool_columns) >= 2:
-        records = []
-        flags_sorted = sorted([f for f in bool_columns if f in spikes_df.columns])
-        base_rates = {f: float(spikes_df[f].mean()) for f in flags_sorted}
-        for i, flag_a in enumerate(flags_sorted):
-            for flag_b in flags_sorted[i + 1 :]:
-                pair_mask = spikes_df[flag_a] & spikes_df[flag_b]
-                count = int(pair_mask.sum())
-                if count == 0:
-                    continue
-                rate = count / total_spikes if total_spikes else 0.0
-                expected = base_rates.get(flag_a, 0.0) * base_rates.get(flag_b, 0.0)
-                lift = rate / expected if expected > 0 else np.nan
-                records.append(
-                    {
-                        "combo": f"{flag_a} + {flag_b}",
-                        "count": count,
-                        "lift": float(lift) if np.isfinite(lift) else np.nan,
-                    }
-                )
-        if records:
-            combos_df = pd.DataFrame(records).sort_values(
-                "count", ascending=False
-            ).head(10)
+        lead_stats = {}
+        combos_df = pd.DataFrame(columns=COMBO_COLUMNS)
 
     def _normalize_frequency_table(freq: pd.DataFrame | None) -> pd.DataFrame:
         if freq is None:
