@@ -16,10 +16,37 @@ from data_lake.membership import load_membership
 from data_lake.storage import Storage, load_prices_cached
 from engine.features import atr as compute_atr
 from engine.replay import replay_trade
+from engine.scan_shared.indicators import IndicatorConfig
+from engine.scan_shared.precursor_flags import (
+    DEFAULT_PARAMS as PRECURSOR_DEFAULTS,
+    FLAG_COLUMNS as PRECURSOR_FLAG_COLUMNS,
+    METRIC_COLUMNS as PRECURSOR_METRIC_COLUMNS,
+    build_precursor_flags,
+)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_CASH_CAP = 1_000.0
+_PRECURSOR_CONFIG = IndicatorConfig()
+_PRECURSOR_MAX_LOOKBACK = _PRECURSOR_CONFIG.max_lookback
+
+
+class PrecursorCondition(TypedDict, total=False):
+    flag: str
+    max_percentile: float
+    min_gap_pct: float
+    min_mult: float
+
+
+class PrecursorsParams(TypedDict, total=False):
+    enabled: bool
+    within_days: int
+    logic: Literal["ANY", "ALL"]
+    conditions: list[PrecursorCondition]
+    atr_pct_threshold: float
+    bb_pct_threshold: float
+    gap_min_pct: float
+    vol_min_mult: float
 
 
 class StocksOnlyScanParams(TypedDict, total=False):
@@ -39,6 +66,7 @@ class StocksOnlyScanParams(TypedDict, total=False):
     sl_atr_multiple: float
     use_sp_filter: bool
     cash_per_trade: float
+    precursors: PrecursorsParams
 
 
 @dataclass
@@ -79,7 +107,14 @@ def _compute_padding(params: StocksOnlyScanParams) -> int:
         int(params.get("atr_window", 14) or 14),
         3,
     )
-    return padding + horizon + 5
+    precursors = params.get("precursors")
+    precursor_padding = 0
+    if isinstance(precursors, dict) and precursors.get("enabled"):
+        within_days = int(
+            precursors.get("within_days", PRECURSOR_DEFAULTS["lookback_days"]) or PRECURSOR_DEFAULTS["lookback_days"]
+        )
+        precursor_padding = within_days + _PRECURSOR_MAX_LOOKBACK
+    return max(padding, precursor_padding) + horizon + 5
 
 
 def _build_membership_index(
@@ -308,11 +343,100 @@ def run_scan(
 
     horizon = int(params.get("horizon_days", 30) or 30)
     cash_cap = float(params.get("cash_per_trade", DEFAULT_CASH_CAP) or DEFAULT_CASH_CAP)
-    sr_min_ratio = float(params.get("sr_min_ratio", 2.0) or 2.0)
+    sr_min_ratio_raw = params.get("sr_min_ratio", 2.0)
+    try:
+        sr_min_ratio = float(2.0 if sr_min_ratio_raw is None else sr_min_ratio_raw)
+    except (TypeError, ValueError):
+        sr_min_ratio = 2.0
     exit_model = str(params.get("exit_model", "atr") or "atr").lower()
     tp_mult = float(params.get("tp_atr_multiple", 1.0) or 1.0)
     sl_mult = float(params.get("sl_atr_multiple", 1.0) or 1.0)
     use_sp_filter = bool(params.get("use_sp_filter", True))
+
+    raw_precursors = params.get("precursors") or {}
+    precursors_enabled = bool(raw_precursors.get("enabled"))
+    precursor_within_days = int(
+        raw_precursors.get("within_days", PRECURSOR_DEFAULTS["lookback_days"]) or PRECURSOR_DEFAULTS["lookback_days"]
+    )
+    precursor_logic = str(raw_precursors.get("logic", "ANY") or "ANY").upper()
+    if precursor_logic not in {"ANY", "ALL"}:
+        precursor_logic = "ANY"
+    precursor_conditions: list[PrecursorCondition] = []
+    for condition in raw_precursors.get("conditions", []) or []:
+        if not isinstance(condition, dict):
+            continue
+        flag = str(condition.get("flag", "")).strip()
+        if not flag:
+            continue
+        payload: PrecursorCondition = PrecursorCondition(flag=flag)
+        if condition.get("max_percentile") is not None:
+            payload["max_percentile"] = float(condition.get("max_percentile"))
+        if condition.get("min_gap_pct") is not None:
+            payload["min_gap_pct"] = float(condition.get("min_gap_pct"))
+        if condition.get("min_mult") is not None:
+            payload["min_mult"] = float(condition.get("min_mult"))
+        precursor_conditions.append(payload)
+    if precursors_enabled and not precursor_conditions:
+        precursors_enabled = False
+
+    precursor_base_params = {
+        key: float(raw_precursors.get(key, PRECURSOR_DEFAULTS[key]))
+        for key in PRECURSOR_DEFAULTS
+    }
+
+    def _eval_precursor_condition(
+        window: pd.DataFrame, flag: str, payload: PrecursorCondition
+    ) -> tuple[bool, list[pd.Timestamp]]:
+        if window.empty:
+            return False, []
+
+        def _series(name: str) -> pd.Series | None:
+            if name not in window.columns:
+                return None
+            return window[name]
+
+        mask: pd.Series | None = None
+        if flag == "atr_squeeze_pct":
+            series = _series("atr_pctile")
+            threshold = float(payload.get("max_percentile", precursor_base_params["atr_pct_threshold"]))
+            if series is not None:
+                mask = series <= threshold
+        elif flag == "bb_squeeze_pct":
+            series = _series("bb_width_pctile")
+            threshold = float(payload.get("max_percentile", precursor_base_params["bb_pct_threshold"]))
+            if series is not None:
+                mask = series <= threshold
+        elif flag == "gap_up_ge_gpct_prev":
+            series = _series("gap_up_pct_prev")
+            threshold = float(payload.get("min_gap_pct", precursor_base_params["gap_min_pct"]))
+            if series is not None:
+                mask = series >= threshold
+        elif flag == "vol_mult_d1_ge_x":
+            series = _series("vol_mult_d1")
+            threshold = float(payload.get("min_mult", precursor_base_params["vol_min_mult"]))
+            if series is not None:
+                mask = series >= threshold
+        elif flag == "vol_mult_d2_ge_x":
+            series = _series("vol_mult_d2")
+            threshold = float(payload.get("min_mult", precursor_base_params["vol_min_mult"]))
+            if series is not None:
+                mask = series >= threshold
+        elif flag == "sr_ratio_ge_2":
+            series = _series("sr_ratio")
+            if series is not None:
+                mask = series >= 2.0
+        else:
+            series = _series(flag)
+            if series is not None:
+                mask = series.astype(bool)
+
+        if mask is None:
+            return False, []
+        hits = mask.fillna(False)
+        if not bool(hits.any()):
+            return False, []
+        hit_dates = list(window.index[hits])
+        return True, hit_dates
 
     def _dbg_call(method: str, *args, **kwargs):
         if debug is None:
@@ -494,6 +618,7 @@ def run_scan(
 
     bdays = pd.bdate_range(start_ts, end_ts)
     panel_by_day_cache: dict[str, pd.DataFrame] = {}
+    precursor_panel_cache: dict[str, pd.DataFrame] = {}
     scan_timer_start = time.perf_counter()
     _dbg_call(
         "log_event",
@@ -528,6 +653,28 @@ def run_scan(
         panel_by_day = panel_by_day.rename_axis(None)
         if "date" in panel_by_day.columns:
             panel_by_day = panel_by_day.drop(columns=["date"])
+
+        precursor_panel: pd.DataFrame | None = None
+        if precursors_enabled:
+            precursor_panel = precursor_panel_cache.get(ticker)
+            if precursor_panel is None:
+                base_frame = panel.reset_index(drop=True).copy()
+                flags_panel, _ = build_precursor_flags(base_frame, params=precursor_base_params)
+                keep_cols = [
+                    col
+                    for col in {"date", *PRECURSOR_FLAG_COLUMNS, *PRECURSOR_METRIC_COLUMNS}
+                    if col in flags_panel.columns
+                ]
+                precursor_panel = flags_panel[keep_cols].copy()
+                if "date" not in precursor_panel.columns:
+                    precursor_panel["date"] = flags_panel.index
+                precursor_panel.index = (
+                    pd.to_datetime(precursor_panel.index, errors="coerce")
+                    .tz_localize(None)
+                    .normalize()
+                )
+                precursor_panel = precursor_panel[~precursor_panel.index.duplicated(keep="last")]
+                precursor_panel_cache[ticker] = precursor_panel
 
         bars = (
             panel_by_day
@@ -583,7 +730,63 @@ def run_scan(
                 )
                 continue
 
+            precursor_hits: list[str] = []
+            precursor_last_seen: dict[str, float] = {}
+            if precursors_enabled:
+                if precursor_panel is None or precursor_panel.empty:
+                    _dbg_call(
+                        "record_rejection",
+                        ticker=ticker,
+                        date=str(day.date()),
+                        reasons=["precursor_data_missing"],
+                    )
+                    continue
+                window_start = (normalized_day - BDay(precursor_within_days)).normalize()
+                window_mask = (precursor_panel.index >= window_start) & (
+                    precursor_panel.index < normalized_day
+                )
+                window_df = precursor_panel.loc[window_mask]
+
+                condition_results: list[tuple[str, bool, list[pd.Timestamp]]] = []
+                for condition in precursor_conditions:
+                    flag = condition.get("flag", "")
+                    passed, hits = _eval_precursor_condition(window_df, flag, condition)
+                    condition_results.append((flag, passed, hits))
+
+                if condition_results:
+                    if precursor_logic == "ALL":
+                        precursors_ok = all(item[1] for item in condition_results)
+                    else:
+                        precursors_ok = any(item[1] for item in condition_results)
+                else:
+                    precursors_ok = True
+
+                if not precursors_ok:
+                    _dbg_call(
+                        "record_rejection",
+                        ticker=ticker,
+                        date=str(day.date()),
+                        reasons=["precursor_filters"],
+                    )
+                    continue
+
+                for flag, passed, hits in condition_results:
+                    if not passed or not hits:
+                        continue
+                    precursor_hits.append(flag)
+                    leads = [int((normalized_day - hit).days) for hit in hits if pd.notna(hit)]
+                    if leads:
+                        precursor_last_seen[flag] = float(min(leads))
+
             candidate_count += 1
+
+            unique_precursor_hits = sorted({flag for flag in precursor_hits})
+            precursor_score = len(unique_precursor_hits)
+            precursor_last_seen_clean = {
+                flag: precursor_last_seen[flag]
+                for flag in unique_precursor_hits
+                if flag in precursor_last_seen
+            }
 
             shares = _compute_shares(entry_price, cash_cap)
             _dbg_call(
@@ -687,6 +890,11 @@ def run_scan(
                     "cost": float(cost),
                     "proceeds": float(proceeds),
                     "pnl": float(pnl),
+                    "precursor_flags_hit": unique_precursor_hits if precursors_enabled else [],
+                    "precursor_last_seen_days_ago": precursor_last_seen_clean
+                    if precursors_enabled
+                    else {},
+                    "precursor_score": precursor_score if precursors_enabled else 0,
                 }
             )
 
