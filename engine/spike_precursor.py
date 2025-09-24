@@ -163,31 +163,95 @@ def analyze_spike_precursors(
 
     atr_method = (atr_method or "wilder").strip().lower()
 
-    config = indicator_config or {}
+    raw_config = indicator_config if isinstance(indicator_config, dict) else {}
+    config = {
+        str(key): value
+        for key, value in raw_config.items()
+        if isinstance(value, dict)
+    }
 
-    volume_filter_cfg = config.get("volume_filter", {})
-    volume_filter_enabled = bool(volume_filter_cfg.get("enabled", False))
+    def _section_state(name: str) -> tuple[dict[str, Any], bool]:
+        section = config.get(name)
+        if not isinstance(section, dict):
+            return {}, False
+        enabled_val = section.get("enabled")
+        if enabled_val is None:
+            enabled_flag = True
+        else:
+            enabled_flag = bool(enabled_val)
+        return section, enabled_flag
+
+    volume_filter_cfg, volume_filter_enabled = _section_state("volume_filter")
     volume_filter_lookback = int(volume_filter_cfg.get("lookback", 63) or 63)
     volume_filter_threshold = float(volume_filter_cfg.get("threshold", 1.5) or 1.5)
+
+    trend_cfg, trend_enabled = _section_state("trend")
+    trend_fast = int(trend_cfg.get("fast", 20) or 20)
+    trend_slow = int(trend_cfg.get("slow", 50) or 50)
+
+    rsi_cfg, rsi_enabled = _section_state("rsi")
+    rsi_period = int(rsi_cfg.get("period", 14) or 14)
+    rsi_levels = rsi_cfg.get("levels") or [50.0, 60.0]
+    rsi_levels = [float(x) for x in rsi_levels if x is not None]
+    if not rsi_levels:
+        rsi_levels = [50.0, 60.0]
+
+    atr_cfg, atr_squeeze_enabled = _section_state("atr_squeeze")
+    atr_pct_window = int(atr_cfg.get("window", 63) or 63)
+    atr_pct_threshold = float(atr_cfg.get("percentile", 25.0) or 25.0)
+
+    bb_cfg, bb_enabled = _section_state("bb")
+    bb_period = int(bb_cfg.get("period", 20) or 20)
+    bb_pct_window = int(bb_cfg.get("pct_window", 126) or 126)
+    bb_percentile = float(bb_cfg.get("percentile", 20.0) or 20.0)
+
+    nr7_cfg, nr7_enabled = _section_state("nr7")
+    nr7_window = int(nr7_cfg.get("window", 7) or 7)
+
+    gap_cfg, gap_enabled = _section_state("gap")
+    gap_threshold = float(gap_cfg.get("threshold", 3.0) or 3.0)
+
+    volume_cfg, volume_enabled = _section_state("volume")
+    volume_threshold = float(volume_cfg.get("threshold", 1.5) or 1.5)
+    volume_lookback = int(volume_cfg.get("lookback", 63) or 63)
+
+    sr_cfg, sr_enabled = _section_state("sr")
+    sr_threshold = float(sr_cfg.get("threshold", 2.0) or 2.0)
+    sr_lookback = int(sr_cfg.get("lookback", 63) or 63)
+
+    new_high_cfg, new_high_enabled = _section_state("new_high")
+    new_high_windows = new_high_cfg.get("windows") or [20, 63]
+    new_high_windows = [int(w) for w in new_high_windows if w]
+    if not new_high_windows:
+        new_high_windows = [20, 63]
+
+    pct_threshold_val = float(pct_threshold or 0.0) if spike_mode == "pct" else 0.0
+    atr_multiple_val = float(atr_multiple or 0.0) if spike_mode == "atr" else 0.0
+
+    enabled_families = [
+        name
+        for name, enabled in [
+            ("trend", trend_enabled),
+            ("rsi", rsi_enabled),
+            ("atr_squeeze", atr_squeeze_enabled),
+            ("bb", bb_enabled),
+            ("nr7", nr7_enabled),
+            ("gap", gap_enabled),
+            ("volume", volume_enabled),
+            ("sr", sr_enabled),
+            ("new_high", new_high_enabled),
+        ]
+        if enabled
+    ]
 
     pad_days = lookback_days + max(
         atr_window,
         volume_filter_lookback if volume_filter_enabled else 0,
-        int(config.get("sr", {}).get("lookback", 63) or 63)
-        if config.get("sr", {}).get("enabled")
-        else 0,
-        int(config.get("volume", {}).get("lookback", 63) or 63)
-        if config.get("volume", {}).get("enabled")
-        else 0,
-        int(config.get("bb", {}).get("pct_window", 126) or 126)
-        if config.get("bb", {}).get("enabled")
-        else 0,
-        int(config.get("atr_squeeze", {}).get("window", 63) or 63)
-        if config.get("atr_squeeze", {}).get("enabled")
-        else 0,
-        int(max(config.get("new_high", {}).get("windows", [63]) or [63]))
-        if config.get("new_high", {}).get("enabled")
-        else 0,
+        sr_lookback if sr_enabled else 0,
+        volume_lookback if volume_enabled else 0,
+        bb_pct_window if bb_enabled else 0,
+        atr_pct_window if atr_squeeze_enabled else 0,
+        max(new_high_windows) if new_high_enabled and new_high_windows else 0,
     )
     pad_days = max(pad_days, lookback_days + 5)
     fetch_start = (start_ts - BDay(pad_days)).tz_localize(None)
@@ -267,41 +331,17 @@ def analyze_spike_precursors(
     lead_columns: dict[str, str] = {}
     flag_metadata: dict[str, dict[str, Any]] = {}
 
-    atr_cfg = config.get("atr_squeeze", {}) if isinstance(config.get("atr_squeeze"), dict) else {}
-    atr_pct_window = int(atr_cfg.get("window", 63) or 63)
-    atr_pct_threshold = float(atr_cfg.get("percentile", 25.0) or 25.0)
-
-    bb_cfg = config.get("bb", {}) if isinstance(config.get("bb"), dict) else {}
-    bb_period = int(bb_cfg.get("period", 20) or 20)
-    bb_pct_window = int(bb_cfg.get("pct_window", 126) or 126)
-    bb_percentile = float(bb_cfg.get("percentile", 20.0) or 20.0)
-
-    trend_cfg = config.get("trend", {}) if isinstance(config.get("trend"), dict) else {}
-    trend_fast = int(trend_cfg.get("fast", 20) or 20)
-    trend_slow = int(trend_cfg.get("slow", 50) or 50)
-
-    rsi_cfg = config.get("rsi", {}) if isinstance(config.get("rsi"), dict) else {}
-    rsi_period = int(rsi_cfg.get("period", 14) or 14)
-    rsi_levels = rsi_cfg.get("levels") or [50.0, 60.0]
-    rsi_levels = [float(x) for x in rsi_levels if x is not None]
-
-    nr7_cfg = config.get("nr7", {}) if isinstance(config.get("nr7"), dict) else {}
-    nr7_window = int(nr7_cfg.get("window", 7) or 7)
-
-    gap_cfg = config.get("gap", {}) if isinstance(config.get("gap"), dict) else {}
-    gap_threshold = float(gap_cfg.get("threshold", 3.0) or 3.0)
-
-    volume_cfg = config.get("volume", {}) if isinstance(config.get("volume"), dict) else {}
-    volume_threshold = float(volume_cfg.get("threshold", 1.5) or 1.5)
-    volume_lookback = int(volume_cfg.get("lookback", 63) or 63)
-
-    sr_cfg = config.get("sr", {}) if isinstance(config.get("sr"), dict) else {}
-    sr_threshold = float(sr_cfg.get("threshold", 2.0) or 2.0)
-    sr_lookback = int(sr_cfg.get("lookback", 63) or 63)
-
-    new_high_cfg = config.get("new_high", {}) if isinstance(config.get("new_high"), dict) else {}
-    new_high_windows = new_high_cfg.get("windows") or [20, 63]
-    new_high_windows = [int(w) for w in new_high_windows if w]
+    if debug and hasattr(debug, "log_event"):
+        try:
+            debug.log_event(
+                "config_gates",
+                pct_mode=spike_mode == "pct",
+                atr_mode=spike_mode == "atr",
+                indicators=enabled_families,
+                volume_filter=bool(volume_filter_enabled),
+            )
+        except Exception:
+            pass
 
     selected_flags: dict[str, Any] = {}
 
@@ -355,7 +395,7 @@ def analyze_spike_precursors(
             panel["volume_trailing_avg"] = np.nan
             panel["volume_multiple_spike"] = np.nan
 
-        if config.get("trend", {}).get("enabled"):
+        if trend_enabled:
             ema_fast = close.ewm(span=trend_fast, adjust=False, min_periods=trend_fast).mean()
             ema_slow = close.ewm(span=trend_slow, adjust=False, min_periods=trend_slow).mean()
             panel["ema_fast"] = ema_fast
@@ -364,7 +404,7 @@ def analyze_spike_precursors(
                 (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
             )
 
-        if config.get("rsi", {}).get("enabled"):
+        if rsi_enabled:
             delta = close.diff()
             gain = delta.clip(lower=0)
             loss = -delta.clip(upper=0)
@@ -378,11 +418,11 @@ def analyze_spike_precursors(
                 key = f"rsi_cross_{int(level)}"
                 panel[key] = (rsi >= level) & (rsi.shift(1) < level)
 
-        if config.get("atr_squeeze", {}).get("enabled"):
+        if atr_squeeze_enabled:
             panel["atr_percentile_rank"] = _rolling_percentile(panel["atr"], atr_pct_window)
             panel["atr_squeeze_flag"] = panel["atr_percentile_rank"] <= atr_pct_threshold
 
-        if config.get("bb", {}).get("enabled"):
+        if bb_enabled:
             mid = close.rolling(bb_period, min_periods=bb_period).mean()
             std = close.rolling(bb_period, min_periods=bb_period).std(ddof=0)
             upper = mid + 2 * std
@@ -392,20 +432,20 @@ def analyze_spike_precursors(
             panel["bb_width_percentile"] = _rolling_percentile(width, bb_pct_window)
             panel["bb_squeeze_flag"] = panel["bb_width_percentile"] <= bb_percentile
 
-        if config.get("nr7", {}).get("enabled"):
+        if nr7_enabled:
             true_range = (panel["high"] - panel["low"]).astype(float)
             panel["nr7_flag"] = true_range <= true_range.rolling(nr7_window).min()
 
-        if config.get("gap", {}).get("enabled"):
+        if gap_enabled:
             panel["gap_pct"] = (panel["open"] / prev_close - 1.0) * 100.0
 
-        if config.get("volume", {}).get("enabled"):
+        if volume_enabled:
             vol_avg = panel["volume"].rolling(
                 volume_lookback, min_periods=min(10, volume_lookback)
             ).mean()
             panel["volume_multiple"] = np.where(vol_avg > 0, panel["volume"] / vol_avg, np.nan)
 
-        if config.get("sr", {}).get("enabled"):
+        if sr_enabled:
             support = panel["low"].rolling(sr_lookback, min_periods=sr_lookback).min()
             resistance = panel["high"].rolling(sr_lookback, min_periods=sr_lookback).max()
             price = close
@@ -415,7 +455,7 @@ def analyze_spike_precursors(
             ratio = ratio.where((support < price) & (resistance > price))
             panel["sr_ratio"] = ratio
 
-        if config.get("new_high", {}).get("enabled"):
+        if new_high_enabled:
             for window in new_high_windows:
                 rolling_max = close.shift(1).rolling(window, min_periods=window).max()
                 key = f"new_high_{window}"
@@ -426,12 +466,10 @@ def analyze_spike_precursors(
 
         spike_mask = pd.Series(False, index=panel.index)
         if spike_mode == "pct":
-            threshold = float(pct_threshold or 0.0)
-            spike_mask = panel["pct_change"] >= threshold
+            spike_mask = panel["pct_change"] >= pct_threshold_val
         else:
-            multiple = float(atr_multiple or 0.0)
             diff = close - prev_close
-            spike_mask = diff >= (multiple * panel["atr_prev"])
+            spike_mask = diff >= (atr_multiple_val * panel["atr_prev"])
 
         spike_mask &= panel.index.to_series().between(start_ts, end_ts)
         spike_mask &= prev_close.notna()
@@ -465,7 +503,7 @@ def analyze_spike_precursors(
             lead_candidates: list[float] = []
             active_flags: list[str] = []
 
-            if config.get("trend", {}).get("enabled") and "ema_cross_up" in panel:
+            if trend_enabled and "ema_cross_up" in panel:
                 flag_col = f"ema_cross_{trend_fast}_{trend_slow}_any"
                 lead_col = f"ema_cross_{trend_fast}_{trend_slow}_lead_days"
                 crosses = window_df.index[window_df.get("ema_cross_up", False)]
@@ -490,7 +528,7 @@ def analyze_spike_precursors(
                     },
                 )
 
-            if config.get("rsi", {}).get("enabled") and "rsi" in panel:
+            if rsi_enabled and "rsi" in panel:
                 spike_row["rsi14_max"] = float(window_df["rsi"].max()) if not window_df.empty else np.nan
                 for level in rsi_levels:
                     flag_col = f"rsi_{rsi_period}_cross_{int(level)}"
@@ -520,7 +558,7 @@ def analyze_spike_precursors(
                         },
                     )
 
-            if config.get("atr_squeeze", {}).get("enabled") and "atr_squeeze_flag" in panel:
+            if atr_squeeze_enabled and "atr_squeeze_flag" in panel:
                 flag_col = f"atr_squeeze_le_{atr_pct_threshold:g}p"
                 lead_col = f"{flag_col}_lead_days"
                 hits = window_df.index[window_df.get("atr_squeeze_flag", False)]
@@ -550,7 +588,7 @@ def analyze_spike_precursors(
                     },
                 )
 
-            if config.get("bb", {}).get("enabled") and "bb_squeeze_flag" in panel:
+            if bb_enabled and "bb_squeeze_flag" in panel:
                 flag_col = f"bb_squeeze_le_{bb_percentile:g}p"
                 lead_col = f"{flag_col}_lead_days"
                 hits = window_df.index[window_df.get("bb_squeeze_flag", False)]
@@ -580,7 +618,7 @@ def analyze_spike_precursors(
                     },
                 )
 
-            if config.get("nr7", {}).get("enabled") and "nr7_flag" in panel:
+            if nr7_enabled and "nr7_flag" in panel:
                 flag_col = "nr7_any"
                 lead_col = "nr7_lead_days"
                 hits = window_df.index[window_df.get("nr7_flag", False)]
@@ -599,7 +637,7 @@ def analyze_spike_precursors(
                 lead_columns[flag_col] = lead_col
                 flag_metadata.setdefault(flag_col, {"type": "pattern", "name": "nr7"})
 
-            if config.get("gap", {}).get("enabled") and "gap_pct" in panel:
+            if gap_enabled and "gap_pct" in panel:
                 flag_col = f"gap_prior_ge_{gap_threshold:g}pct"
                 lead_col = f"{flag_col}_lead_days"
                 hits = window_df.index[window_df.get("gap_pct", 0.0) >= gap_threshold]
@@ -620,7 +658,7 @@ def analyze_spike_precursors(
                     {"type": "gap", "threshold_pct": gap_threshold},
                 )
 
-            if config.get("volume", {}).get("enabled") and "volume_multiple" in panel:
+            if volume_enabled and "volume_multiple" in panel:
                 day1 = panel.index.get_loc(spike_date) - 1
                 day2 = panel.index.get_loc(spike_date) - 2
                 if day1 >= 0:
@@ -666,7 +704,7 @@ def analyze_spike_precursors(
                         },
                     )
 
-            if config.get("sr", {}).get("enabled") and "sr_ratio" in panel:
+            if sr_enabled and "sr_ratio" in panel:
                 flag_col = f"sr_ratio_ge_{sr_threshold:g}"
                 lead_col = f"{flag_col}_lead_days"
                 hits = window_df.index[window_df.get("sr_ratio", 0.0) >= sr_threshold]
@@ -690,7 +728,7 @@ def analyze_spike_precursors(
                     {"type": "sr_ratio", "threshold": sr_threshold},
                 )
 
-            if config.get("new_high", {}).get("enabled"):
+            if new_high_enabled:
                 for window in new_high_windows:
                     key = f"new_high_{window}"
                     if key not in panel:

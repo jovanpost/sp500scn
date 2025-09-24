@@ -153,6 +153,52 @@ def page() -> None:
     debug_meta: dict[str, Any] = {}
     debug_env: dict[str, Any] = {"storage_mode": storage.mode, "storage_info": storage.info()}
 
+    default_state = {
+        "spike_lab_spike_mode": "pct",
+        "spike_lab_pct_threshold": 8.0,
+        "spike_lab_atr_multiple": 3.0,
+        "spike_lab_atr_window": 14,
+        "spike_lab_atr_method": "wilder",
+        "spike_lab_volume_filter_enabled": False,
+        "spike_lab_volume_filter_threshold": 1.5,
+        "spike_lab_volume_filter_lookback": 63,
+        "spike_lab_lookback_days": 20,
+        "spike_lab_trend_enabled": False,
+        "spike_lab_trend_pair_text": "20,50",
+        "spike_lab_rsi_enabled": False,
+        "spike_lab_rsi_levels_text": "50,60",
+        "spike_lab_atr_squeeze_enabled": False,
+        "spike_lab_atr_percentile": 25.0,
+        "spike_lab_atr_pct_window": 63,
+        "spike_lab_bb_enabled": False,
+        "spike_lab_bb_period": 20,
+        "spike_lab_bb_percentile": 20.0,
+        "spike_lab_bb_pct_window": 126,
+        "spike_lab_nr7_enabled": False,
+        "spike_lab_nr7_window": 7,
+        "spike_lab_gap_enabled": False,
+        "spike_lab_gap_threshold": 3.0,
+        "spike_lab_volume_enabled": False,
+        "spike_lab_volume_threshold": 1.5,
+        "spike_lab_volume_lookback": 63,
+        "spike_lab_sr_enabled": False,
+        "spike_lab_sr_threshold": 2.0,
+        "spike_lab_sr_lookback": 63,
+        "spike_lab_new_high_enabled": False,
+        "spike_lab_new_high_windows_text": "20,63",
+    }
+
+    for key, value in default_state.items():
+        st.session_state.setdefault(key, value)
+
+    if st.button("Reset to defaults"):
+        for key, value in default_state.items():
+            st.session_state[key] = value
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
+
     with st.form("spike_precursor_form"):
         date_cols = st.columns(2)
         start_date = date_cols[0].date_input("Start date", value=default_start.date())
@@ -162,78 +208,111 @@ def page() -> None:
             st.checkbox("S&P 500 membership filter", value=True, help="Limit to tickers with membership overlaps the date range if data is available.")
         )
 
+        spike_mode_options = ("pct", "atr")
+        current_mode = st.session_state.get("spike_lab_spike_mode", "pct")
+        mode_index = (
+            spike_mode_options.index(current_mode)
+            if current_mode in spike_mode_options
+            else 0
+        )
         spike_mode = st.radio(
             "Spike definition",
-            options=("pct", "atr"),
-            index=0,
+            options=spike_mode_options,
+            index=mode_index,
+            key="spike_lab_spike_mode",
             format_func=lambda opt: "Percent spike" if opt == "pct" else "ATR multiple",
         )
 
-        pct_threshold = None
-        atr_multiple = None
-        atr_window = 14
-        atr_method = "wilder"
+        pct_threshold_value: float | None = None
+        atr_multiple_value: float | None = None
+        atr_window_value = int(st.session_state.get("spike_lab_atr_window", 14))
+        atr_method_value = st.session_state.get("spike_lab_atr_method", "wilder")
 
         if spike_mode == "pct":
-            pct_threshold = float(
+            pct_threshold_value = float(
                 st.number_input(
                     "Close change ≥ X% vs prior close",
                     min_value=0.1,
-                    value=8.0,
                     step=0.1,
+                    key="spike_lab_pct_threshold",
                 )
             )
+            atr_multiple_value = None
         else:
             atr_cols = st.columns(3)
-            atr_multiple = float(
+            atr_multiple_value = float(
                 atr_cols[0].number_input(
                     "Close change ≥ K × ATR",
                     min_value=0.1,
-                    value=3.0,
                     step=0.1,
+                    key="spike_lab_atr_multiple",
                 )
             )
-            atr_window = int(
-                atr_cols[1].number_input("ATR window", min_value=2, value=14, step=1)
+            atr_window_value = int(
+                atr_cols[1].number_input(
+                    "ATR window",
+                    min_value=2,
+                    step=1,
+                    key="spike_lab_atr_window",
+                )
             )
-            atr_method = atr_cols[2].selectbox(
+            atr_method_value = atr_cols[2].selectbox(
                 "ATR method",
                 options=("wilder", "sma", "ema"),
-                index=0,
+                key="spike_lab_atr_method",
                 format_func=lambda opt: opt.upper() if opt != "wilder" else "Wilder",
             )
+            pct_threshold_value = None
 
         st.subheader("Optional spike-day filters")
         volume_filter_enabled = st.checkbox(
-            "Require volume spike vs trailing window", value=False
+            "Require volume spike vs trailing window",
+            key="spike_lab_volume_filter_enabled",
         )
-        volume_filter_threshold = 1.5
-        volume_filter_lookback = 63
+        volume_filter_threshold = float(
+            st.session_state.get("spike_lab_volume_filter_threshold", 1.5)
+        )
+        volume_filter_lookback = int(
+            st.session_state.get("spike_lab_volume_filter_lookback", 63)
+        )
         if volume_filter_enabled:
             vf_cols = st.columns(2)
             volume_filter_threshold = float(
                 vf_cols[0].number_input(
-                    "Volume multiple threshold", min_value=0.5, value=1.5, step=0.1
+                    "Volume multiple threshold",
+                    min_value=0.5,
+                    step=0.1,
+                    key="spike_lab_volume_filter_threshold",
                 )
             )
             volume_filter_lookback = int(
                 vf_cols[1].number_input(
-                    "Volume lookback (days)", min_value=5, value=63, step=1
+                    "Volume lookback (days)",
+                    min_value=5,
+                    step=1,
+                    key="spike_lab_volume_filter_lookback",
                 )
             )
 
         lookback_days = int(
-            st.number_input("Precursor window (business days)", min_value=1, value=20, step=1)
+            st.number_input(
+                "Precursor window (business days)",
+                min_value=1,
+                step=1,
+                key="spike_lab_lookback_days",
+            )
         )
 
         st.subheader("Indicator panel")
 
-        trend_enabled = st.checkbox("Trend: EMA fast/slow cross", value=True)
-        trend_pair_text = "20,50"
+        trend_enabled = st.checkbox(
+            "Trend: EMA fast/slow cross", key="spike_lab_trend_enabled"
+        )
+        trend_pair_text = st.session_state.get("spike_lab_trend_pair_text", "20,50")
         if trend_enabled:
             trend_pair_text = st.text_input(
                 "EMA periods (fast,slow)",
-                value="20,50",
+                key="spike_lab_trend_pair_text",
                 help="Comma separated values like 20,50",
             )
         trend_fast, trend_slow = 20, 50
@@ -242,103 +321,158 @@ def page() -> None:
             if len(vals) >= 2:
                 trend_fast, trend_slow = int(vals[0]), int(vals[1])
 
-        rsi_enabled = st.checkbox("Momentum: RSI crosses", value=True)
-        rsi_levels_text = "50,60"
+        rsi_enabled = st.checkbox("Momentum: RSI crosses", key="spike_lab_rsi_enabled")
+        rsi_levels_text = st.session_state.get("spike_lab_rsi_levels_text", "50,60")
         if rsi_enabled:
             rsi_levels_text = st.text_input(
-                "RSI levels (comma separated)", value="50,60"
+                "RSI levels (comma separated)", key="spike_lab_rsi_levels_text"
             )
         rsi_levels = _clean_levels(rsi_levels_text)
         if not rsi_levels:
             rsi_levels = [50.0, 60.0]
 
-        atr_squeeze_enabled = st.checkbox("Volatility: ATR compression", value=True)
-        atr_percentile = 25.0
-        atr_pct_window = 63
+        atr_squeeze_enabled = st.checkbox(
+            "Volatility: ATR compression", key="spike_lab_atr_squeeze_enabled"
+        )
+        atr_percentile = float(
+            st.session_state.get("spike_lab_atr_percentile", 25.0)
+        )
+        atr_pct_window = int(st.session_state.get("spike_lab_atr_pct_window", 63))
         if atr_squeeze_enabled:
             atr_sq_cols = st.columns(2)
             atr_percentile = float(
                 atr_sq_cols[0].number_input(
-                    "ATR percentile threshold", min_value=1.0, value=25.0, step=1.0
+                    "ATR percentile threshold",
+                    min_value=1.0,
+                    step=1.0,
+                    key="spike_lab_atr_percentile",
                 )
             )
             atr_pct_window = int(
                 atr_sq_cols[1].number_input(
-                    "ATR percentile lookback", min_value=10, value=63, step=1
+                    "ATR percentile lookback",
+                    min_value=10,
+                    step=1,
+                    key="spike_lab_atr_pct_window",
                 )
             )
 
-        bb_enabled = st.checkbox("Bollinger: band width squeeze", value=True)
-        bb_percentile = 20.0
-        bb_pct_window = 126
-        bb_period = 20
+        bb_enabled = st.checkbox(
+            "Bollinger: band width squeeze", key="spike_lab_bb_enabled"
+        )
+        bb_period = int(st.session_state.get("spike_lab_bb_period", 20))
+        bb_percentile = float(
+            st.session_state.get("spike_lab_bb_percentile", 20.0)
+        )
+        bb_pct_window = int(st.session_state.get("spike_lab_bb_pct_window", 126))
         if bb_enabled:
             bb_cols = st.columns(3)
             bb_period = int(
-                bb_cols[0].number_input("Bollinger period", min_value=5, value=20, step=1)
+                bb_cols[0].number_input(
+                    "Bollinger period",
+                    min_value=5,
+                    step=1,
+                    key="spike_lab_bb_period",
+                )
             )
             bb_percentile = float(
                 bb_cols[1].number_input(
-                    "Width percentile threshold", min_value=1.0, value=20.0, step=1.0
+                    "Width percentile threshold",
+                    min_value=1.0,
+                    step=1.0,
+                    key="spike_lab_bb_percentile",
                 )
             )
             bb_pct_window = int(
                 bb_cols[2].number_input(
-                    "Percentile lookback", min_value=20, value=126, step=1
+                    "Percentile lookback",
+                    min_value=20,
+                    step=1,
+                    key="spike_lab_bb_pct_window",
                 )
             )
 
-        nr7_enabled = st.checkbox("Range: NR7 pattern", value=True)
-        nr7_window = 7
+        nr7_enabled = st.checkbox("Range: NR7 pattern", key="spike_lab_nr7_enabled")
+        nr7_window = int(st.session_state.get("spike_lab_nr7_window", 7))
         if nr7_enabled:
             nr7_window = int(
-                st.number_input("NR7 lookback", min_value=3, value=7, step=1)
+                st.number_input(
+                    "NR7 lookback",
+                    min_value=3,
+                    step=1,
+                    key="spike_lab_nr7_window",
+                )
             )
 
-        gap_enabled = st.checkbox("Gaps: prior-day gap ≥ g%", value=True)
-        gap_threshold = 3.0
+        gap_enabled = st.checkbox("Gaps: prior-day gap ≥ g%", key="spike_lab_gap_enabled")
+        gap_threshold = float(st.session_state.get("spike_lab_gap_threshold", 3.0))
         if gap_enabled:
             gap_threshold = float(
-                st.number_input("Gap threshold (%)", min_value=0.5, value=3.0, step=0.5)
+                st.number_input(
+                    "Gap threshold (%)",
+                    min_value=0.5,
+                    step=0.5,
+                    key="spike_lab_gap_threshold",
+                )
             )
 
-        volume_enabled = st.checkbox("Volume: day-1/day-2 multiples", value=True)
-        volume_threshold = 1.5
-        volume_lookback = 63
+        volume_enabled = st.checkbox(
+            "Volume: day-1/day-2 multiples", key="spike_lab_volume_enabled"
+        )
+        volume_threshold = float(
+            st.session_state.get("spike_lab_volume_threshold", 1.5)
+        )
+        volume_lookback = int(st.session_state.get("spike_lab_volume_lookback", 63))
         if volume_enabled:
             vol_cols = st.columns(2)
             volume_threshold = float(
                 vol_cols[0].number_input(
-                    "Volume multiple threshold", min_value=0.5, value=1.5, step=0.1
+                    "Volume multiple threshold",
+                    min_value=0.5,
+                    step=0.1,
+                    key="spike_lab_volume_threshold",
                 )
             )
             volume_lookback = int(
                 vol_cols[1].number_input(
-                    "Volume lookback", min_value=10, value=63, step=1
+                    "Volume lookback",
+                    min_value=10,
+                    step=1,
+                    key="spike_lab_volume_lookback",
                 )
             )
 
-        sr_enabled = st.checkbox("Support/Resistance ratio", value=True)
-        sr_threshold = 2.0
-        sr_lookback = 63
+        sr_enabled = st.checkbox("Support/Resistance ratio", key="spike_lab_sr_enabled")
+        sr_threshold = float(st.session_state.get("spike_lab_sr_threshold", 2.0))
+        sr_lookback = int(st.session_state.get("spike_lab_sr_lookback", 63))
         if sr_enabled:
             sr_cols = st.columns(2)
             sr_threshold = float(
                 sr_cols[0].number_input(
-                    "SR ratio threshold", min_value=0.5, value=2.0, step=0.1
+                    "SR ratio threshold",
+                    min_value=0.5,
+                    step=0.1,
+                    key="spike_lab_sr_threshold",
                 )
             )
             sr_lookback = int(
                 sr_cols[1].number_input(
-                    "SR lookback", min_value=10, value=63, step=1
+                    "SR lookback",
+                    min_value=10,
+                    step=1,
+                    key="spike_lab_sr_lookback",
                 )
             )
 
-        new_high_enabled = st.checkbox("New high breakout", value=True)
-        new_high_windows_text = "20,63"
+        new_high_enabled = st.checkbox(
+            "New high breakout", key="spike_lab_new_high_enabled"
+        )
+        new_high_windows_text = st.session_state.get(
+            "spike_lab_new_high_windows_text", "20,63"
+        )
         if new_high_enabled:
             new_high_windows_text = st.text_input(
-                "New high windows", value="20,63"
+                "New high windows", key="spike_lab_new_high_windows_text"
             )
         new_high_windows = [int(v) for v in _clean_levels(new_high_windows_text)] or [20, 63]
 
@@ -347,68 +481,95 @@ def page() -> None:
     analysis_ran = False
     spikes_df = pd.DataFrame()
     summary: dict[str, Any] | None = None
+    effective_config: dict[str, Any] | None = None
+
+    pct_threshold_active = pct_threshold_value if spike_mode == "pct" else None
+    atr_multiple_active = atr_multiple_value if spike_mode == "atr" else None
 
     params = {
         "start_date": str(start_date),
         "end_date": str(end_date),
         "spike_mode": spike_mode,
-        "pct_threshold": pct_threshold,
-        "atr_multiple": atr_multiple,
-        "atr_window": atr_window,
-        "atr_method": atr_method,
+        "pct_threshold": pct_threshold_active,
+        "atr_multiple": atr_multiple_active,
+        "atr_window": atr_window_value,
+        "atr_method": atr_method_value,
         "lookback_days": lookback_days,
         "use_sp_filter": use_sp_filter,
     }
 
-    indicator_config = {
-        "volume_filter": {
-            "enabled": volume_filter_enabled,
+    volume_filter_payload: dict[str, Any] | None = None
+    if volume_filter_enabled:
+        volume_filter_payload = {
+            "enabled": True,
             "threshold": volume_filter_threshold,
             "lookback": volume_filter_lookback,
-        },
-        "trend": {
-            "enabled": trend_enabled,
+        }
+
+    indicator_config: dict[str, Any] = {}
+    if volume_filter_payload:
+        indicator_config["volume_filter"] = volume_filter_payload
+    if trend_enabled:
+        indicator_config["trend"] = {
+            "enabled": True,
             "fast": trend_fast,
             "slow": trend_slow,
-        },
-        "rsi": {
-            "enabled": rsi_enabled,
+        }
+    if rsi_enabled:
+        indicator_config["rsi"] = {
+            "enabled": True,
             "period": 14,
             "levels": rsi_levels,
-        },
-        "atr_squeeze": {
-            "enabled": atr_squeeze_enabled,
+        }
+    if atr_squeeze_enabled:
+        indicator_config["atr_squeeze"] = {
+            "enabled": True,
             "percentile": atr_percentile,
             "window": atr_pct_window,
-        },
-        "bb": {
-            "enabled": bb_enabled,
+        }
+    if bb_enabled:
+        indicator_config["bb"] = {
+            "enabled": True,
             "percentile": bb_percentile,
             "pct_window": bb_pct_window,
             "period": bb_period,
-        },
-        "nr7": {
-            "enabled": nr7_enabled,
+        }
+    if nr7_enabled:
+        indicator_config["nr7"] = {
+            "enabled": True,
             "window": nr7_window,
-        },
-        "gap": {
-            "enabled": gap_enabled,
+        }
+    if gap_enabled:
+        indicator_config["gap"] = {
+            "enabled": True,
             "threshold": gap_threshold,
-        },
-        "volume": {
-            "enabled": volume_enabled,
+        }
+    if volume_enabled:
+        indicator_config["volume"] = {
+            "enabled": True,
             "threshold": volume_threshold,
             "lookback": volume_lookback,
-        },
-        "sr": {
-            "enabled": sr_enabled,
+        }
+    if sr_enabled:
+        indicator_config["sr"] = {
+            "enabled": True,
             "threshold": sr_threshold,
             "lookback": sr_lookback,
-        },
-        "new_high": {
-            "enabled": new_high_enabled,
+        }
+    if new_high_enabled:
+        indicator_config["new_high"] = {
+            "enabled": True,
             "windows": new_high_windows,
-        },
+        }
+
+    effective_config = {
+        "spike_mode": spike_mode,
+        "pct_threshold": pct_threshold_active if spike_mode == "pct" else None,
+        "atr_multiple": atr_multiple_active if spike_mode == "atr" else None,
+        "atr_window": atr_window_value if spike_mode == "atr" else None,
+        "lookback_days": lookback_days,
+        "volume_filter_enabled": volume_filter_enabled,
+        "enabled_indicators": sorted(indicator_config.keys()),
     }
 
     if run_btn:
@@ -447,6 +608,12 @@ def page() -> None:
             pass
         log_fn("Loading data and computing indicators…")
 
+        if effective_config and debug and hasattr(debug, "log_event"):
+            try:
+                debug.log_event("effective_config", **effective_config)
+            except Exception:
+                pass
+
         try:
             spikes_df, summary = analyze_spike_precursors(
                 storage,
@@ -454,10 +621,10 @@ def page() -> None:
                 end=end_ts,
                 universe=universe,
                 spike_mode=spike_mode,
-                pct_threshold=pct_threshold,
-                atr_multiple=atr_multiple,
-                atr_window=atr_window,
-                atr_method=atr_method,
+                pct_threshold=pct_threshold_active,
+                atr_multiple=atr_multiple_active,
+                atr_window=atr_window_value,
+                atr_method=atr_method_value,
                 lookback_days=lookback_days,
                 indicator_config=indicator_config,
                 debug=debug,
@@ -480,6 +647,24 @@ def page() -> None:
                 spikes=int(counts.get("spikes", 0)),
                 flags=len(summary.get("flag_metadata", {})) if summary else 0,
             )
+
+    if analysis_ran and effective_config:
+        st.caption("Effective configuration (what actually ran)")
+        st.json(effective_config)
+
+        active_indicator_keys = [
+            key for key in indicator_config.keys() if key != "volume_filter"
+        ]
+        if not active_indicator_keys and not volume_filter_enabled:
+            if spike_mode == "pct" and pct_threshold_active is not None:
+                if abs(pct_threshold_active - 8.0) < 1e-9:
+                    st.success("Running: 8% up only")
+                else:
+                    st.info(
+                        f"Running: Percent spike only ({pct_threshold_active:.1f}%)"
+                    )
+            elif spike_mode == "atr" and atr_multiple_active is not None:
+                st.info(f"Running: ATR spike only ({atr_multiple_active:.2f}×)")
 
     if analysis_ran and summary:
         counts = summary.get("counts", {})
