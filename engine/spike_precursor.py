@@ -11,6 +11,10 @@ from data_lake.storage import Storage, load_prices_cached
 from .features import atr as compute_atr
 
 
+FREQUENCY_COLUMNS = ["flag", "hit_count", "hit_rate", "median_lead_days"]
+COMBO_COLUMNS = ["combo", "count", "lift"]
+
+
 def _normalize_prices_df(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     """Return a tidy OHLCV frame with normalized column names and unique dates."""
 
@@ -127,10 +131,27 @@ def analyze_spike_precursors(
     if start_ts > end_ts:
         start_ts, end_ts = end_ts, start_ts
 
-    universe_list: list[str]
-    if universe:
-        universe_list = sorted({str(t).upper() for t in universe if t})
+    def _empty_result(ticker_count: int = 0, flag_meta: dict[str, Any] | None = None) -> tuple[pd.DataFrame, dict]:
+        summary = {
+            "counts": {
+                "spikes": 0,
+                "tickers": ticker_count,
+                "start": start_ts,
+                "end": end_ts,
+            },
+            "frequency_table": pd.DataFrame(columns=FREQUENCY_COLUMNS),
+            "combos": pd.DataFrame(columns=COMBO_COLUMNS),
+            "flag_metadata": flag_meta or {},
+            "lookback_days": lookback_days,
+        }
+        return pd.DataFrame(columns=["ticker", "spike_date"]), summary
+
+    requested_universe: list[str] | None
+    if universe is not None:
+        requested_universe = sorted({str(t).upper() for t in universe if t})
+        universe_list = requested_universe
     else:
+        requested_universe = None
         universe_list = _discover_all_tickers(storage)
 
     if debug and hasattr(debug, "log_event"):
@@ -143,23 +164,8 @@ def analyze_spike_precursors(
         except Exception:
             pass
 
-    if not universe_list:
-        empty = pd.DataFrame(columns=["ticker", "spike_date"])
-        summary = {
-            "counts": {
-                "spikes": 0,
-                "tickers": 0,
-                "start": start_ts,
-                "end": end_ts,
-            },
-            "frequency_table": pd.DataFrame(
-                columns=["flag", "hit_count", "hit_rate", "median_lead_days"]
-            ),
-            "combos": pd.DataFrame(columns=["combo", "count", "lift"]),
-            "flag_metadata": {},
-            "lookback_days": lookback_days,
-        }
-        return empty, summary
+    if requested_universe is not None and len(requested_universe) == 0:
+        return _empty_result(0)
 
     atr_method = (atr_method or "wilder").strip().lower()
 
@@ -244,6 +250,9 @@ def analyze_spike_precursors(
         if enabled
     ]
 
+    if not enabled_families:
+        return _empty_result(len(universe_list))
+
     pad_days = lookback_days + max(
         atr_window,
         volume_filter_lookback if volume_filter_enabled else 0,
@@ -286,22 +295,7 @@ def analyze_spike_precursors(
             pass
 
     if prices_df.empty:
-        empty = pd.DataFrame(columns=["ticker", "spike_date"])
-        summary = {
-            "counts": {
-                "spikes": 0,
-                "tickers": 0,
-                "start": start_ts,
-                "end": end_ts,
-            },
-            "frequency_table": pd.DataFrame(
-                columns=["flag", "hit_count", "hit_rate", "median_lead_days"]
-            ),
-            "combos": pd.DataFrame(columns=["combo", "count", "lift"]),
-            "flag_metadata": {},
-            "lookback_days": lookback_days,
-        }
-        return empty, summary
+        return _empty_result(len(universe_list))
 
     prices_df["date"] = pd.to_datetime(prices_df["date"], errors="coerce").dt.tz_localize(
         None
@@ -787,10 +781,8 @@ def analyze_spike_precursors(
                 "start": start_ts,
                 "end": end_ts,
             },
-            "frequency_table": pd.DataFrame(
-                columns=["flag", "hit_count", "hit_rate", "median_lead_days"]
-            ),
-            "combos": pd.DataFrame(columns=["combo", "count", "lift"]),
+            "frequency_table": pd.DataFrame(columns=FREQUENCY_COLUMNS),
+            "combos": pd.DataFrame(columns=COMBO_COLUMNS),
             "flag_metadata": flag_metadata,
             "lookback_days": lookback_days,
         }
@@ -827,9 +819,12 @@ def analyze_spike_precursors(
             }
         )
 
-    frequency_table = pd.DataFrame(frequency_rows).sort_values(
-        ["hit_rate", "hit_count"], ascending=[False, False]
-    )
+    if frequency_rows:
+        frequency_table = pd.DataFrame(frequency_rows).sort_values(
+            ["hit_rate", "hit_count"], ascending=[False, False]
+        )
+    else:
+        frequency_table = pd.DataFrame(columns=FREQUENCY_COLUMNS)
 
     lead_stats = {}
     for flag, lead_col in lead_columns.items():
@@ -843,7 +838,7 @@ def analyze_spike_precursors(
                     "max": float(valid.max()),
                 }
 
-    combos_df = pd.DataFrame(columns=["combo", "count", "lift"])
+    combos_df = pd.DataFrame(columns=COMBO_COLUMNS)
     if total_spikes <= 5000 and len(bool_columns) >= 2:
         records = []
         flags_sorted = sorted([f for f in bool_columns if f in spikes_df.columns])
@@ -868,6 +863,18 @@ def analyze_spike_precursors(
             combos_df = pd.DataFrame(records).sort_values(
                 "count", ascending=False
             ).head(10)
+
+    def _normalize_frequency_table(freq: pd.DataFrame | None) -> pd.DataFrame:
+        if freq is None:
+            return pd.DataFrame(columns=FREQUENCY_COLUMNS)
+        working = freq.copy()
+        for col in FREQUENCY_COLUMNS:
+            if col not in working.columns:
+                dtype = object if col == "flag" else float
+                working[col] = pd.Series(dtype=dtype)
+        return working[FREQUENCY_COLUMNS]
+
+    frequency_table = _normalize_frequency_table(frequency_table)
 
     summary = {
         "counts": {

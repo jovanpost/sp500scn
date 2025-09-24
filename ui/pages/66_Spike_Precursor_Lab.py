@@ -572,6 +572,10 @@ def page() -> None:
         "enabled_indicators": sorted(indicator_config.keys()),
     }
 
+    active_indicator_keys = [
+        key for key in indicator_config.keys() if key != "volume_filter"
+    ]
+
     if run_btn:
         analysis_ran = True
         start_ts = pd.Timestamp(start_date).tz_localize(None)
@@ -580,16 +584,20 @@ def page() -> None:
             start_ts, end_ts = end_ts, start_ts
 
         universe: list[str] | None = None
+        requested_universe_count = 0
         if use_sp_filter:
-            universe = _load_universe(storage, start_ts, end_ts)
-            if not universe:
+            resolved = _load_universe(storage, start_ts, end_ts) or []
+            requested_universe_count = len(resolved)
+            if len(resolved) == 0:
                 st.warning(
-                    "S&P membership table unavailable or empty. Falling back to all available tickers."
+                    "S&P membership returned 0 tickers for this span; falling back to all tickers."
                 )
                 universe = None
+            else:
+                universe = resolved
         debug_env.update(
             {
-                "requested_universe": len(universe) if universe else 0,
+                "requested_universe": requested_universe_count,
                 "use_membership_filter": use_sp_filter,
             }
         )
@@ -652,9 +660,6 @@ def page() -> None:
         st.caption("Effective configuration (what actually ran)")
         st.json(effective_config)
 
-        active_indicator_keys = [
-            key for key in indicator_config.keys() if key != "volume_filter"
-        ]
         if not active_indicator_keys and not volume_filter_enabled:
             if spike_mode == "pct" and pct_threshold_active is not None:
                 if abs(pct_threshold_active - 8.0) < 1e-9:
@@ -691,22 +696,25 @@ def page() -> None:
         )
         metrics_cols[2].metric("Lookback (days)", summary.get("lookback_days", lookback_days))
 
-        freq_df = summary.get("frequency_table")
-        if isinstance(freq_df, pd.DataFrame) and not freq_df.empty:
-            freq_display = freq_df.copy()
-            freq_display["hit_rate_%"] = freq_display["hit_rate"].apply(lambda x: round(x * 100.0, 2))
-            freq_display = freq_display.drop(columns=["hit_rate"])
-            st.subheader("Precursor frequencies")
-            st.dataframe(freq_display, use_container_width=True)
-        else:
-            st.info("No precursor flags met the criteria.")
+        if active_indicator_keys:
+            freq_df = summary.get("frequency_table")
+            if isinstance(freq_df, pd.DataFrame) and not freq_df.empty:
+                freq_display = freq_df.copy()
+                freq_display["hit_rate_%"] = freq_display["hit_rate"].apply(
+                    lambda x: round(x * 100.0, 2)
+                )
+                freq_display = freq_display.drop(columns=["hit_rate"])
+                st.subheader("Precursor frequencies")
+                st.dataframe(freq_display, use_container_width=True)
+            else:
+                st.info("No precursor flags met the criteria.")
 
-        combos_df = summary.get("combos")
-        if isinstance(combos_df, pd.DataFrame) and not combos_df.empty:
-            combos_disp = combos_df.copy()
-            combos_disp["lift"] = combos_disp["lift"].round(2)
-            st.subheader("Top 10 combos (pairs)")
-            st.dataframe(combos_disp, use_container_width=True)
+            combos_df = summary.get("combos")
+            if isinstance(combos_df, pd.DataFrame) and not combos_df.empty:
+                combos_disp = combos_df.copy()
+                combos_disp["lift"] = combos_disp["lift"].round(2)
+                st.subheader("Top 10 combos (pairs)")
+                st.dataframe(combos_disp, use_container_width=True)
 
         if not spikes_df.empty:
             st.subheader("Spike events (latest 500)")
@@ -721,60 +729,65 @@ def page() -> None:
                 mime="text/csv",
             )
 
-        freq_df = summary.get("frequency_table")
-        if isinstance(freq_df, pd.DataFrame) and not freq_df.empty:
-            st.subheader("Export rule preset")
-            threshold_pct = st.slider(
-                "Minimum hit rate for inclusion (%)", min_value=5, max_value=100, value=30, step=5
-            )
-            eligible = freq_df[freq_df["hit_rate"] >= threshold_pct / 100.0]
-            metadata = summary.get("flag_metadata", {})
-            lead_stats = summary.get("lead_stats", {})
-            if eligible.empty:
-                st.info("No flags meet the selected hit-rate threshold.")
-            else:
-                within_default = int(summary.get("lookback_days", lookback_days))
-                selected_flags: list[str] = []
-                for _, row in eligible.iterrows():
-                    flag = row["flag"]
-                    label = f"{flag} ({row['hit_rate'] * 100:.1f}% hits)"
-                    if st.checkbox(label, key=f"preset_{flag}"):
-                        selected_flags.append(flag)
-
-                if selected_flags:
-                    conditions = []
-                    for flag in selected_flags:
-                        meta = dict(metadata.get(flag, {"type": "custom", "flag": flag}))
-                        within_days = within_default
-                        stats = lead_stats.get(flag)
-                        if stats and stats.get("max"):
-                            within_days = max(
-                                within_days,
-                                int(max(1, round(float(stats.get("max")))))
-                            )
-                        meta["within_days"] = within_days
-                        if "flag" not in meta:
-                            meta["flag"] = flag
-                        conditions.append(meta)
-
-                    preset = {
-                        "name": datetime.utcnow().strftime(
-                            "precursor_preset_%Y%m%d_%H%M"
-                        ),
-                        "conditions": conditions,
-                    }
-                    preset_json = json.dumps(preset, indent=2)
-                    st.download_button(
-                        "Download preset JSON",
-                        preset_json.encode("utf-8"),
-                        file_name=f"{preset['name']}.json",
-                        mime="application/json",
-                    )
-                    st.caption(
-                        "You can load this preset from the Stock Scanner (Shares Only) pre-filters (if/when that page supports it)."
-                    )
+        if active_indicator_keys:
+            freq_df = summary.get("frequency_table")
+            if isinstance(freq_df, pd.DataFrame) and not freq_df.empty:
+                st.subheader("Export rule preset")
+                threshold_pct = st.slider(
+                    "Minimum hit rate for inclusion (%)",
+                    min_value=5,
+                    max_value=100,
+                    value=30,
+                    step=5,
+                )
+                eligible = freq_df[freq_df["hit_rate"] >= threshold_pct / 100.0]
+                metadata = summary.get("flag_metadata", {})
+                lead_stats = summary.get("lead_stats", {})
+                if eligible.empty:
+                    st.info("No flags meet the selected hit-rate threshold.")
                 else:
-                    st.info("Select at least one flag to export a preset.")
+                    within_default = int(summary.get("lookback_days", lookback_days))
+                    selected_flags: list[str] = []
+                    for _, row in eligible.iterrows():
+                        flag = row["flag"]
+                        label = f"{flag} ({row['hit_rate'] * 100:.1f}% hits)"
+                        if st.checkbox(label, key=f"preset_{flag}"):
+                            selected_flags.append(flag)
+
+                    if selected_flags:
+                        conditions = []
+                        for flag in selected_flags:
+                            meta = dict(metadata.get(flag, {"type": "custom", "flag": flag}))
+                            within_days = within_default
+                            stats = lead_stats.get(flag)
+                            if stats and stats.get("max"):
+                                within_days = max(
+                                    within_days,
+                                    int(max(1, round(float(stats.get("max")))))
+                                )
+                            meta["within_days"] = within_days
+                            if "flag" not in meta:
+                                meta["flag"] = flag
+                            conditions.append(meta)
+
+                        preset = {
+                            "name": datetime.utcnow().strftime(
+                                "precursor_preset_%Y%m%d_%H%M"
+                            ),
+                            "conditions": conditions,
+                        }
+                        preset_json = json.dumps(preset, indent=2)
+                        st.download_button(
+                            "Download preset JSON",
+                            preset_json.encode("utf-8"),
+                            file_name=f"{preset['name']}.json",
+                            mime="application/json",
+                        )
+                        st.caption(
+                            "You can load this preset from the Stock Scanner (Shares Only) pre-filters (if/when that page supports it)."
+                        )
+                    else:
+                        st.info("Select at least one flag to export a preset.")
 
     _render_debug_panel(debug_meta, params, debug_env, debug)
 
