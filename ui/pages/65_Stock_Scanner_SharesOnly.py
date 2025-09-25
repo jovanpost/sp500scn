@@ -507,7 +507,9 @@ def page() -> None:
         if within_default_raw is None:
             within_default_raw = PRECURSOR_DEFAULTS["lookback_days"]
         within_default = int(max(1, min(60, float(within_default_raw))))
-        session["scanner_precursor_within"] = st.slider(
+        if session.get("scanner_precursor_within") != within_default:
+            session["scanner_precursor_within"] = within_default
+        st.slider(
             "Look back within N business days",
             min_value=1,
             max_value=60,
@@ -521,7 +523,9 @@ def page() -> None:
         if logic_default not in logic_options:
             logic_default = "ANY"
         logic_index = logic_options.index(logic_default)
-        session["scanner_precursor_logic"] = st.radio(
+        if session.get("scanner_precursor_logic") != logic_default:
+            session["scanner_precursor_logic"] = logic_default
+        st.radio(
             "Logic mode",
             options=logic_options,
             index=logic_index,
@@ -560,7 +564,9 @@ def page() -> None:
             if atr_default_raw is None:
                 atr_default_raw = PRECURSOR_DEFAULTS["atr_pct_threshold"]
             atr_default = float(max(1.0, min(100.0, float(atr_default_raw))))
-            session["scanner_precursor_atr_threshold"] = st.number_input(
+            if session.get("scanner_precursor_atr_threshold") != atr_default:
+                session["scanner_precursor_atr_threshold"] = atr_default
+            st.number_input(
                 "ATR percentile",
                 min_value=1.0,
                 max_value=100.0,
@@ -580,7 +586,9 @@ def page() -> None:
             if bb_default_raw is None:
                 bb_default_raw = PRECURSOR_DEFAULTS["bb_pct_threshold"]
             bb_default = float(max(1.0, min(100.0, float(bb_default_raw))))
-            session["scanner_precursor_bb_threshold"] = st.number_input(
+            if session.get("scanner_precursor_bb_threshold") != bb_default:
+                session["scanner_precursor_bb_threshold"] = bb_default
+            st.number_input(
                 "BB percentile",
                 min_value=1.0,
                 max_value=100.0,
@@ -627,7 +635,9 @@ def page() -> None:
             if gap_default_raw is None:
                 gap_default_raw = PRECURSOR_DEFAULTS["gap_min_pct"]
             gap_default = float(max(0.0, float(gap_default_raw)))
-            session["scanner_precursor_gap_threshold"] = st.number_input(
+            if session.get("scanner_precursor_gap_threshold") != gap_default:
+                session["scanner_precursor_gap_threshold"] = gap_default
+            st.number_input(
                 "Gap percent",
                 min_value=0.0,
                 max_value=50.0,
@@ -642,7 +652,9 @@ def page() -> None:
             if vol_default_raw is None:
                 vol_default_raw = PRECURSOR_DEFAULTS["vol_min_mult"]
             vol_default = float(max(0.1, float(vol_default_raw)))
-            session["scanner_precursor_vol_threshold"] = st.number_input(
+            if session.get("scanner_precursor_vol_threshold") != vol_default:
+                session["scanner_precursor_vol_threshold"] = vol_default
+            st.number_input(
                 "Volume multiple",
                 min_value=0.1,
                 max_value=20.0,
@@ -743,86 +755,87 @@ def page() -> None:
         st.error("End date must be on or after the start date.")
         return
 
-    precursor_within_days = int(
-        session.get("scanner_precursor_within", PRECURSOR_DEFAULTS["lookback_days"])
-    )
-    precursor_logic_choice = str(session.get("scanner_precursor_logic", "ANY") or "ANY").upper()
-    if precursor_logic_choice not in {"ANY", "ALL"}:
-        precursor_logic_choice = "ANY"
+    ss = st.session_state
+    precursors_master_enabled = bool(ss.get("scanner_precursor_enabled", False))
 
-    precursor_atr_threshold = _safe_float(session.get("scanner_precursor_atr_threshold"))
-    if precursor_atr_threshold is None:
-        precursor_atr_threshold = float(PRECURSOR_DEFAULTS["atr_pct_threshold"])
-    precursor_bb_threshold = _safe_float(session.get("scanner_precursor_bb_threshold"))
-    if precursor_bb_threshold is None:
-        precursor_bb_threshold = float(PRECURSOR_DEFAULTS["bb_pct_threshold"])
-    precursor_gap_threshold = _safe_float(session.get("scanner_precursor_gap_threshold"))
-    if precursor_gap_threshold is None:
-        precursor_gap_threshold = float(PRECURSOR_DEFAULTS["gap_min_pct"])
-    precursor_vol_threshold = _safe_float(session.get("scanner_precursor_vol_threshold"))
-    if precursor_vol_threshold is None:
-        precursor_vol_threshold = float(PRECURSOR_DEFAULTS["vol_min_mult"])
+    within_days_raw = _safe_float(ss.get("scanner_precursor_within"))
+    if within_days_raw is None:
+        within_days_raw = PRECURSOR_DEFAULTS["lookback_days"]
+    within_days = int(max(1, min(60, float(within_days_raw))))
 
-    master_precursors_enabled = bool(session.get("scanner_precursor_enabled", False))
+    logic = str(ss.get("scanner_precursor_logic", "ANY") or "ANY").upper()
+    if logic not in {"ANY", "ALL"}:
+        logic = "ANY"
+
+    atr_threshold_raw = _safe_float(ss.get("scanner_precursor_atr_threshold"))
+    if atr_threshold_raw is None:
+        atr_threshold_raw = PRECURSOR_DEFAULTS["atr_pct_threshold"]
+    atr_threshold = float(max(1.0, min(100.0, float(atr_threshold_raw))))
+
+    bb_threshold_raw = _safe_float(ss.get("scanner_precursor_bb_threshold"))
+    if bb_threshold_raw is None:
+        bb_threshold_raw = PRECURSOR_DEFAULTS["bb_pct_threshold"]
+    bb_threshold = float(max(1.0, min(100.0, float(bb_threshold_raw))))
+
+    gap_threshold_raw = _safe_float(ss.get("scanner_precursor_gap_threshold"))
+    if gap_threshold_raw is None:
+        gap_threshold_raw = PRECURSOR_DEFAULTS["gap_min_pct"]
+    gap_threshold = float(max(0.0, float(gap_threshold_raw)))
+
+    vol_threshold_raw = _safe_float(ss.get("scanner_precursor_vol_threshold"))
+    if vol_threshold_raw is None:
+        vol_threshold_raw = PRECURSOR_DEFAULTS["vol_min_mult"]
+    vol_threshold = float(max(0.1, float(vol_threshold_raw)))
 
     selected_conditions: list[dict[str, Any]] = []
-    if master_precursors_enabled:
-        if session.get("scanner_precursor_ema"):
+    if precursors_master_enabled:
+        if ss.get("scanner_precursor_ema"):
             selected_conditions.append({"flag": "ema_20_50_cross_up"})
-        if session.get("scanner_precursor_rsi50"):
+        if ss.get("scanner_precursor_rsi50"):
             selected_conditions.append({"flag": "rsi_cross_50"})
-        if session.get("scanner_precursor_rsi60"):
+        if ss.get("scanner_precursor_rsi60"):
             selected_conditions.append({"flag": "rsi_cross_60"})
-        if session.get("scanner_precursor_atr"):
+        if ss.get("scanner_precursor_atr"):
             selected_conditions.append(
-                {"flag": "atr_squeeze_pct", "max_percentile": float(precursor_atr_threshold)}
+                {"flag": "atr_squeeze_pct", "max_percentile": float(atr_threshold)}
             )
-        if session.get("scanner_precursor_bb"):
+        if ss.get("scanner_precursor_bb"):
             selected_conditions.append(
-                {"flag": "bb_squeeze_pct", "max_percentile": float(precursor_bb_threshold)}
+                {"flag": "bb_squeeze_pct", "max_percentile": float(bb_threshold)}
             )
-        if session.get("scanner_precursor_nr7"):
+        if ss.get("scanner_precursor_nr7"):
             selected_conditions.append({"flag": "nr7"})
-        if session.get("scanner_precursor_gap"):
+        if ss.get("scanner_precursor_gap"):
             selected_conditions.append(
-                {"flag": "gap_up_ge_gpct_prev", "min_gap_pct": float(precursor_gap_threshold)}
+                {"flag": "gap_up_ge_gpct_prev", "min_gap_pct": float(gap_threshold)}
             )
-        if session.get("scanner_precursor_vol_d1"):
+        if ss.get("scanner_precursor_vol_d1"):
             selected_conditions.append(
-                {"flag": "vol_mult_d1_ge_x", "min_mult": float(precursor_vol_threshold)}
+                {"flag": "vol_mult_d1_ge_x", "min_mult": float(vol_threshold)}
             )
-        if session.get("scanner_precursor_vol_d2"):
+        if ss.get("scanner_precursor_vol_d2"):
             selected_conditions.append(
-                {"flag": "vol_mult_d2_ge_x", "min_mult": float(precursor_vol_threshold)}
+                {"flag": "vol_mult_d2_ge_x", "min_mult": float(vol_threshold)}
             )
-        if session.get("scanner_precursor_sr"):
+        if ss.get("scanner_precursor_sr"):
             selected_conditions.append({"flag": "sr_ratio_ge_2"})
-        if session.get("scanner_precursor_high20"):
+        if ss.get("scanner_precursor_high20"):
             selected_conditions.append({"flag": "new_high_20"})
-        if session.get("scanner_precursor_high63"):
+        if ss.get("scanner_precursor_high63"):
             selected_conditions.append({"flag": "new_high_63"})
 
-    precursors_enabled = master_precursors_enabled and bool(selected_conditions)
-    session["scanner_precursor_enabled"] = master_precursors_enabled
-    session["scanner_precursor_within"] = precursor_within_days
-    session["scanner_precursor_logic"] = precursor_logic_choice
-    session["scanner_precursor_atr_threshold"] = precursor_atr_threshold
-    session["scanner_precursor_bb_threshold"] = precursor_bb_threshold
-    session["scanner_precursor_gap_threshold"] = precursor_gap_threshold
-    session["scanner_precursor_vol_threshold"] = precursor_vol_threshold
-
     precursors_payload: dict[str, Any] | None = None
-    if precursors_enabled:
+    if selected_conditions:
         precursors_payload = {
             "enabled": True,
-            "within_days": int(precursor_within_days),
-            "logic": precursor_logic_choice,
+            "within_days": int(within_days),
+            "logic": logic,
             "conditions": selected_conditions,
-            "atr_pct_threshold": float(precursor_atr_threshold),
-            "bb_pct_threshold": float(precursor_bb_threshold),
-            "gap_min_pct": float(precursor_gap_threshold),
-            "vol_min_mult": float(precursor_vol_threshold),
-            "lookback_days": int(precursor_within_days),
+            "atr_pct_threshold": float(atr_threshold),
+            "bb_pct_threshold": float(bb_threshold),
+            "gap_min_pct": float(gap_threshold),
+            "vol_min_mult": float(vol_threshold),
+            "lookback_days": int(within_days),
         }
 
     params: StocksOnlyScanParams = {
