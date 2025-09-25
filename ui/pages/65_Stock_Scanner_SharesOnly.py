@@ -799,44 +799,47 @@ def page() -> None:
     if precursor_vol_threshold is None:
         precursor_vol_threshold = float(PRECURSOR_DEFAULTS["vol_min_mult"])
 
-    selected_conditions: list[dict[str, Any]] = []
-    if session.get("scanner_precursor_ema"):
-        selected_conditions.append({"flag": "ema_20_50_cross_up"})
-    if session.get("scanner_precursor_rsi50"):
-        selected_conditions.append({"flag": "rsi_cross_50"})
-    if session.get("scanner_precursor_rsi60"):
-        selected_conditions.append({"flag": "rsi_cross_60"})
-    if session.get("scanner_precursor_atr"):
-        selected_conditions.append(
-            {"flag": "atr_squeeze_pct", "max_percentile": float(precursor_atr_threshold)}
-        )
-    if session.get("scanner_precursor_bb"):
-        selected_conditions.append(
-            {"flag": "bb_squeeze_pct", "max_percentile": float(precursor_bb_threshold)}
-        )
-    if session.get("scanner_precursor_nr7"):
-        selected_conditions.append({"flag": "nr7"})
-    if session.get("scanner_precursor_gap"):
-        selected_conditions.append(
-            {"flag": "gap_up_ge_gpct_prev", "min_gap_pct": float(precursor_gap_threshold)}
-        )
-    if session.get("scanner_precursor_vol_d1"):
-        selected_conditions.append(
-            {"flag": "vol_mult_d1_ge_x", "min_mult": float(precursor_vol_threshold)}
-        )
-    if session.get("scanner_precursor_vol_d2"):
-        selected_conditions.append(
-            {"flag": "vol_mult_d2_ge_x", "min_mult": float(precursor_vol_threshold)}
-        )
-    if session.get("scanner_precursor_sr"):
-        selected_conditions.append({"flag": "sr_ratio_ge_2"})
-    if session.get("scanner_precursor_high20"):
-        selected_conditions.append({"flag": "new_high_20"})
-    if session.get("scanner_precursor_high63"):
-        selected_conditions.append({"flag": "new_high_63"})
+    master_precursors_enabled = bool(session.get("scanner_precursor_enabled", False))
 
-    precursors_enabled = bool(selected_conditions)
-    session["scanner_precursor_enabled"] = precursors_enabled
+    selected_conditions: list[dict[str, Any]] = []
+    if master_precursors_enabled:
+        if session.get("scanner_precursor_ema"):
+            selected_conditions.append({"flag": "ema_20_50_cross_up"})
+        if session.get("scanner_precursor_rsi50"):
+            selected_conditions.append({"flag": "rsi_cross_50"})
+        if session.get("scanner_precursor_rsi60"):
+            selected_conditions.append({"flag": "rsi_cross_60"})
+        if session.get("scanner_precursor_atr"):
+            selected_conditions.append(
+                {"flag": "atr_squeeze_pct", "max_percentile": float(precursor_atr_threshold)}
+            )
+        if session.get("scanner_precursor_bb"):
+            selected_conditions.append(
+                {"flag": "bb_squeeze_pct", "max_percentile": float(precursor_bb_threshold)}
+            )
+        if session.get("scanner_precursor_nr7"):
+            selected_conditions.append({"flag": "nr7"})
+        if session.get("scanner_precursor_gap"):
+            selected_conditions.append(
+                {"flag": "gap_up_ge_gpct_prev", "min_gap_pct": float(precursor_gap_threshold)}
+            )
+        if session.get("scanner_precursor_vol_d1"):
+            selected_conditions.append(
+                {"flag": "vol_mult_d1_ge_x", "min_mult": float(precursor_vol_threshold)}
+            )
+        if session.get("scanner_precursor_vol_d2"):
+            selected_conditions.append(
+                {"flag": "vol_mult_d2_ge_x", "min_mult": float(precursor_vol_threshold)}
+            )
+        if session.get("scanner_precursor_sr"):
+            selected_conditions.append({"flag": "sr_ratio_ge_2"})
+        if session.get("scanner_precursor_high20"):
+            selected_conditions.append({"flag": "new_high_20"})
+        if session.get("scanner_precursor_high63"):
+            selected_conditions.append({"flag": "new_high_63"})
+
+    precursors_enabled = master_precursors_enabled and bool(selected_conditions)
+    session["scanner_precursor_enabled"] = master_precursors_enabled
     session["scanner_precursor_within"] = precursor_within_days
     session["scanner_precursor_logic"] = precursor_logic_choice
     session["scanner_precursor_atr_threshold"] = precursor_atr_threshold
@@ -845,7 +848,7 @@ def page() -> None:
     session["scanner_precursor_vol_threshold"] = precursor_vol_threshold
 
     precursors_payload: dict[str, Any] | None = None
-    if selected_conditions:
+    if precursors_enabled:
         precursors_payload = {
             "enabled": True,
             "within_days": int(precursor_within_days),
