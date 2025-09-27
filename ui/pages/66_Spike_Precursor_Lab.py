@@ -46,25 +46,74 @@ def _default_dates() -> tuple[pd.Timestamp, pd.Timestamp]:
     return start, end
 
 
+def _normalize_timestamp(ts: pd.Timestamp | str | None) -> pd.Timestamp | None:
+    if ts is None:
+        return None
+    if isinstance(ts, pd.Timestamp):
+        return ts.tz_localize(None) if ts.tzinfo else ts
+    return pd.Timestamp(ts).tz_localize(None)
+
+
+def _filter_membership_by_dates(
+    membership: pd.DataFrame, start: pd.Timestamp | None, end: pd.Timestamp | None
+) -> pd.DataFrame:
+    if membership is None or membership.empty:
+        return membership
+    if start is None and end is None:
+        return membership
+
+    starts = pd.to_datetime(membership.get("start_date"), errors="coerce")
+    ends = pd.to_datetime(membership.get("end_date"), errors="coerce")
+
+    mask = pd.Series(True, index=membership.index)
+    if end is not None:
+        mask &= starts.isna() | (starts <= end)
+    if start is not None:
+        mask &= ends.isna() | (ends >= start)
+
+    return membership.loc[mask]
+
+
 def _resolve_universe(
-    storage: Storage, *, use_sp_filter: bool, extra_tickers: Sequence[str] | None
+    storage: Storage,
+    *,
+    use_sp_filter: bool,
+    extra_tickers: Sequence[str] | None,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
 ) -> list[str]:
     tickers: set[str] = set()
+
     try:
         membership = load_membership(storage, cache_salt=storage.cache_salt())
     except Exception:
         membership = pd.DataFrame()
 
-    if use_sp_filter and membership is not None and not membership.empty:
+    start = _normalize_timestamp(start)
+    end = _normalize_timestamp(end)
+
+    active_membership = _filter_membership_by_dates(membership, start, end)
+
+    if use_sp_filter and active_membership is not None and not active_membership.empty:
         tickers.update(
-            membership["ticker"].astype(str).str.upper().str.strip().dropna().tolist()
+            active_membership["ticker"]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+            .dropna()
+            .tolist()
         )
+
     if extra_tickers:
         tickers.update(str(t).upper().strip() for t in extra_tickers if t)
-    if not tickers and membership is not None and not membership.empty:
-        tickers.update(
-            membership["ticker"].astype(str).str.upper().str.strip().dropna().tolist()
-        )
+
+    if not tickers and not use_sp_filter:
+        fallback = active_membership if active_membership is not None else membership
+        if fallback is not None and not fallback.empty:
+            tickers.update(
+                fallback["ticker"].astype(str).str.upper().str.strip().dropna().tolist()
+            )
+
     return sorted(tickers)
 
 
@@ -332,7 +381,13 @@ def page() -> None:
         return
 
     precursors_payload = build_conditions_from_session(st.session_state)
-    tickers = _resolve_universe(storage, use_sp_filter=use_sp_filter, extra_tickers=extra_tickers)
+    tickers = _resolve_universe(
+        storage,
+        use_sp_filter=use_sp_filter,
+        extra_tickers=extra_tickers,
+        start=start_ts,
+        end=end_ts,
+    )
 
     spike_definition = SpikeDefinition(
         mode=spike_mode,
