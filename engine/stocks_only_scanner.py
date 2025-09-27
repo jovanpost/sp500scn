@@ -29,6 +29,12 @@ log = logging.getLogger(__name__)
 DEFAULT_CASH_CAP = 1_000.0
 _PRECURSOR_CONFIG = IndicatorConfig()
 _PRECURSOR_MAX_LOOKBACK = _PRECURSOR_CONFIG.max_lookback
+_PRECURSOR_EVENT_OFFSETS = {
+    "vol_mult_d1": 1,
+    "vol_mult_d1_ge_x": 1,
+    "vol_mult_d2": 2,
+    "vol_mult_d2_ge_x": 2,
+}
 
 
 class PrecursorCondition(TypedDict, total=False):
@@ -743,7 +749,7 @@ def run_scan(
                     continue
                 window_start = (normalized_day - BDay(precursor_within_days)).normalize()
                 window_mask = (precursor_panel.index >= window_start) & (
-                    precursor_panel.index < normalized_day
+                    precursor_panel.index <= normalized_day
                 )
                 window_df = precursor_panel.loc[window_mask]
 
@@ -774,7 +780,25 @@ def run_scan(
                     if not passed or not hits:
                         continue
                     precursor_hits.append(flag)
-                    leads = [int((normalized_day - hit).days) for hit in hits if pd.notna(hit)]
+                    leads: list[int] = []
+                    offset = _PRECURSOR_EVENT_OFFSETS.get(flag, 0)
+                    for hit in hits:
+                        if pd.isna(hit):
+                            continue
+                        hit_ts = pd.Timestamp(hit).tz_localize(None).normalize()
+                        event_ts = hit_ts
+                        if offset:
+                            event_ts = (event_ts - BDay(offset)).normalize()
+                            delta = int(
+                                np.busday_count(
+                                    event_ts.date(), normalized_day.date()
+                                )
+                            )
+                        else:
+                            delta = int((normalized_day - event_ts).days)
+                        if delta < 0:
+                            continue
+                        leads.append(delta)
                     if leads:
                         precursor_last_seen[flag] = float(min(leads))
 
