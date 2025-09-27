@@ -13,14 +13,12 @@ import pandas as pd
 import streamlit as st
 
 from data_lake.storage import Storage
-from engine.scan_shared.precursor_flags import DEFAULT_PARAMS as PRECURSOR_DEFAULTS
-from engine.stocks_only_scanner import (
-    DEFAULT_CASH_CAP,
-    ScanSummary,
-    StocksOnlyScanParams,
-    run_scan,
-)
+from engine.precursor_rules import build_conditions_from_session
+from engine.scan_runner import StocksOnlyScanParams, run_scan
+from engine.stocks_only_scanner import DEFAULT_CASH_CAP
+from ui.components.precursor_controls import render_precursor_section
 from ui.components.progress import status_block
+from utils.io_export import export_trades
 
 
 def _utcnow_iso() -> str:
@@ -255,22 +253,33 @@ def _progress_callback(progress_widget, log_fn: Callable[[str], None]):
     return _cb
 
 
-def _render_summary(summary: ScanSummary) -> None:
+def _render_summary(summary: dict[str, Any]) -> None:
+    start = pd.to_datetime(summary.get("start")) if summary.get("start") is not None else pd.NaT
+    end = pd.to_datetime(summary.get("end")) if summary.get("end") is not None else pd.NaT
+    start_display = start.date() if not pd.isna(start) else "?"
+    end_display = end.date() if not pd.isna(end) else "?"
+
+    tickers_scanned = int(summary.get("tickers_scanned", 0) or summary.get("tickers", 0))
+    candidates = int(summary.get("candidates", 0))
+    trades = int(summary.get("trades", 0))
+    wins = int(summary.get("wins", 0))
+    win_rate = float(summary.get("win_rate", 0.0))
+    total_capital = float(summary.get("total_capital", 0.0))
+    total_pnl = float(summary.get("total_pnl", 0.0))
+
     st.markdown(
-        f"**Date span:** {summary.start.date()} → {summary.end.date()}  \\\n"
-        f"**Tickers scanned:** {summary.tickers_scanned}  \\\n"
-        f"**Candidates:** {summary.candidates}  \\\n"
-        f"**Trades taken:** {summary.trades}"
+        f"**Date span:** {start_display} → {end_display}  \\\n"
+        f"**Tickers scanned:** {tickers_scanned}  \\\n"
+        f"**Candidates:** {candidates}  \\\n"
+        f"**Trades taken:** {trades}"
     )
 
     metrics = st.columns(4)
-    metrics[0].metric("Trades", summary.trades)
-    win_display = (
-        f"{summary.wins} wins" if summary.trades else "0"
-    )
-    metrics[1].metric("Win rate", f"{summary.win_rate:.1%}", win_display)
-    metrics[2].metric("Total capital deployed", _format_currency(summary.total_capital))
-    metrics[3].metric("Total P&L", _format_currency(summary.total_pnl))
+    metrics[0].metric("Trades", trades)
+    win_display = f"{wins} wins" if trades else "0"
+    metrics[1].metric("Win rate", f"{win_rate:.1%}", win_display)
+    metrics[2].metric("Total capital deployed", _format_currency(total_capital))
+    metrics[3].metric("Total P&L", _format_currency(total_pnl))
 
 
 def _render_ledger(df: pd.DataFrame) -> None:
@@ -368,311 +377,10 @@ def page() -> None:
         return
 
     session = st.session_state
-    session.setdefault("scanner_precursor_enabled", False)
-    session.setdefault("scanner_precursor_within", PRECURSOR_DEFAULTS["lookback_days"])
-    session.setdefault("scanner_precursor_logic", "ANY")
-    session.setdefault("scanner_precursor_atr_threshold", PRECURSOR_DEFAULTS["atr_pct_threshold"])
-    session.setdefault("scanner_precursor_bb_threshold", PRECURSOR_DEFAULTS["bb_pct_threshold"])
-    session.setdefault("scanner_precursor_gap_threshold", PRECURSOR_DEFAULTS["gap_min_pct"])
-    session.setdefault("scanner_precursor_vol_threshold", PRECURSOR_DEFAULTS["vol_min_mult"])
 
     default_start, default_end = _default_dates()
 
-    # --- Spike Precursor Filters (outside the form so they react immediately) ---
-    default_enabled = bool(session.get("scanner_precursor_enabled", False))
-    precursors_enabled = st.checkbox(
-        "Enable Spike Precursor filters",
-        key="scanner_precursor_enabled",
-        value=default_enabled,
-    )
-
-    with st.expander("Spike Precursor Filters (optional)", expanded=False):
-        disabled_children = not precursors_enabled
-
-        preset_upload = st.file_uploader(
-            "Import from Spike Lab preset",
-            type=["json"],
-            key="scanner_precursor_preset",
-        )
-        if preset_upload is not None:
-            applied_flags: list[str] = []
-            try:
-                preset_raw = preset_upload.read()
-                preset_data = json.loads(preset_raw.decode("utf-8")) if preset_raw else {}
-                conditions = preset_data.get("conditions") or []
-
-                FLAG_MAP: dict[str, tuple[str, bool]] = {
-                    "ema_20_50_cross_up": ("scanner_precursor_ema", True),
-                    "rsi_cross_50": ("scanner_precursor_rsi50", True),
-                    "rsi_cross_60": ("scanner_precursor_rsi60", True),
-                    "atr_squeeze": ("scanner_precursor_atr", True),
-                    "bb_squeeze": ("scanner_precursor_bb", True),
-                    "nr7": ("scanner_precursor_nr7", True),
-                    "gap_prior_day_pct": ("scanner_precursor_gap", True),
-                    "volume_multiple_d1": ("scanner_precursor_vol_d1", True),
-                    "volume_multiple_d2": ("scanner_precursor_vol_d2", True),
-                    "sr_ratio": ("scanner_precursor_sr", True),
-                    "new_high_20": ("scanner_precursor_high20", True),
-                    "new_high_63": ("scanner_precursor_high63", True),
-                }
-
-                ALIASES = {
-                    "ema20_50_cross_up": "ema_20_50_cross_up",
-                    "atr_squeeze_q": "atr_squeeze",
-                    "bb_squeeze_q": "bb_squeeze",
-                    "gap_pct": "gap_prior_day_pct",
-                    "gap_prior_ge_pct": "gap_prior_day_pct",
-                    "vol_d1": "volume_multiple_d1",
-                    "vol_d2": "volume_multiple_d2",
-                    "sr_ratio_gte": "sr_ratio",
-                }
-
-                def _normalize_flag(raw_flag: Any) -> str:
-                    flag_str = str(raw_flag or "").strip().lower()
-                    return ALIASES.get(flag_str, flag_str)
-
-                for cond in conditions:
-                    if isinstance(cond, dict):
-                        meta = cond
-                        raw_flag = cond.get("flag") or cond.get("type") or cond.get("id")
-                    else:
-                        meta = {}
-                        raw_flag = cond
-
-                    flag = _normalize_flag(raw_flag)
-                    if not flag or flag not in FLAG_MAP:
-                        continue
-
-                    state_key, state_value = FLAG_MAP[flag]
-                    session[state_key] = state_value
-                    applied_flags.append(flag)
-
-                    if flag == "atr_squeeze":
-                        pct = _safe_float(
-                            meta.get("percentile") if isinstance(meta, dict) else None
-                        )
-                        if pct is None and isinstance(meta, dict):
-                            pct = _safe_float(meta.get("q") or meta.get("threshold"))
-                        if pct is not None:
-                            session["scanner_precursor_atr_threshold"] = float(pct)
-                    elif flag == "bb_squeeze":
-                        pct = _safe_float(
-                            meta.get("percentile") if isinstance(meta, dict) else None
-                        )
-                        if pct is None and isinstance(meta, dict):
-                            pct = _safe_float(meta.get("q") or meta.get("threshold"))
-                        if pct is not None:
-                            session["scanner_precursor_bb_threshold"] = float(pct)
-                    elif flag == "gap_prior_day_pct" and isinstance(meta, dict):
-                        gap_pct = _safe_float(meta.get("threshold") or meta.get("pct"))
-                        if gap_pct is not None:
-                            session["scanner_precursor_gap_threshold"] = float(gap_pct)
-                    elif flag in {"volume_multiple_d1", "volume_multiple_d2"} and isinstance(meta, dict):
-                        vol_mult = _safe_float(meta.get("threshold") or meta.get("multiple"))
-                        if vol_mult is not None:
-                            session["scanner_precursor_vol_threshold"] = float(vol_mult)
-
-                    if isinstance(meta, dict) and meta.get("within_days") is not None:
-                        try:
-                            session["scanner_precursor_within"] = int(meta["within_days"])
-                        except (TypeError, ValueError):
-                            pass
-
-                preset_within = preset_data.get("within_days") or preset_data.get("lookback_days")
-                if preset_within is not None:
-                    try:
-                        session["scanner_precursor_within"] = int(preset_within)
-                    except (TypeError, ValueError):
-                        pass
-
-                preset_logic = preset_data.get("logic")
-                if isinstance(preset_logic, str):
-                    logic_val = preset_logic.strip().upper()
-                    if logic_val in {"ANY", "ALL"}:
-                        session["scanner_precursor_logic"] = logic_val
-
-                if applied_flags:
-                    flag_summary = ", ".join(sorted(set(applied_flags)))
-                    st.success(f"Preset applied: {flag_summary}")
-                    session["scanner_precursor_enabled"] = True
-                else:
-                    st.warning("Preset contained no supported precursor flags.")
-            except Exception:
-                st.error("Could not read preset JSON. Please check the file format.")
-
-            precursors_enabled = bool(session.get("scanner_precursor_enabled", False))
-            disabled_children = not precursors_enabled
-
-        within_default_raw = _safe_float(session.get("scanner_precursor_within"))
-        if within_default_raw is None:
-            within_default_raw = PRECURSOR_DEFAULTS["lookback_days"]
-        within_default = int(max(1, min(60, float(within_default_raw))))
-        if session.get("scanner_precursor_within") != within_default:
-            session["scanner_precursor_within"] = within_default
-        st.slider(
-            "Look back within N business days",
-            min_value=1,
-            max_value=60,
-            value=within_default,
-            disabled=disabled_children,
-            key="scanner_precursor_within",
-        )
-
-        logic_options = ("ANY", "ALL")
-        logic_default = str(session.get("scanner_precursor_logic", "ANY")).upper()
-        if logic_default not in logic_options:
-            logic_default = "ANY"
-        logic_index = logic_options.index(logic_default)
-        if session.get("scanner_precursor_logic") != logic_default:
-            session["scanner_precursor_logic"] = logic_default
-        st.radio(
-            "Logic mode",
-            options=logic_options,
-            index=logic_index,
-            key="scanner_precursor_logic",
-            disabled=disabled_children,
-            horizontal=True,
-        )
-
-        st.markdown("**Trend & Momentum**")
-        trend_cols = st.columns(3)
-        trend_cols[0].checkbox(
-            "EMA 20/50 cross up",
-            key="scanner_precursor_ema",
-            disabled=disabled_children,
-        )
-        trend_cols[1].checkbox(
-            "RSI cross ≥ 50",
-            key="scanner_precursor_rsi50",
-            disabled=disabled_children,
-        )
-        trend_cols[2].checkbox(
-            "RSI cross ≥ 60",
-            key="scanner_precursor_rsi60",
-            disabled=disabled_children,
-        )
-
-        st.markdown("**Volatility squeezes**")
-        squeeze_cols = st.columns(2)
-        with squeeze_cols[0]:
-            st.checkbox(
-                "ATR percentile ≤",
-                key="scanner_precursor_atr",
-                disabled=disabled_children,
-            )
-            atr_default_raw = _safe_float(session.get("scanner_precursor_atr_threshold"))
-            if atr_default_raw is None:
-                atr_default_raw = PRECURSOR_DEFAULTS["atr_pct_threshold"]
-            atr_default = float(max(1.0, min(100.0, float(atr_default_raw))))
-            if session.get("scanner_precursor_atr_threshold") != atr_default:
-                session["scanner_precursor_atr_threshold"] = atr_default
-            st.number_input(
-                "ATR percentile",
-                min_value=1.0,
-                max_value=100.0,
-                step=1.0,
-                key="scanner_precursor_atr_threshold",
-                value=atr_default,
-                disabled=disabled_children
-                or not session.get("scanner_precursor_atr", False),
-            )
-        with squeeze_cols[1]:
-            st.checkbox(
-                "BB width percentile ≤",
-                key="scanner_precursor_bb",
-                disabled=disabled_children,
-            )
-            bb_default_raw = _safe_float(session.get("scanner_precursor_bb_threshold"))
-            if bb_default_raw is None:
-                bb_default_raw = PRECURSOR_DEFAULTS["bb_pct_threshold"]
-            bb_default = float(max(1.0, min(100.0, float(bb_default_raw))))
-            if session.get("scanner_precursor_bb_threshold") != bb_default:
-                session["scanner_precursor_bb_threshold"] = bb_default
-            st.number_input(
-                "BB percentile",
-                min_value=1.0,
-                max_value=100.0,
-                step=1.0,
-                key="scanner_precursor_bb_threshold",
-                value=bb_default,
-                disabled=disabled_children
-                or not session.get("scanner_precursor_bb", False),
-            )
-
-        st.markdown("**Range & breakouts**")
-        range_cols = st.columns(3)
-        range_cols[0].checkbox(
-            "NR7",
-            key="scanner_precursor_nr7",
-            disabled=disabled_children,
-        )
-        range_cols[1].checkbox(
-            "New high 20",
-            key="scanner_precursor_high20",
-            disabled=disabled_children,
-        )
-        range_cols[2].checkbox(
-            "New high 63",
-            key="scanner_precursor_high63",
-            disabled=disabled_children,
-        )
-
-        st.checkbox(
-            "Support/resistance ratio ≥ 2",
-            key="scanner_precursor_sr",
-            disabled=disabled_children,
-        )
-
-        st.markdown("**Gaps & volume**")
-        gv_cols = st.columns(2)
-        with gv_cols[0]:
-            st.checkbox(
-                "Prior-day gap ≥ %",
-                key="scanner_precursor_gap",
-                disabled=disabled_children,
-            )
-            gap_default_raw = _safe_float(session.get("scanner_precursor_gap_threshold"))
-            if gap_default_raw is None:
-                gap_default_raw = PRECURSOR_DEFAULTS["gap_min_pct"]
-            gap_default = float(max(0.0, float(gap_default_raw)))
-            if session.get("scanner_precursor_gap_threshold") != gap_default:
-                session["scanner_precursor_gap_threshold"] = gap_default
-            st.number_input(
-                "Gap percent",
-                min_value=0.0,
-                max_value=50.0,
-                step=0.5,
-                key="scanner_precursor_gap_threshold",
-                value=gap_default,
-                disabled=disabled_children
-                or not session.get("scanner_precursor_gap", False),
-            )
-        with gv_cols[1]:
-            vol_default_raw = _safe_float(session.get("scanner_precursor_vol_threshold"))
-            if vol_default_raw is None:
-                vol_default_raw = PRECURSOR_DEFAULTS["vol_min_mult"]
-            vol_default = float(max(0.1, float(vol_default_raw)))
-            if session.get("scanner_precursor_vol_threshold") != vol_default:
-                session["scanner_precursor_vol_threshold"] = vol_default
-            st.number_input(
-                "Volume multiple",
-                min_value=0.1,
-                max_value=20.0,
-                step=0.1,
-                key="scanner_precursor_vol_threshold",
-                value=vol_default,
-                disabled=disabled_children,
-            )
-            st.checkbox(
-                "Day -1 volume ≥ threshold",
-                key="scanner_precursor_vol_d1",
-                disabled=disabled_children,
-            )
-            st.checkbox(
-                "Day -2 volume ≥ threshold",
-                key="scanner_precursor_vol_d2",
-                disabled=disabled_children,
-            )
+    render_precursor_section(session)
 
     with st.form("stock_scanner_form"):
         col_dates = st.columns(2)
@@ -755,110 +463,27 @@ def page() -> None:
         st.error("End date must be on or after the start date.")
         return
 
-    ss = st.session_state
-    precursors_master_enabled = bool(ss.get("scanner_precursor_enabled", False))
+    precursors_payload = build_conditions_from_session(st.session_state)
 
-    within_days_raw = _safe_float(ss.get("scanner_precursor_within"))
-    if within_days_raw is None:
-        within_days_raw = PRECURSOR_DEFAULTS["lookback_days"]
-    within_days = int(max(1, min(60, float(within_days_raw))))
-
-    logic = str(ss.get("scanner_precursor_logic", "ANY") or "ANY").upper()
-    if logic not in {"ANY", "ALL"}:
-        logic = "ANY"
-
-    atr_threshold_raw = _safe_float(ss.get("scanner_precursor_atr_threshold"))
-    if atr_threshold_raw is None:
-        atr_threshold_raw = PRECURSOR_DEFAULTS["atr_pct_threshold"]
-    atr_threshold = float(max(1.0, min(100.0, float(atr_threshold_raw))))
-
-    bb_threshold_raw = _safe_float(ss.get("scanner_precursor_bb_threshold"))
-    if bb_threshold_raw is None:
-        bb_threshold_raw = PRECURSOR_DEFAULTS["bb_pct_threshold"]
-    bb_threshold = float(max(1.0, min(100.0, float(bb_threshold_raw))))
-
-    gap_threshold_raw = _safe_float(ss.get("scanner_precursor_gap_threshold"))
-    if gap_threshold_raw is None:
-        gap_threshold_raw = PRECURSOR_DEFAULTS["gap_min_pct"]
-    gap_threshold = float(max(0.0, float(gap_threshold_raw)))
-
-    vol_threshold_raw = _safe_float(ss.get("scanner_precursor_vol_threshold"))
-    if vol_threshold_raw is None:
-        vol_threshold_raw = PRECURSOR_DEFAULTS["vol_min_mult"]
-    vol_threshold = float(max(0.1, float(vol_threshold_raw)))
-
-    selected_conditions: list[dict[str, Any]] = []
-    if precursors_master_enabled:
-        if ss.get("scanner_precursor_ema"):
-            selected_conditions.append({"flag": "ema_20_50_cross_up"})
-        if ss.get("scanner_precursor_rsi50"):
-            selected_conditions.append({"flag": "rsi_cross_50"})
-        if ss.get("scanner_precursor_rsi60"):
-            selected_conditions.append({"flag": "rsi_cross_60"})
-        if ss.get("scanner_precursor_atr"):
-            selected_conditions.append(
-                {"flag": "atr_squeeze_pct", "max_percentile": float(atr_threshold)}
-            )
-        if ss.get("scanner_precursor_bb"):
-            selected_conditions.append(
-                {"flag": "bb_squeeze_pct", "max_percentile": float(bb_threshold)}
-            )
-        if ss.get("scanner_precursor_nr7"):
-            selected_conditions.append({"flag": "nr7"})
-        if ss.get("scanner_precursor_gap"):
-            selected_conditions.append(
-                {"flag": "gap_up_ge_gpct_prev", "min_gap_pct": float(gap_threshold)}
-            )
-        if ss.get("scanner_precursor_vol_d1"):
-            selected_conditions.append(
-                {"flag": "vol_mult_d1_ge_x", "min_mult": float(vol_threshold)}
-            )
-        if ss.get("scanner_precursor_vol_d2"):
-            selected_conditions.append(
-                {"flag": "vol_mult_d2_ge_x", "min_mult": float(vol_threshold)}
-            )
-        if ss.get("scanner_precursor_sr"):
-            selected_conditions.append({"flag": "sr_ratio_ge_2"})
-        if ss.get("scanner_precursor_high20"):
-            selected_conditions.append({"flag": "new_high_20"})
-        if ss.get("scanner_precursor_high63"):
-            selected_conditions.append({"flag": "new_high_63"})
-
-    precursors_payload: dict[str, Any] | None = None
-    if selected_conditions:
-        precursors_payload = {
-            "enabled": True,
-            "within_days": int(within_days),
-            "logic": logic,
-            "conditions": selected_conditions,
-            "atr_pct_threshold": float(atr_threshold),
-            "bb_pct_threshold": float(bb_threshold),
-            "gap_min_pct": float(gap_threshold),
-            "vol_min_mult": float(vol_threshold),
-            "lookback_days": int(within_days),
-        }
-
-    params: StocksOnlyScanParams = {
-        "start": start_ts,
-        "end": end_ts,
-        "horizon_days": horizon,
-        "sr_lookback": sr_lookback,
-        "sr_min_ratio": sr_min_ratio,
-        "min_yup_pct": min_yup_pct,
-        "min_gap_pct": min_gap_pct,
-        "min_volume_multiple": min_volume_multiple,
-        "volume_lookback": volume_lookback,
-        "exit_model": exit_model,
-        "atr_window": atr_window,
-        "atr_method": atr_method,
-        "tp_atr_multiple": tp_atr_multiple,
-        "sl_atr_multiple": sl_atr_multiple,
-        "use_sp_filter": use_sp_filter,
-        "cash_per_trade": DEFAULT_CASH_CAP,
-    }
-
-    if precursors_payload:
-        params["precursors"] = precursors_payload
+    params = StocksOnlyScanParams(
+        start=start_ts,
+        end=end_ts,
+        horizon_days=horizon,
+        sr_lookback=sr_lookback,
+        sr_min_ratio=sr_min_ratio,
+        min_yup_pct=min_yup_pct,
+        min_gap_pct=min_gap_pct,
+        min_volume_multiple=min_volume_multiple,
+        volume_lookback=volume_lookback,
+        exit_model=exit_model,
+        atr_window=atr_window,
+        atr_method=atr_method,
+        tp_atr_multiple=tp_atr_multiple,
+        sl_atr_multiple=sl_atr_multiple,
+        use_sp_filter=use_sp_filter,
+        cash_per_trade=DEFAULT_CASH_CAP,
+        precursors=precursors_payload,
+    )
 
     debug = ScanDebugCollector()
     meta = {
@@ -906,7 +531,7 @@ def page() -> None:
     progress_cb = _progress_callback(prog_widget, log_fn)
 
     try:
-        ledger, summary = run_scan(
+        result = run_scan(
             params,
             storage=storage,
             progress=progress_cb,
@@ -923,12 +548,20 @@ def page() -> None:
 
     status.update(label="Scan complete ✅", state="complete")
 
+    summary = result.get("summary", {})
+    trades_df = result.get("trades", pd.DataFrame())
+
     metrics_info = {
-        "tickers": summary.tickers_scanned,
-        "candidates": summary.candidates,
-        "trades": summary.trades,
+        "tickers": int(summary.get("tickers_scanned", summary.get("tickers", 0))),
+        "candidates": int(summary.get("candidates", 0)),
+        "trades": int(summary.get("trades", 0)),
     }
 
     _render_summary(summary)
-    _render_ledger(ledger)
+    _render_ledger(trades_df)
+    export_name = (
+        f"shares_scanner_{start_ts.strftime('%Y%m%d')}_{end_ts.strftime('%Y%m%d')}"
+    )
+    export_path = export_trades(trades_df, export_name)
+    st.caption(f"Saved trades CSV to {export_path}")
     _render_debug_panel(meta, params_info, env_info, debug, metrics_info)
