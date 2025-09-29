@@ -28,6 +28,8 @@ def _initialize() -> None:
     import math
     from typing import Any, Sequence
 
+    # NOTE: SpikeDefinition is defined at module scope; do not redefine here.
+
     import pandas as pd
     import streamlit as st
     from pandas.tseries.offsets import BDay
