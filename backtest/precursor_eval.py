@@ -96,11 +96,20 @@ def evaluate_precursors_naive(
 
 
 def evaluate_precursors_scanner_aligned(
-    events_df: pd.DataFrame, scan_params: StocksOnlyScanParams
+    events_df: pd.DataFrame,
+    scan_params: StocksOnlyScanParams,
+    *,
+    scan_result: dict[str, Any] | None = None,
 ) -> EvaluationResult:
-    scan_result = run_scan(scan_params)
-    trades = scan_result["trades"].copy()
-    summary = scan_result["summary"]
+    if scan_result is None:
+        scan_result = run_scan(scan_params)
+
+    trades = scan_result.get("trades") if isinstance(scan_result, dict) else None
+    if isinstance(trades, pd.DataFrame):
+        trades = trades.copy()
+    else:
+        trades = pd.DataFrame()
+    summary = scan_result.get("summary", {}) if isinstance(scan_result, dict) else {}
 
     diagnostics = pd.DataFrame(columns=["ticker", "signal_date", "entered_trade", "exit_reason", "pnl"])
     if events_df is not None and not events_df.empty:
@@ -118,7 +127,7 @@ def evaluate_precursors_scanner_aligned(
             diagnostics["flags_fired"] = diagnostics["flags_fired"].apply(_normalise_flags)
         else:
             diagnostics["flags_fired"] = [[] for _ in range(len(diagnostics))]
-        if not trades.empty:
+        if isinstance(trades, pd.DataFrame) and not trades.empty:
             trades = trades.copy()
             trades["entry_date"] = pd.to_datetime(trades.get("entry_date"))
             trades["ticker"] = trades.get("ticker").astype(str)

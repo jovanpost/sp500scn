@@ -52,7 +52,7 @@ TABS: list[tuple[str, str, Optional[RenderFn]]] = [
     (
         "🚀 Spike Precursor Lab",
         "spike-precursor-lab",
-        _load_render_fn("ui.pages.spike_precursor_lab", "pages/66_Spike_Precursor_Lab.py", ("page", "main")),
+        _load_render_fn("ui.pages.spike_precursor_lab", "pages/64_Spike_Precursor_Lab.py", ("page", "main")),
     ),
     (
         "📊 Stock Scanner (Shares Only)",
