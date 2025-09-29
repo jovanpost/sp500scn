@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import sys
 import traceback as _tb
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SpikeDefinition:
+    mode: str
+    pct_threshold: float | None
+    atr_multiple: float | None
+    volume_filter_enabled: bool
+    volume_threshold: float
 
 
 def _import_guard(fn):
@@ -16,7 +26,6 @@ def _import_guard(fn):
 def _initialize() -> None:
     import json
     import math
-    from dataclasses import dataclass
     from typing import Any, Sequence
 
     import pandas as pd
@@ -39,14 +48,6 @@ def _initialize() -> None:
     )
     from engine.stocks_only_scanner import DEFAULT_CASH_CAP
     from utils.io_export import export_diagnostics, export_trades
-
-    @dataclass(frozen=True)
-    class SpikeDefinition:
-        mode: str
-        pct_threshold: float | None
-        atr_multiple: float | None
-        volume_filter_enabled: bool
-        volume_threshold: float
 
     def _utcnow_iso() -> str:
         return pd.Timestamp.utcnow().isoformat()
