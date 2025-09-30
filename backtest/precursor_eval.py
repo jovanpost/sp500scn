@@ -1,3 +1,5 @@
+"""Evaluation helpers for precursor spike analysis."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
