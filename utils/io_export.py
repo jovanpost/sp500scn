@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
-from typing import Any
-
 import pandas as pd
 
-EXPORT_ROOT = Path("data/exports")
-EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
 
+def _prepare_export_root(path: Path) -> Path:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except (OSError, PermissionError):
+        fallback = Path(tempfile.gettempdir()) / "sp500scn_exports"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+DEFAULT_EXPORT_PATH = Path("data/exports")
+EXPORT_ROOT = _prepare_export_root(DEFAULT_EXPORT_PATH)
 
 def _resolve_name(base_name: str, suffix: str) -> Path:
     safe = base_name.replace("/", "_").replace("\\", "_")
