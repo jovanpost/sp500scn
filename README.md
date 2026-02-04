@@ -1,5 +1,6 @@
 # SP500SCN
 
+
 ## Data Source
 
 Price history is loaded from Supabase Storage parquet files under
